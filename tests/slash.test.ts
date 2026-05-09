@@ -493,6 +493,7 @@ describe("handleSlash", () => {
       "status",
       "preset",
       "model",
+      "language",
       "theme",
       "mcp",
       "memory",
@@ -515,8 +516,11 @@ describe("handleSlash", () => {
     expect(suggestSlashCommands("h").map((s) => s.cmd)).toEqual(["help", "hooks"]);
     // Case-insensitive.
     expect(suggestSlashCommands("HE").map((s) => s.cmd)).toEqual(["help"]);
-    // Empty prefix returns the curated non-advanced list.
-    expect(suggestSlashCommands("").length).toBeGreaterThan(5);
+    // Empty prefix returns the full non-advanced release list, including code commands.
+    expect(suggestSlashCommands("", true)).toHaveLength(37);
+    expect(suggestSlashCommands("", true).map((s) => s.cmd)).toContain("logs");
+    expect(suggestSlashCommands("", true).map((s) => s.cmd)).toContain("language");
+    expect(suggestSlashCommands("lan").map((s) => s.cmd)).toContain("language");
   });
 
   describe("/update", () => {
@@ -561,16 +565,15 @@ describe("handleSlash", () => {
     });
   });
 
-  it("suggestSlashCommands hides code-mode-only entries when codeMode=false", () => {
+  it("suggestSlashCommands shows code-mode entries in bare slash browse mode", () => {
     const names = suggestSlashCommands("", false).map((s) => s.cmd);
-    expect(names).not.toContain("apply");
-    expect(names).not.toContain("undo");
-  });
-
-  it("suggestSlashCommands shows code-mode-only entries when codeMode=true", () => {
-    const names = suggestSlashCommands("", true).map((s) => s.cmd);
     expect(names).toContain("apply");
     expect(names).toContain("undo");
+  });
+
+  it("suggestSlashCommands keeps code-mode gating for typed prefixes", () => {
+    expect(suggestSlashCommands("ap", false).map((s) => s.cmd)).not.toContain("apply");
+    expect(suggestSlashCommands("ap", true).map((s) => s.cmd)).toContain("apply");
   });
 
   it("/mcp opens the browser modal when servers are attached", () => {

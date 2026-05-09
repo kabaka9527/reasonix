@@ -3716,38 +3716,43 @@ function AppInner({
                   {" 📖 reading history — End / PgDn to return · ↓ to advance one line"}
                 </Text>
               ) : (
-                <>
-                  {codeMode ? (
-                    <ModeStatusBar
-                      editMode={editMode}
-                      pendingCount={pendingCount}
-                      flash={modeFlash}
-                      planMode={planMode}
-                      undoArmed={!!undoBanner || hasUndoable()}
-                      jobs={codeMode.jobs}
+                <Box flexDirection="column" flexShrink={0} flexWrap="nowrap">
+                  <Box flexDirection="column" flexShrink={0} flexWrap="nowrap">
+                    {codeMode ? (
+                      <ModeStatusBar
+                        editMode={editMode}
+                        pendingCount={pendingCount}
+                        flash={modeFlash}
+                        planMode={planMode}
+                        undoArmed={!!undoBanner || hasUndoable()}
+                        jobs={codeMode.jobs}
+                      />
+                    ) : null}
+                    {activeLoop ? <LoopStatusRow loop={activeLoop} /> : null}
+                    <StatusRow />
+                    <PromptInput
+                      value={input}
+                      onChange={setInput}
+                      onSubmit={handleSubmit}
+                      disabled={busy}
+                      onHistoryPrev={recallPrev}
+                      onHistoryNext={recallNext}
                     />
-                  ) : null}
-                  {activeLoop ? <LoopStatusRow loop={activeLoop} /> : null}
-                  <StatusRow />
-                  <PromptInput
-                    value={input}
-                    onChange={setInput}
-                    onSubmit={handleSubmit}
-                    disabled={busy}
-                    onHistoryPrev={recallPrev}
-                    onHistoryNext={recallNext}
-                  />
-                  {slashMatches !== null ? (
-                    <SlashSuggestions
-                      matches={slashMatches}
-                      selectedIndex={slashSelected}
-                      groupMode={slashGroupMode}
-                      advancedHidden={slashAdvancedHidden}
-                    />
-                  ) : null}
-                  {atState !== null ? (
-                    <AtMentionSuggestions state={atState} selectedIndex={atSelected} />
-                  ) : null}
+                  </Box>
+                  <Box flexDirection="column" flexShrink={0} flexWrap="nowrap">
+                    {slashMatches !== null ? (
+                      <SlashSuggestions
+                        key={`slash-suggestions:${slashGroupMode ? "group" : "search"}`}
+                        matches={slashMatches}
+                        selectedIndex={slashSelected}
+                        groupMode={slashGroupMode}
+                        advancedHidden={slashAdvancedHidden}
+                      />
+                    ) : null}
+                    {atState !== null ? (
+                      <AtMentionSuggestions state={atState} selectedIndex={atSelected} />
+                    ) : null}
+                  </Box>
                   {slashArgContext ? (
                     <SlashArgPicker
                       matches={slashArgMatches}
@@ -3758,7 +3763,7 @@ function AppInner({
                     />
                   ) : null}
                   {/* CtxFooter retired — UsageCard auto-emits per turn covers the same data */}
-                </>
+                </Box>
               )}
             </Box>
           </Box>

@@ -25,13 +25,15 @@ export function StatusRow(): React.ReactElement {
   const showWallet = cols >= WALLET_MIN_COLS && (hasSession || hasBalance);
 
   return (
-    <Box flexDirection="column">
-      <Box>
+    <Box flexDirection="column" flexShrink={0} flexWrap="nowrap">
+      <Box height={1} flexWrap="nowrap">
         <Text>{"  "}</Text>
-        <Text color={FG.faint}>{"─".repeat(ruleWidth)}</Text>
+        <Text color={FG.faint} wrap="truncate">
+          {"─".repeat(ruleWidth)}
+        </Text>
       </Box>
-      <Box flexDirection="row">
-        <Text>{"  "}</Text>
+      <Box flexDirection="row" height={1} minHeight={1} flexWrap="nowrap" flexShrink={0}>
+        <Text wrap="truncate">{"  "}</Text>
         {status.recording ? (
           <RecordingPill rec={status.recording} />
         ) : status.countdownSeconds !== undefined ? (
@@ -40,20 +42,23 @@ export function StatusRow(): React.ReactElement {
           <ModePill mode={status.mode} network={status.network} detail={status.networkDetail} />
         )}
         <Sep />
-        <Text color={FG.sub}>{`${session.id} · ${session.branch}`}</Text>
+        <Text color={FG.sub} wrap="truncate">{`${session.id} · ${session.branch}`}</Text>
         {hasTurn && (
           <>
             <Sep />
-            <Text bold color={TONE.brand}>
+            <Text bold color={TONE.brand} wrap="truncate">
               {"▸ "}
             </Text>
-            <Text bold color={FG.body}>
+            <Text bold color={FG.body} wrap="truncate">
               {`${formatCost(status.cost, status.balanceCurrency)} turn`}
             </Text>
           </>
         )}
         <Sep />
-        <Text color={TONE.accent}>{`cache ${Math.round(status.cacheHit * 100)}%`}</Text>
+        <Text
+          color={TONE.accent}
+          wrap="truncate"
+        >{`cache ${Math.round(status.cacheHit * 100)}%`}</Text>
         {showWallet && (
           <WalletPill
             sessionCostUsd={status.sessionCost}
@@ -64,12 +69,18 @@ export function StatusRow(): React.ReactElement {
         {cols >= VERSION_MIN_COLS && (
           <>
             <Sep />
-            <Text color={FG.faint}>{`v${VERSION}`}</Text>
+            <Text color={FG.faint} wrap="truncate">{`v${VERSION}`}</Text>
             {cols >= FEEDBACK_HINT_MIN_COLS && (
               <>
-                <Text color={FG.faint}>{"  ·  "}</Text>
-                <Text color={FG.meta}>{"⚑ "}</Text>
-                <Text color={FG.sub}>{"/feedback"}</Text>
+                <Text color={FG.faint} wrap="truncate">
+                  {"  ·  "}
+                </Text>
+                <Text color={FG.meta} wrap="truncate">
+                  {"⚑ "}
+                </Text>
+                <Text color={FG.sub} wrap="truncate">
+                  {"/feedback"}
+                </Text>
               </>
             )}
           </>
@@ -93,17 +104,30 @@ function WalletPill({
   return (
     <>
       <Sep />
-      <Text color={FG.meta}>{"⛁ "}</Text>
+      <Text color={FG.meta} wrap="truncate">
+        {"⛁ "}
+      </Text>
       {showSpent && (
-        <Text color={FG.body}>{`${formatCost(sessionCostUsd, currency, 2)} spent`}</Text>
+        <Text
+          color={FG.body}
+          wrap="truncate"
+        >{`${formatCost(sessionCostUsd, currency, 2)} spent`}</Text>
       )}
-      {showSpent && showBalance && <Text color={FG.meta}>{"  /  "}</Text>}
+      {showSpent && showBalance && (
+        <Text color={FG.meta} wrap="truncate">
+          {"  /  "}
+        </Text>
+      )}
       {showBalance && (
-        <Text bold color={balanceColor(balance, currency)}>
+        <Text bold color={balanceColor(balance, currency)} wrap="truncate">
           {formatBalance(balance, currency, { fractionDigits: 2 })}
         </Text>
       )}
-      {showBalance && <Text color={FG.faint}>{" left"}</Text>}
+      {showBalance && (
+        <Text color={FG.faint} wrap="truncate">
+          {" left"}
+        </Text>
+      )}
     </>
   );
 }
@@ -120,9 +144,11 @@ function ModePill({
   if (network === "online") {
     const pill = modeGlyph(mode);
     return (
-      <Box flexDirection="row">
-        <Text color={pill.color}>{pill.glyph}</Text>
-        <Text color={FG.sub}>{` ${mode}`}</Text>
+      <Box flexDirection="row" height={1} flexWrap="nowrap">
+        <Text color={pill.color} wrap="truncate">
+          {pill.glyph}
+        </Text>
+        <Text color={FG.sub} wrap="truncate">{` ${mode}`}</Text>
       </Box>
     );
   }
@@ -130,25 +156,33 @@ function ModePill({
   if (network === "slow") {
     const tail = detail ? ` · ${detail}` : "";
     return (
-      <Box flexDirection="row">
-        <Text color={dot.color}>{dot.glyph}</Text>
-        <Text color={dot.color}>{` ${mode} · slow${tail}`}</Text>
+      <Box flexDirection="row" height={1} flexWrap="nowrap">
+        <Text color={dot.color} wrap="truncate">
+          {dot.glyph}
+        </Text>
+        <Text color={dot.color} wrap="truncate">{` ${mode} · slow${tail}`}</Text>
       </Box>
     );
   }
   if (network === "disconnected") {
     const tail = detail ? ` · ${detail}` : "";
     return (
-      <Box flexDirection="row">
-        <Text color={dot.color}>{dot.glyph}</Text>
-        <Text color={dot.color}>{` disconnect${tail}`}</Text>
+      <Box flexDirection="row" height={1} flexWrap="nowrap">
+        <Text color={dot.color} wrap="truncate">
+          {dot.glyph}
+        </Text>
+        <Text color={dot.color} wrap="truncate">{` disconnect${tail}`}</Text>
       </Box>
     );
   }
   return (
-    <Box flexDirection="row">
-      <Text color={dot.color}>{dot.glyph}</Text>
-      <Text color={dot.color}>{" reconnecting…"}</Text>
+    <Box flexDirection="row" height={1} flexWrap="nowrap">
+      <Text color={dot.color} wrap="truncate">
+        {dot.glyph}
+      </Text>
+      <Text color={dot.color} wrap="truncate">
+        {" reconnecting…"}
+      </Text>
     </Box>
   );
 }
@@ -163,12 +197,18 @@ function CountdownRow({
   const pill = modeGlyph(mode);
   const endsAt = Date.now() + secondsLeft * 1000;
   return (
-    <Box flexDirection="row">
-      <Text color={pill.color}>{pill.glyph}</Text>
-      <Text color={FG.sub}>{` ${mode}   ·   `}</Text>
-      <Text color={TONE.warn}>{"approving in "}</Text>
+    <Box flexDirection="row" height={1} flexWrap="nowrap">
+      <Text color={pill.color} wrap="truncate">
+        {pill.glyph}
+      </Text>
+      <Text color={FG.sub} wrap="truncate">{` ${mode}   ·   `}</Text>
+      <Text color={TONE.warn} wrap="truncate">
+        {"approving in "}
+      </Text>
       <Countdown endsAt={endsAt} />
-      <Text color={TONE.warn}>{"s · esc to interrupt"}</Text>
+      <Text color={TONE.warn} wrap="truncate">
+        {"s · esc to interrupt"}
+      </Text>
     </Box>
   );
 }
@@ -176,17 +216,21 @@ function CountdownRow({
 function RecordingPill({ rec }: { rec: NonNullable<StatusBar["recording"]> }): React.ReactElement {
   const sizeMb = (rec.sizeBytes / (1024 * 1024)).toFixed(1);
   return (
-    <Box flexDirection="row">
-      <Text bold color={TONE.err}>
+    <Box flexDirection="row" height={1} flexWrap="nowrap">
+      <Text bold color={TONE.err} wrap="truncate">
         {"●REC"}
       </Text>
-      <Text color={TONE.err}>{` ${sizeMb} MB · ${rec.events} evt`}</Text>
+      <Text color={TONE.err} wrap="truncate">{` ${sizeMb} MB · ${rec.events} evt`}</Text>
     </Box>
   );
 }
 
 function Sep(): React.ReactElement {
-  return <Text color={FG.meta}>{"   ·   "}</Text>;
+  return (
+    <Text color={FG.meta} wrap="truncate">
+      {"   ·   "}
+    </Text>
+  );
 }
 
 function modeGlyph(mode: Mode): { glyph: string; color: string } {
