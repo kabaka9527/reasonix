@@ -6,11 +6,12 @@ import {
   SLASH_COMMANDS,
   type SlashCommandSpec,
   countAdvancedCommands,
+  orderSlashCommandsByGroup,
   suggestSlashCommands,
 } from "../src/cli/ui/slash.js";
 
 function makeCommands(count: number): SlashCommandSpec[] {
-  const groups = ["chat", "setup", "info", "session", "extend", "code", "jobs"] as const;
+  const groups = ["setup", "info", "chat", "extend", "session", "code", "jobs"] as const;
   return Array.from({ length: count }, (_, i) => ({
     cmd: `cmd${i.toString().padStart(2, "0")}`,
     summary: `summary ${i}`,
@@ -63,6 +64,34 @@ function hiddenAboveCount(frame: string): number {
   return match ? Number(match[1]) : 0;
 }
 
+function headerCount(frame: string, header: string): number {
+  return frame.split(/\r?\n/).filter((line) => line.trim() === header).length;
+}
+
+function visibleBodyRows(frame: string): string[] {
+  return frame
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .map((line) => {
+      if (/^(SETUP|INFO|CHAT|EXTEND|SESSION|CODE|JOBS|ADVANCED|UNKNOWN)$/.test(line)) return line;
+      return /^(?:▸\s*)?(\/\w+)\b/.exec(line)?.[1] ?? "";
+    })
+    .filter(Boolean);
+}
+
+function rowIndex(rows: readonly string[], token: string): number {
+  const index = rows.findIndex((line) => line.startsWith(token));
+  expect(index).toBeGreaterThanOrEqual(0);
+  return index;
+}
+
+function selectedCommand(frame: string): string | undefined {
+  return frame
+    .split(/\r?\n/)
+    .map((line) => /^\s*▸\s*(\/\w+)\b/.exec(line)?.[1])
+    .find((token): token is string => Boolean(token));
+}
+
 describe("SlashSuggestions", () => {
   it("renders the bare slash release command surface as 37 total commands", () => {
     const matches = suggestSlashCommands("", true);
@@ -84,15 +113,86 @@ describe("SlashSuggestions", () => {
     expect(suggestSlashCommands("lan").map((spec) => spec.cmd)).toContain("language");
   });
 
-  it("keeps the command order stable while the selected row moves in grouped browse mode", () => {
+  it("groups bare slash suggestions under one header per category", () => {
+    const frame = renderSuggestions(0);
+    const rows = visibleBodyRows(frame);
+    const setup = rowIndex(rows, "SETUP");
+    const language = rowIndex(rows, "/language");
+    const preset = rowIndex(rows, "/preset");
+    const model = rowIndex(rows, "/model");
+    const info = rowIndex(rows, "INFO");
+    const status = rowIndex(rows, "/status");
+
+    expect(headerCount(frame, "SETUP")).toBe(1);
+    expect(headerCount(frame, "INFO")).toBe(1);
+    expect(rows.filter((row) => row === "SETUP" || row === "INFO")).toEqual(["SETUP", "INFO"]);
+    expect(rows.slice(setup, info)).toEqual(["SETUP", "/language", "/preset", "/model"]);
+    expect([language, preset, model]).toEqual([setup + 1, setup + 2, setup + 3]);
+    expect(status).toBe(info + 1);
+  });
+
+  it("maps selectedIndex to grouped command rows without counting group headers", () => {
+    expect(selectedCommand(renderSuggestions(0))).toBe("/language");
+    expect(selectedCommand(renderSuggestions(1))).toBe("/preset");
+    expect(selectedCommand(renderSuggestions(2))).toBe("/model");
+    expect(selectedCommand(renderSuggestions(3))).toBe("/status");
+
+    const rows = visibleBodyRows(renderSuggestions(1));
+    expect(rows.slice(0, 5)).toEqual(["SETUP", "/language", "/preset", "/model", "INFO"]);
+    expect(selectedCommand(renderSuggestions(1))).not.toBe("SETUP");
+    expect(selectedCommand(renderSuggestions(3))).not.toBe("INFO");
+  });
+
+  it("moves from the first grouped command to the second grouped command on the next index", () => {
+    const { lastFrame, rerender, unmount } = render(
+      suggestionElement(suggestSlashCommands("", true), 0, countAdvancedCommands(true)),
+    );
+    expect(selectedCommand(lastFrame() ?? "")).toBe("/language");
+
+    rerender(suggestionElement(suggestSlashCommands("", true), 1, countAdvancedCommands(true)));
+    expect(selectedCommand(lastFrame() ?? "")).toBe("/preset");
+    unmount();
+  });
+
+  it("keeps filtered slash suggestions grouped even with usage counts", () => {
+    const matches = suggestSlashCommands("c", true, { compact: 100, cost: 90, checkpoint: 80 });
+    const { lastFrame, unmount } = render(
+      React.createElement(SlashSuggestions, {
+        matches,
+        selectedIndex: 0,
+        groupMode: true,
+      }),
+    );
+    const frame = lastFrame() ?? "";
+    const rows = visibleBodyRows(frame);
+    unmount();
+
+    expect(headerCount(frame, "INFO")).toBe(1);
+    expect(headerCount(frame, "CHAT")).toBe(1);
+    expect(headerCount(frame, "CODE")).toBe(1);
+    expect(rows).toEqual([
+      "INFO",
+      "/cost",
+      "/context",
+      "CHAT",
+      "/compact",
+      "/new",
+      "CODE",
+      "/checkpoint",
+      "/commit",
+      "/cwd",
+    ]);
+  });
+
+  it("keeps the grouped command order stable while the selected row moves in grouped browse mode", () => {
     const first = visibleCommandOrder(renderSuggestions(0));
     const middle = visibleCommandOrder(renderSuggestions(10));
     const last = visibleCommandOrder(renderSuggestions(18));
 
     expect(first).toEqual(middle);
     expect(middle).toEqual(last);
-    const matches = suggestSlashCommands("", true);
-    expect(first).toEqual(matches.slice(0, first.length).map((spec) => `/${spec.cmd}`));
+    const groupedMatches = orderSlashCommandsByGroup(suggestSlashCommands("", true));
+    expect(first).toEqual(groupedMatches.slice(0, first.length).map((spec) => `/${spec.cmd}`));
   });
 
   it("scrolls through every command in grouped browse mode when the list is taller than the window", () => {
@@ -169,7 +269,7 @@ describe("SlashSuggestions", () => {
     const visibleBodyRows = frame
       .split(/\r?\n/)
       .filter((line) =>
-        /^(\s*(?:CHAT|SETUP|INFO|SESSION|EXTEND|CODE|JOBS)|\s*(?:▸\s*)?\/\w+\b)/.test(line),
+        /^(\s*(?:SETUP|INFO|CHAT|EXTEND|SESSION|CODE|JOBS|UNKNOWN)|\s*(?:▸\s*)?\/\w+\b)/.test(line),
       );
     expect(visibleBodyRows.length).toBeLessThanOrEqual(24);
   });

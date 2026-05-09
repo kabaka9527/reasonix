@@ -1,6 +1,7 @@
 import { Box, Text, useStdout } from "ink";
 import React from "react";
 import { t } from "../../i18n/index.js";
+import { SLASH_GROUP_LABEL, getSlashCommandGroup, orderSlashCommandsByGroup } from "./slash.js";
 import type { SlashCommandSpec, SlashGroup } from "./slash.js";
 import { GLYPH, useColor } from "./theme.js";
 
@@ -17,17 +18,6 @@ export interface SlashSuggestionsProps {
   /** Count of hidden `advanced` commands; rendered as a footer hint when groupMode is true. */
   advancedHidden?: number;
 }
-
-const GROUP_LABEL: Record<SlashGroup, string> = {
-  chat: "CHAT",
-  setup: "SETUP",
-  info: "INFO",
-  session: "SESSION",
-  extend: "EXTEND",
-  code: "CODE",
-  jobs: "JOBS",
-  advanced: "ADVANCED",
-};
 
 export function SlashSuggestions({
   matches,
@@ -53,19 +43,21 @@ export function SlashSuggestions({
       </Box>
     );
   }
+  const orderedMatches = React.useMemo(() => orderSlashCommandsByGroup(matches), [matches]);
+  const orderedSelectedIndex = Math.max(0, Math.min(selectedIndex, orderedMatches.length - 1));
   const maxRows = groupMode ? GROUP_MODE_MAX_ROWS : SEARCH_MODE_MAX_ROWS;
-  const total = matches.length;
+  const total = orderedMatches.length;
   const windowStart = computeWindowStart(
-    matches,
+    orderedMatches,
     maxRows,
-    selectedIndex,
+    orderedSelectedIndex,
     rememberedWindowStart,
     groupMode,
   );
   React.useEffect(() => {
     setRememberedWindowStart(windowStart);
   }, [windowStart]);
-  const items = buildVisibleItems(matches, windowStart, maxRows, groupMode);
+  const items = buildVisibleItems(orderedMatches, windowStart, maxRows, groupMode);
   const shownCommands = items.filter((item) => item.kind === "command");
   const hiddenAbove = windowStart;
   const hiddenBelow = total - windowStart - shownCommands.length;
@@ -86,7 +78,7 @@ export function SlashSuggestions({
           <SuggestionRow
             key={`cmd:${item.spec.group}:${item.spec.cmd}`}
             spec={item.spec}
-            isSelected={item.index === selectedIndex}
+            isSelected={item.index === orderedSelectedIndex}
             columns={cols}
           />
         );
@@ -141,7 +133,7 @@ export function buildVisibleItems(
     const spec = matches[idx]!;
     if (groupMode && shouldShowGroupHeader(matches, idx)) {
       if (out.length >= maxRows) break;
-      out.push({ kind: "group", group: spec.group, beforeIndex: idx });
+      out.push({ kind: "group", group: getSlashCommandGroup(spec), beforeIndex: idx });
     }
     if (out.length >= maxRows) break;
     out.push({ kind: "command", spec, index: idx });
@@ -150,14 +142,18 @@ export function buildVisibleItems(
 }
 
 function shouldShowGroupHeader(matches: readonly SlashCommandSpec[], idx: number): boolean {
-  return idx === 0 || matches[idx]?.group !== matches[idx - 1]?.group;
+  if (idx === 0) return true;
+  const current = matches[idx];
+  const previous = matches[idx - 1];
+  if (!current || !previous) return true;
+  return getSlashCommandGroup(current) !== getSlashCommandGroup(previous);
 }
 
 function GroupHeader({ group }: { group: SlashGroup }): React.ReactElement {
   return (
     <Box flexShrink={0} height={1} flexWrap="nowrap">
       <Text dimColor wrap="truncate">
-        {`  ${GROUP_LABEL[group]}`}
+        {`  ${SLASH_GROUP_LABEL[group]}`}
       </Text>
     </Box>
   );
