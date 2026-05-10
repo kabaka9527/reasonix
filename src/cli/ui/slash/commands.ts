@@ -1,4 +1,44 @@
-import type { SlashArgContext, SlashCommandSpec } from "./types.js";
+import type { SlashArgContext, SlashCommandSpec, SlashGroup } from "./types.js";
+
+export const SLASH_GROUP_ORDER = [
+  "setup",
+  "info",
+  "chat",
+  "extend",
+  "session",
+  "code",
+  "jobs",
+  "advanced",
+] as const satisfies readonly SlashGroup[];
+
+export const SLASH_GROUP_LABEL: Record<SlashGroup, string> = {
+  setup: "SETUP",
+  info: "INFO",
+  chat: "CHAT",
+  extend: "EXTEND",
+  session: "SESSION",
+  code: "CODE",
+  jobs: "JOBS",
+  advanced: "ADVANCED",
+};
+
+const SLASH_GROUP_RANK = new Map<SlashGroup, number>(
+  SLASH_GROUP_ORDER.map((group, index) => [group, index]),
+);
+
+export function orderSlashCommandsByGroup<T extends Pick<SlashCommandSpec, "group">>(
+  commands: readonly T[],
+): T[] {
+  return commands
+    .map((command, index) => ({ command, index }))
+    .sort((a, b) => {
+      const groupDiff =
+        SLASH_GROUP_RANK.get(a.command.group)! - SLASH_GROUP_RANK.get(b.command.group)!;
+      if (groupDiff !== 0) return groupDiff;
+      return a.index - b.index;
+    })
+    .map((entry) => entry.command);
+}
 
 export const SLASH_COMMANDS: readonly SlashCommandSpec[] = [
   { cmd: "help", group: "chat", summary: "show the full command reference", aliases: ["?"] },
@@ -329,6 +369,7 @@ export function suggestSlashCommands(
     if (c.cmd.startsWith(p)) return true;
     return c.aliases?.some((a) => a.startsWith(p)) ?? false;
   });
+  if (p === "") return orderSlashCommandsByGroup(matches);
   if (!counts) return matches;
   const indexOf = new Map(matches.map((s, i) => [s.cmd, i]));
   return [...matches].sort((a, b) => {

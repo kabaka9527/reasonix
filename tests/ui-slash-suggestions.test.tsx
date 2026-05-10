@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { SlashSuggestions } from "../src/cli/ui/SlashSuggestions.js";
 import {
   SLASH_COMMANDS,
+  SLASH_GROUP_ORDER,
   type SlashCommandSpec,
   countAdvancedCommands,
   suggestSlashCommands,
@@ -63,7 +64,26 @@ function hiddenAboveCount(frame: string): number {
   return match ? Number(match[1]) : 0;
 }
 
+function visibleGroupOrder(frame: string): string[] {
+  return frame
+    .split(/\r?\n/)
+    .map(
+      (line) => /^\s*(CHAT|SETUP|INFO|SESSION|EXTEND|CODE|JOBS|ADVANCED)\b/.exec(line)?.[1] ?? "",
+    )
+    .filter(Boolean);
+}
+
 describe("SlashSuggestions", () => {
+  it("renders visible bare-slash groups in the shared order", () => {
+    const frame = renderSuggestions(0);
+    const visibleGroups = visibleGroupOrder(frame);
+    expect(visibleGroups).toEqual(
+      SLASH_GROUP_ORDER.filter((group) => group !== "advanced")
+        .map((group) => group.toUpperCase())
+        .slice(0, visibleGroups.length),
+    );
+  });
+
   it("renders the bare slash release command surface as 38 total commands", () => {
     const matches = suggestSlashCommands("", true);
     const names = matches.map((spec) => spec.cmd);

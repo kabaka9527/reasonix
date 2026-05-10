@@ -221,6 +221,10 @@ export const EN: TranslationSchema = {
     },
     model: { description: "switch DeepSeek model id", argsHint: "<id>" },
     models: { description: "list available models fetched from DeepSeek /models" },
+    theme: {
+      description: "show or persist the terminal theme preference. Bare opens picker.",
+      argsHint: "[auto|default|dark|light|tokyo-night|github-dark|github-light|high-contrast]",
+    },
     language: {
       description: "switch the runtime language",
       argsHint: "<EN|zh-CN>",

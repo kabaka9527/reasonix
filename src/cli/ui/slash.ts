@@ -5,8 +5,11 @@
 // modules under ./slash/.
 export {
   SLASH_COMMANDS,
+  SLASH_GROUP_LABEL,
+  SLASH_GROUP_ORDER,
   countAdvancedCommands,
   detectSlashArgContext,
+  orderSlashCommandsByGroup,
   parseSlash,
   suggestSlashCommands,
 } from "./slash/commands.js";

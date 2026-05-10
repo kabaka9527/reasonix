@@ -2,6 +2,7 @@ import { Box, Text, useStdout } from "ink";
 import React from "react";
 import { t } from "../../i18n/index.js";
 import type { SlashCommandSpec, SlashGroup } from "./slash.js";
+import { SLASH_GROUP_LABEL } from "./slash/commands.js";
 import { GLYPH, useColor } from "./theme.js";
 
 const GROUP_MODE_MAX_ROWS = 24;
@@ -17,17 +18,6 @@ export interface SlashSuggestionsProps {
   /** Count of hidden `advanced` commands; rendered as a footer hint when groupMode is true. */
   advancedHidden?: number;
 }
-
-const GROUP_LABEL: Record<SlashGroup, string> = {
-  chat: "CHAT",
-  setup: "SETUP",
-  info: "INFO",
-  session: "SESSION",
-  extend: "EXTEND",
-  code: "CODE",
-  jobs: "JOBS",
-  advanced: "ADVANCED",
-};
 
 export function SlashSuggestions({
   matches,
@@ -163,7 +153,7 @@ function GroupHeader({ group }: { group: SlashGroup }): React.ReactElement {
   return (
     <Box flexShrink={0} height={1} flexWrap="nowrap">
       <Text dimColor wrap="truncate">
-        {`  ${GROUP_LABEL[group]}`}
+        {`  ${SLASH_GROUP_LABEL[group]}`}
       </Text>
     </Box>
   );

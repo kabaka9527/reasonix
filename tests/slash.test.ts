@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   SLASH_COMMANDS,
+  SLASH_GROUP_ORDER,
   detectSlashArgContext,
   handleSlash,
   parseSlash,
@@ -61,6 +62,17 @@ describe("handleSlash", () => {
     expect(suggestSlashCommands("res").map((s) => s.cmd)).toContain("new");
   });
 
+  it("bare-slash browsing follows the shared group order", () => {
+    const matches = suggestSlashCommands("");
+    const seenGroups = [...new Set(matches.map((spec) => spec.group))];
+    expect(seenGroups).toEqual(SLASH_GROUP_ORDER.filter((group) => group !== "advanced"));
+
+    const setupCommands = matches.filter((spec) => spec.group === "setup").map((spec) => spec.cmd);
+    expect(setupCommands).toEqual(
+      SLASH_COMMANDS.filter((spec) => spec.group === "setup").map((spec) => spec.cmd),
+    );
+  });
+
   it("detectSlashArgContext resolves an alias to its canonical spec", () => {
     const ctx = detectSlashArgContext("/lang zh");
     expect(ctx).not.toBeNull();
@@ -94,6 +106,15 @@ describe("handleSlash", () => {
     expect(r.info).toMatch(/\/status/);
     expect(r.info).toMatch(/\/preset/);
     expect(r.info).toMatch(/\/compact/);
+  });
+
+  it("/help groups commands in the shared order", () => {
+    const info = handleSlash("help", [], makeLoop()).info ?? "";
+    const groupHeaders = [
+      ...info.matchAll(/^ {2}(SETUP|INFO|CHAT|EXTEND|SESSION|CODE|JOBS|ADVANCED)\b/gm),
+    ].map((match) => match[1]);
+    expect(groupHeaders).toEqual(SLASH_GROUP_ORDER.map((group) => group.toUpperCase()));
+    expect(info.indexOf("  SETUP")).toBeLessThan(info.indexOf("  CHAT"));
   });
 
   it("/status reflects current loop config", () => {
