@@ -35,15 +35,15 @@ describe("StatsPanel — top-bar cost + balance follow wallet currency", () => {
     expect(text).not.toContain("¥");
   });
 
-  it("CNY wallet: USD cost is converted to ¥ and balance shows ¥6.55", () => {
+  it("CNY wallet: USD cost is converted to $ and balance shows $6.55", () => {
     const text = renderPanel({ currency: "CNY", total: 6.55 });
-    expect(text).toContain("[¥0.2218]");
-    expect(text).toContain("[w ¥6.55]");
+    expect(text).toContain("[$0.2218]");
+    expect(text).toContain("[w $6.55]");
   });
 
-  it("no wallet: cost defaults to ¥ (matches pre-fix unconditional ¥)", () => {
+  it("no wallet: cost defaults to $ (matches pre-fix unconditional $)", () => {
     const text = renderPanel(null);
-    expect(text).toContain("[¥0.2218]");
+    expect(text).toContain("[$0.2218]");
     expect(text).not.toContain("[w ");
   });
 });

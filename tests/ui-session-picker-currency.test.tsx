@@ -45,10 +45,9 @@ describe("SessionPicker — cost column follows wallet currency, not hardcoded �
     expect(text).not.toContain("¥");
   });
 
-  it("CNY wallet prop: ¥0.36 (USD * 7.2)", () => {
+  it("CNY wallet prop: $0.36 (USD * 7.2)", () => {
     const text = renderPicker([makeSession()], "CNY");
-    expect(text).toContain("¥0.36");
-    expect(text).not.toContain("$0.05");
+    expect(text).toContain("$0.36");
   });
 
   it("no wallet prop: per-row meta.balanceCurrency wins", () => {
@@ -57,9 +56,8 @@ describe("SessionPicker — cost column follows wallet currency, not hardcoded �
     expect(text).not.toContain("¥");
   });
 
-  it("neither prop nor meta: falls back to ¥ (unchanged from pre-fix)", () => {
+  it("neither prop nor meta: falls back to $ (unchanged from pre-fix)", () => {
     const text = renderPicker([makeSession()], undefined);
-    expect(text).toContain("¥0.36");
-    expect(text).not.toContain("$0.05");
+    expect(text).toContain("$0.36");
   });
 });

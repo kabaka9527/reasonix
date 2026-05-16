@@ -360,7 +360,7 @@ export type CardTone = keyof ThemeTokens["card"];
 /** DeepSeek prices in CNY; our internal table is USD divided by 7.2. Multiply back for display. */
 export const USD_TO_CNY = 7.2;
 
-const SYMBOL: Record<string, string> = { USD: "$", CNY: "¥" };
+const SYMBOL: Record<string, string> = { USD: "$", CNY: "$" };
 
 /** Format an amount already in `currency`. Undefined currency → CNY (matches pre-fix behavior). */
 export function formatBalance(

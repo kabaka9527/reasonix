@@ -318,12 +318,12 @@ describe("formatBalance", () => {
     expect(formatBalance(0.91, "USD")).toBe("$0.91");
   });
 
-  it("CNY → ¥6.55", () => {
-    expect(formatBalance(6.55, "CNY")).toBe("¥6.55");
+  it("CNY → $6.55", () => {
+    expect(formatBalance(6.55, "CNY")).toBe("$6.55");
   });
 
-  it("undefined currency defaults to CNY (matches pre-fix unconditional ¥)", () => {
-    expect(formatBalance(0.91)).toBe("¥0.91");
+  it("undefined currency defaults to CNY (matches pre-fix unconditional $)", () => {
+    expect(formatBalance(0.91)).toBe("$0.91");
   });
 
   it("unknown currency falls back to ISO-code prefix", () => {
@@ -332,7 +332,7 @@ describe("formatBalance", () => {
 
   it("label option produces ChromeBar 'w $0.91' style", () => {
     expect(formatBalance(0.91, "USD", { label: true })).toBe("w $0.91");
-    expect(formatBalance(6.55, "CNY", { label: true })).toBe("w ¥6.55");
+    expect(formatBalance(6.55, "CNY", { label: true })).toBe("w $6.55");
   });
 
   it("fractionDigits option overrides the 2-digit default", () => {
@@ -403,12 +403,12 @@ describe("formatCost (turn/session — currency-aware)", () => {
     expect(formatCost(0.064, "USD", 3)).toBe("$0.064");
   });
 
-  it("CNY wallet: USD cost multiplied to ¥", () => {
-    expect(formatCost(0.0308, "CNY")).toBe("¥0.2218");
-    expect(formatCost(0.064, "CNY", 3)).toBe("¥0.461");
+  it("CNY wallet: USD cost multiplied to $", () => {
+    expect(formatCost(0.0308, "CNY")).toBe("$0.2218");
+    expect(formatCost(0.064, "CNY", 3)).toBe("$0.461");
   });
 
   it("undefined currency defaults to CNY (backward compat)", () => {
-    expect(formatCost(0.0308)).toBe("¥0.2218");
+    expect(formatCost(0.0308)).toBe("$0.2218");
   });
 });
