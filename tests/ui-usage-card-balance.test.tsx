@@ -48,10 +48,10 @@ describe("UsageCard - balance currency symbol", () => {
     expect(text).toContain("$0.91");
   });
 
-  it("full card: shows ¥ for CNY balance", () => {
+  it("full card: shows $ for CNY balance", () => {
     const card = baseCard({ balance: 6.55, balanceCurrency: "CNY" } as any);
     const text = renderCard(card);
-    expect(text).toContain("¥6.55");
+    expect(text).toContain("$6.55");
   });
 
   it("full card: hides balance entirely when undefined", () => {
@@ -69,10 +69,10 @@ describe("UsageCard - balance currency symbol", () => {
     expect(text).toContain("$0.91");
   });
 
-  it("compact row: shows ¥ for CNY balance", () => {
+  it("compact row: shows $ for CNY balance", () => {
     const card = baseCard({ balance: 6.55, balanceCurrency: "CNY", compact: true } as any);
     const text = renderCard(card);
-    expect(text).toContain("¥6.55");
+    expect(text).toContain("$6.55");
   });
 
   // Turn/session costs in the card must follow wallet currency, not unconditional ¥.
