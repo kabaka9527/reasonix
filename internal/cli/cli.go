@@ -16,6 +16,7 @@ import (
 	"reasonix/internal/agent"
 	"reasonix/internal/command"
 	"reasonix/internal/config"
+	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/i18n"
 	"reasonix/internal/permission"
@@ -64,88 +65,6 @@ func Run(args []string, version string) int {
 	}
 }
 
-// runtime bundles everything needed to drive an agent, assembled from config.
-type runtime struct {
-	runner       agent.Runner
-	executor     *agent.Agent // kept so the CLI can read/write the executor's session for persistence
-	label        string       // e.g. "deepseek-flash" or "deepseek-flash + planner mimo"
-	systemPrompt string       // remembered so `/new` can mint a fresh session with the same persona
-	sessionDir   string       // where new files land; "" disables persistence
-	sessionPath  string       // active file — auto-save targets this and /new rotates it
-	cleanup      func()
-	setPlanMode  func(bool)        // flips the executor's read-only gate without touching the cache-friendly prefix
-	policy       permission.Policy // the resolved permission policy; chat wraps it in an interactive gate
-	host         *plugin.Host      // running MCP servers; nil when no plugins — chat reads prompts from it
-	commands     []command.Command // custom slash commands loaded from .reasonix/commands
-}
-
-// replaceSession swaps the executor's conversation for the loaded one — used
-// to seed a `reasonix chat --resume` run with the saved history.
-func (rt *runtime) replaceSession(s *agent.Session) {
-	if rt.executor != nil {
-		rt.executor.SetSession(s)
-	}
-}
-
-// snapshotSession writes the executor's current conversation to the active
-// session path. Called after every turn so a crash or kill loses at most one
-// in-flight prompt. No-op when persistence is unavailable.
-func (rt *runtime) snapshotSession() error {
-	if rt.executor == nil || rt.sessionPath == "" {
-		return nil
-	}
-	return rt.executor.Session().Save(rt.sessionPath)
-}
-
-// startNewSession snapshots the current conversation, mints a fresh file
-// path, and resets the executor's session to a clean state carrying the
-// same system prompt. Powers the chat TUI's `/new` command.
-func (rt *runtime) startNewSession() error {
-	if rt.executor == nil {
-		return nil
-	}
-	if err := rt.snapshotSession(); err != nil {
-		return err
-	}
-	if rt.sessionDir != "" {
-		rt.sessionPath = agent.NewSessionPath(rt.sessionDir, rt.label)
-	}
-	rt.executor.SetSession(agent.NewSession(rt.systemPrompt))
-	return nil
-}
-
-// replayHistory returns the executor's current message log, used by the TUI
-// to repopulate the viewport when a session was resumed.
-func (rt *runtime) replayHistory() []provider.Message {
-	if rt.executor == nil {
-		return nil
-	}
-	return rt.executor.Session().Messages
-}
-
-// contextSnapshot returns (promptTokens, contextWindow) from the executor's
-// most recent turn. Both zero means we don't have data yet — the status-line
-// indicator simply hides itself in that case.
-func (rt *runtime) contextSnapshot() (int, int) {
-	if rt.executor == nil {
-		return 0, 0
-	}
-	u := rt.executor.LastUsage()
-	if u == nil {
-		return 0, rt.executor.ContextWindow()
-	}
-	return u.PromptTokens, rt.executor.ContextWindow()
-}
-
-// compactNow triggers one compaction pass on the executor's session,
-// regardless of the usual usage-ratio trigger. Used by /compact.
-func (rt *runtime) compactNow(ctx context.Context) error {
-	if rt.executor == nil {
-		return nil
-	}
-	return rt.executor.CompactNow(ctx)
-}
-
 // setup loads config, resolves the model(s), and builds a Runner: a single Agent,
 // or a two-model Coordinator when agent.planner_model is set. requireKey forces
 // the executor's API key to be present (used by run); chat passes false so the
@@ -153,7 +72,7 @@ func (rt *runtime) compactNow(ctx context.Context) error {
 // event stream — runAgent passes a TextSink that renders to stdout, the TUI
 // passes an event-channel sink so events become tea.Msgs. The cleanup stops
 // plugin subprocesses.
-func setup(ctx context.Context, modelName string, maxStepsOverride int, requireKey bool, sink event.Sink) (*runtime, error) {
+func setup(ctx context.Context, modelName string, maxStepsOverride int, requireKey bool, sink event.Sink) (*control.Controller, error) {
 	cfg, err := config.Load()
 	if err != nil {
 		return nil, err
@@ -255,18 +174,18 @@ func setup(ctx context.Context, modelName string, maxStepsOverride int, requireK
 		label = modelName + " + planner " + pm
 	}
 
-	return &runtime{
-		runner:       runner,
-		executor:     executor,
-		label:        label,
-		systemPrompt: sysPrompt,
-		sessionDir:   config.SessionDir(),
-		cleanup:      cleanup,
-		setPlanMode:  executor.SetPlanMode,
-		policy:       policy,
-		host:         pluginHost,
-		commands:     cmds,
-	}, nil
+	return control.New(control.Options{
+		Runner:       runner,
+		Executor:     executor,
+		Sink:         sink,
+		Policy:       policy,
+		Label:        label,
+		SystemPrompt: sysPrompt,
+		SessionDir:   config.SessionDir(),
+		Host:         pluginHost,
+		Commands:     cmds,
+		Cleanup:      cleanup,
+	}), nil
 }
 
 func newProvider(e *config.ProviderEntry) (provider.Provider, error) {
@@ -311,14 +230,14 @@ func runAgent(args []string) int {
 		}
 		renderer = newMarkdownRenderer(termW)
 	}
-	rt, err := setup(ctx, *model, *maxSteps, true, agent.NewTextSink(os.Stdout, renderer, termW))
+	ctrl, err := setup(ctx, *model, *maxSteps, true, agent.NewTextSink(os.Stdout, renderer, termW))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 		return 1
 	}
-	defer rt.cleanup()
+	defer ctrl.Close()
 
-	if err := rt.runner.Run(ctx, prompt); err != nil {
+	if err := ctrl.Run(ctx, prompt); err != nil {
 		fmt.Fprintln(os.Stderr, "\n"+i18n.M.ErrorPrefix, err)
 		return 1
 	}
@@ -364,33 +283,31 @@ func chatREPL(args []string) int {
 
 	ctx := context.Background()
 
-	// Plumb the agent's typed event stream through a channel so each event can
-	// become a tea.Msg inside the TUI's update loop. Buffered generously:
+	// Plumb the controller's typed event stream through a channel so each event
+	// can become a tea.Msg inside the TUI's update loop. Buffered generously:
 	// streaming bursts (tool results, long answers) shouldn't backpressure the
 	// agent goroutine.
 	eventCh := make(chan event.Event, 1024)
-	doneCh := make(chan error, 1)
 
-	rt, err := setup(ctx, *model, *maxSteps, false, &eventSink{ch: eventCh})
+	ctrl, err := setup(ctx, *model, *maxSteps, false, &eventSink{ch: eventCh})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 		return 1
 	}
-	defer rt.cleanup()
+	defer ctrl.Close()
 
 	// Decide where this conversation's auto-save lands. A resume reuses the
 	// file so closing/reopening keeps appending to the same history; a fresh
 	// session lands in a new file stamped with the model name.
 	if resumePath != "" {
-		rt.sessionPath = resumePath
 		if loaded, err := agent.LoadSession(resumePath); err != nil {
 			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 			return 1
 		} else {
-			rt.replaceSession(loaded)
+			ctrl.Resume(loaded, resumePath)
 		}
-	} else if rt.sessionDir != "" {
-		rt.sessionPath = agent.NewSessionPath(rt.sessionDir, rt.label)
+	} else if ctrl.SessionDir() != "" {
+		ctrl.SetSessionPath(agent.NewSessionPath(ctrl.SessionDir(), ctrl.Label()))
 	}
 
 	// Surface a missing-key warning inside the TUI banner so the first message
@@ -412,23 +329,13 @@ func chatREPL(args []string) int {
 	if w, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 0 {
 		termW = w
 	}
-	hooks := chatHooks{
-		setPlanMode:     rt.setPlanMode,
-		save:            rt.snapshotSession,
-		compact:         func() error { return rt.compactNow(ctx) },
-		newSession:      rt.startNewSession,
-		contextSnapshot: rt.contextSnapshot,
-	}
 
-	// Swap the executor's headless gate for an interactive one: when the policy
-	// says "ask", the approver hands the call to the TUI over approvalCh and
-	// blocks until the user answers. Sub-agents (the task tool) keep their
-	// headless gate from setup — they have no UI to prompt through.
-	approvalCh := make(chan approvalReq, 1)
-	approver := newChannelApprover(approvalCh)
-	rt.executor.SetGate(permission.NewGate(rt.policy, approver))
+	// Route "ask" decisions to the TUI: the controller emits an ApprovalRequest
+	// event and blocks until the user answers via ctrl.Approve. Sub-agents (the
+	// task tool) keep their headless gate from setup — no UI to prompt through.
+	ctrl.EnableInteractiveApproval()
 
-	m := newChatTUI(rt.runner, rt.label, missing, eventCh, doneCh, termW, hooks, rt.replayHistory(), approvalCh, rt.host, rt.commands)
+	m := newChatTUI(ctrl, missing, eventCh, termW)
 	// No alt-screen: finalized transcript lines are committed to the terminal's
 	// normal buffer (via tea.Println) so native scrollback, the wheel, and copy
 	// all work — the bubbletea-managed region is just the bottom input/status.

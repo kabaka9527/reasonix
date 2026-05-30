@@ -2,11 +2,9 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"image/color"
 	"strings"
-	"sync"
 	"time"
 
 	"charm.land/bubbles/v2/key"
@@ -17,6 +15,7 @@ import (
 
 	"reasonix/internal/agent"
 	"reasonix/internal/command"
+	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/i18n"
 	"reasonix/internal/plugin"
@@ -35,7 +34,7 @@ import (
 // mirrors how Claude Code uses Ink's <Static> to freeze finished output into
 // scrollback while re-rendering just the active prompt.
 type chatTUI struct {
-	runner  agent.Runner
+	ctrl    *control.Controller
 	label   string
 	missing string // missing-key warning surfaced once in the banner, "" when ready
 
@@ -48,13 +47,11 @@ type chatTUI struct {
 	state    tuiState
 	runStart time.Time
 	elapsed  int
-	cancel   context.CancelFunc
 
 	// planMode mirrors the agent's read-only gate (Tab toggles it). The marker
 	// rides in outgoing user messages so the cache-stable prompt prefix is left
 	// untouched.
 	planMode bool
-	hooks    chatHooks
 
 	// turnAccumulator collects this turn's assistant free text so the plan-mode
 	// path can tell whether the turn produced a substantive proposal.
@@ -78,15 +75,12 @@ type chatTUI struct {
 	pendingCommit *[]string
 	renderer      *mdRenderer
 	eventCh       chan event.Event
-	doneCh        chan error
 	started       bool // banner + resumed history committed once
 
-	// approvalCh delivers tool-call approval requests from the agent goroutine
-	// (sent by channelApprover). pendingApproval holds the one currently shown
-	// in the banner; nil means none is awaiting a decision. While set, the
-	// agent is blocked inside the gate and key input is captured to answer it.
-	approvalCh      chan approvalReq
-	pendingApproval *approvalReq
+	// pendingApproval holds the tool-call approval currently shown in the banner
+	// (nil when none). While set, the controller's run goroutine is blocked
+	// awaiting ctrl.Approve and key input is captured to answer it.
+	pendingApproval *event.Approval
 
 	// host is the running MCP servers (nil when no plugins). The TUI reads
 	// prompts (slash commands), resources (@-references), and server status
@@ -111,10 +105,6 @@ const (
 // agentEventMsg is one typed event from the agent's run loop.
 type agentEventMsg event.Event
 
-// agentDoneMsg signals that a single Run() call returned; err is non-nil when
-// the turn errored out (ctx cancellation surfaces as nil — not a user error).
-type agentDoneMsg struct{ err error }
-
 // elapsedTickMsg fires once a second while a turn runs, driving the "thinking
 // Ns" counter in the status line.
 type elapsedTickMsg struct{}
@@ -136,19 +126,11 @@ type refsResolvedMsg struct {
 	errs  []string
 }
 
-// chatHooks bundles the CLI-side callbacks the TUI calls into.
-type chatHooks struct {
-	setPlanMode     func(bool)
-	save            func() error              // auto-save the executor's session
-	compact         func() error              // run one compaction pass on demand
-	newSession      func() error              // snapshot + fork a fresh session
-	contextSnapshot func() (used, window int) // for the prompt/context gauge
-}
-
-// newChatTUI assembles the initial model. The agent runner has already been
-// constructed with an event sink that feeds eventCh; the TUI owns the channels
-// and the UI state. history pre-populates scrollback from a resumed session.
-func newChatTUI(runner agent.Runner, label, missing string, eventCh chan event.Event, doneCh chan error, termW int, hooks chatHooks, history []provider.Message, approvalCh chan approvalReq, host *plugin.Host, commands []command.Command) chatTUI {
+// newChatTUI assembles the initial model. The controller has already been wired
+// with an event sink that feeds eventCh; the TUI issues commands to it and
+// renders the events it emits. Label, history, host, and commands are read from
+// the controller, so a resumed session pre-populates scrollback.
+func newChatTUI(ctrl *control.Controller, missing string, eventCh chan event.Event, termW int) chatTUI {
 	ti := textarea.New()
 	ti.Prompt = ""
 	ti.CharLimit = 16384
@@ -168,8 +150,8 @@ func newChatTUI(runner agent.Runner, label, missing string, eventCh chan event.E
 
 	commitBuf := []string{}
 	return chatTUI{
-		runner:          runner,
-		label:           label,
+		ctrl:            ctrl,
+		label:           ctrl.Label(),
 		missing:         missing,
 		input:           ti,
 		spinner:         sp,
@@ -179,12 +161,9 @@ func newChatTUI(runner agent.Runner, label, missing string, eventCh chan event.E
 		turnAccumulator: &strings.Builder{},
 		renderer:        newMarkdownRenderer(termW),
 		eventCh:         eventCh,
-		doneCh:          doneCh,
-		hooks:           hooks,
-		history:         history,
-		approvalCh:      approvalCh,
-		host:            host,
-		commands:        commands,
+		history:         ctrl.History(),
+		host:            ctrl.Host(),
+		commands:        ctrl.Commands(),
 	}
 }
 
@@ -205,8 +184,6 @@ func (m chatTUI) Init() tea.Cmd {
 	return tea.Batch(
 		textarea.Blink,
 		waitForAgentEvent(m.eventCh),
-		waitForAgentDone(m.doneCh),
-		waitForApproval(m.approvalCh),
 	)
 }
 
@@ -267,25 +244,19 @@ func (m chatTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// the terminal's now, so there's no viewport to dismiss.
 			switch {
 			case m.state == tuiRunning:
-				if m.cancel != nil {
-					m.cancel()
-				}
+				m.ctrl.Cancel()
 			case m.pendingPlan != "":
 				m.pendingPlan = ""
 			case m.planMode:
 				m.planMode = false
-				if m.hooks.setPlanMode != nil {
-					m.hooks.setPlanMode(false)
-				}
+				m.ctrl.SetPlanMode(false)
 			default:
 				m.input.Reset()
 			}
 			return m, nil
 		case "ctrl+c":
 			if m.state == tuiRunning {
-				if m.cancel != nil {
-					m.cancel()
-				}
+				m.ctrl.Cancel()
 				return m, nil
 			}
 			return m, tea.Quit
@@ -296,9 +267,7 @@ func (m chatTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 			m.planMode = !m.planMode
-			if m.hooks.setPlanMode != nil {
-				m.hooks.setPlanMode(m.planMode)
-			}
+			m.ctrl.SetPlanMode(m.planMode)
 			return m, nil
 		case "enter":
 			if m.state == tuiRunning {
@@ -311,9 +280,7 @@ func (m chatTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if line == "" && m.pendingPlan != "" {
 				m.pendingPlan = ""
 				m.planMode = false
-				if m.hooks.setPlanMode != nil {
-					m.hooks.setPlanMode(false)
-				}
+				m.ctrl.SetPlanMode(false)
 				cmds = append(cmds, m.startTurn("Plan approved — proceed with the steps you laid out, executing as needed.", "(plan approved — executing)"))
 				return m, finalize(m, cmds)
 			}
@@ -352,31 +319,6 @@ func (m chatTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case agentEventMsg:
 		m.ingestEvent(event.Event(msg))
 		cmds = append(cmds, waitForAgentEvent(m.eventCh))
-
-	case agentDoneMsg:
-		// Finalize whatever's still streaming, then settle the turn.
-		m.commitReasoning()
-		m.commitPending()
-		m.state = tuiIdle
-		m.cancel = nil
-		if m.hooks.save != nil {
-			_ = m.hooks.save() // best-effort; never the user's problem mid-chat
-		}
-		if msg.err != nil && msg.err.Error() != "" && !strings.Contains(msg.err.Error(), "context canceled") {
-			m.commitLine(wrapForViewport(i18n.M.ErrorPrefix+" "+msg.err.Error(), m.width, lipgloss.Color("3")))
-		}
-		// A plan-mode turn that produced substantive text waits for approval.
-		if msg.err == nil && m.planMode && strings.TrimSpace(m.turnAccumulator.String()) != "" {
-			m.pendingPlan = "pending"
-		}
-		cmds = append(cmds, waitForAgentDone(m.doneCh))
-
-	case approvalReqMsg:
-		// The agent is now blocked inside the permission gate waiting for this
-		// decision; the banner shows in View. The listener re-arms only after the
-		// user answers (handleApprovalKey), so at most one prompt shows at once.
-		req := approvalReq(msg)
-		m.pendingApproval = &req
 
 	case promptResolvedMsg:
 		switch {
@@ -563,29 +505,27 @@ func (m *chatTUI) commitPending() {
 // re-arms the approval listener. y/Enter allows once, a allows for the rest of
 // the session, n/Esc denies. Ctrl-C cancels the whole turn via the run context.
 func (m chatTUI) handleApprovalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	answer := func(resp approvalResp) (tea.Model, tea.Cmd) {
-		m.pendingApproval.reply <- resp // reply is buffered, never blocks
+	answer := func(allow, session bool) (tea.Model, tea.Cmd) {
+		m.ctrl.Approve(m.pendingApproval.ID, allow, session)
 		m.pendingApproval = nil
-		return m, waitForApproval(m.approvalCh)
+		return m, nil // the next ApprovalRequest / event arrives on eventCh
 	}
 	switch msg.String() {
 	case "ctrl+c":
-		if m.cancel != nil {
-			m.cancel() // cancels the run ctx; the approver unblocks via ctx.Done()
-		}
-		return answer(approvalResp{allow: false})
+		m.ctrl.Cancel() // cancels the run; the approver unblocks via ctx.Done()
+		return answer(false, false)
 	case "enter":
-		return answer(approvalResp{allow: true})
+		return answer(true, false)
 	case "esc":
-		return answer(approvalResp{allow: false})
+		return answer(false, false)
 	}
 	switch strings.ToLower(msg.String()) {
 	case "y":
-		return answer(approvalResp{allow: true})
+		return answer(true, false)
 	case "a":
-		return answer(approvalResp{allow: true, session: true})
+		return answer(true, true)
 	case "n":
-		return answer(approvalResp{allow: false})
+		return answer(false, false)
 	}
 	return m, nil // ignore anything else while awaiting a decision
 }
@@ -673,10 +613,7 @@ func (m chatTUI) View() tea.View {
 
 // contextTag renders the prompt-vs-context-window gauge for the status line.
 func (m chatTUI) contextTag() string {
-	if m.hooks.contextSnapshot == nil {
-		return ""
-	}
-	used, window := m.hooks.contextSnapshot()
+	used, window := m.ctrl.ContextSnapshot()
 	if used == 0 || window == 0 {
 		return ""
 	}
@@ -712,11 +649,11 @@ func (m chatTUI) renderApprovalBanner() string {
 		w = 10
 	}
 	if m.pendingApproval != nil {
-		subj := strings.TrimSpace(m.pendingApproval.subject)
+		subj := strings.TrimSpace(m.pendingApproval.Subject)
 		if subj != "" {
 			subj = " " + truncateSubject(subj, w)
 		}
-		text := fmt.Sprintf(i18n.M.ToolApprovalPromptFmt, m.pendingApproval.tool, subj)
+		text := fmt.Sprintf(i18n.M.ToolApprovalPromptFmt, m.pendingApproval.Tool, subj)
 		return approvalBannerStyle.Width(w).Render("⏸ " + text)
 	}
 	if m.pendingPlan == "" {
@@ -766,16 +703,12 @@ func (m *chatTUI) startTurn(sent, displayed string) tea.Cmd {
 	m.commitLine("") // blank line separating turns
 	m.commitLine(renderUserBubble(displayed, m.width, m.planMode))
 
-	ctx, cancel := context.WithCancel(context.Background())
-	m.cancel = cancel
 	m.state = tuiRunning
 	m.runStart = time.Now()
 	m.elapsed = 0
-	runner := m.runner
-	done := m.doneCh
-	go func() {
-		done <- runner.Run(ctx, sent)
-	}()
+	// The controller owns the run goroutine, its context, and cancellation; it
+	// streams events to eventCh and emits TurnDone when the turn settles.
+	m.ctrl.Send(sent)
 	return tea.Batch(m.spinner.Tick, elapsedTick())
 }
 
@@ -831,6 +764,28 @@ func (m *chatTUI) ingestEvent(e event.Event) {
 	case event.Phase:
 		m.finalizeStreamed()
 		m.commitLine(fmt.Sprintf("[%s]", e.Text))
+
+	case event.ApprovalRequest:
+		// The controller's run goroutine is now blocked inside the gate awaiting
+		// this decision; the banner shows it in View and key input answers it via
+		// ctrl.Approve. At most one prompt is outstanding (the controller
+		// serialises them), so a plain field holds the current one.
+		a := e.Approval
+		m.pendingApproval = &a
+
+	case event.TurnDone:
+		// The turn settled — freeze anything still streaming, autosave, surface a
+		// real error, and gate a plan-mode proposal on the user's approval.
+		m.commitReasoning()
+		m.commitPending()
+		m.state = tuiIdle
+		_ = m.ctrl.Snapshot() // best-effort; never the user's problem mid-chat
+		if e.Err != nil && e.Err.Error() != "" && !strings.Contains(e.Err.Error(), "context canceled") {
+			m.commitLine(wrapForViewport(i18n.M.ErrorPrefix+" "+e.Err.Error(), m.width, lipgloss.Color("3")))
+		}
+		if e.Err == nil && m.planMode && strings.TrimSpace(m.turnAccumulator.String()) != "" {
+			m.pendingPlan = "pending"
+		}
 	}
 }
 
@@ -843,22 +798,6 @@ func (m *chatTUI) finalizeStreamed() {
 
 func waitForAgentEvent(ch chan event.Event) tea.Cmd {
 	return func() tea.Msg { return agentEventMsg(<-ch) }
-}
-
-func waitForAgentDone(ch chan error) tea.Cmd {
-	return func() tea.Msg { return agentDoneMsg{err: <-ch} }
-}
-
-// approvalReqMsg carries a tool-call approval request into the update loop.
-type approvalReqMsg approvalReq
-
-// waitForApproval blocks on the approval channel and delivers the next request
-// as a tea.Msg. Re-armed only after the user answers the current one.
-func waitForApproval(ch chan approvalReq) tea.Cmd {
-	if ch == nil {
-		return nil
-	}
-	return func() tea.Msg { return approvalReqMsg(<-ch) }
 }
 
 func elapsedTick() tea.Cmd {
@@ -876,24 +815,14 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 
 	switch cmd {
 	case "/compact":
-		if m.hooks.compact == nil {
-			m.notice(i18n.M.SlashUnavailable)
-			return nil
-		}
-		if err := m.hooks.compact(); err != nil {
+		if err := m.ctrl.Compact(context.Background()); err != nil {
 			m.notice(fmt.Sprintf("%s: %v", i18n.M.SlashCompactFailed, err))
 			return nil
 		}
 		m.notice(i18n.M.SlashCompactDone)
-		if m.hooks.save != nil {
-			_ = m.hooks.save()
-		}
+		_ = m.ctrl.Snapshot()
 	case "/new":
-		if m.hooks.newSession == nil {
-			m.notice(i18n.M.SlashUnavailable)
-			return nil
-		}
-		if err := m.hooks.newSession(); err != nil {
+		if err := m.ctrl.NewSession(); err != nil {
 			m.notice(fmt.Sprintf("%s: %v", i18n.M.SlashNewFailed, err))
 			return nil
 		}
@@ -1106,61 +1035,4 @@ func compactArgs(s string) string {
 		return string(r[:120]) + "..."
 	}
 	return s
-}
-
-// approvalReq is a pending tool-call approval handed from the agent goroutine to
-// the TUI. reply (buffered) carries the decision back.
-type approvalReq struct {
-	tool    string
-	subject string
-	reply   chan approvalResp
-}
-
-// approvalResp is the user's answer: allow once / for the session, or deny.
-type approvalResp struct {
-	allow   bool
-	session bool
-}
-
-// channelApprover is the permission.Approver used by `reasonix chat`. It bridges the
-// agent goroutine to the bubbletea loop: a request is sent over reqCh and
-// Approve blocks on the reply until the user answers — or the turn's context is
-// cancelled. A per-session grant short-circuits future prompts for the same
-// tool+subject; the mutex serialises prompts so concurrent calls queue.
-type channelApprover struct {
-	reqCh   chan approvalReq
-	mu      sync.Mutex
-	granted map[string]bool
-}
-
-func newChannelApprover(reqCh chan approvalReq) *channelApprover {
-	return &channelApprover{reqCh: reqCh, granted: map[string]bool{}}
-}
-
-func (a *channelApprover) Approve(ctx context.Context, tool, subject string, _ json.RawMessage) (bool, bool, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	key := tool + "\x00" + subject
-	if a.granted[key] {
-		return true, false, nil // a "this session" grant already covers this call
-	}
-
-	reply := make(chan approvalResp, 1)
-	select {
-	case a.reqCh <- approvalReq{tool: tool, subject: subject, reply: reply}:
-	case <-ctx.Done():
-		return false, false, ctx.Err()
-	}
-	select {
-	case r := <-reply:
-		if r.allow && r.session {
-			a.granted[key] = true
-		}
-		// remember=false: session grants live here, not in the on-disk policy
-		// (persistence is future scope — see SPEC §9).
-		return r.allow, false, nil
-	case <-ctx.Done():
-		return false, false, ctx.Err()
-	}
 }

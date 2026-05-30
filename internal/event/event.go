@@ -42,6 +42,14 @@ const (
 	// Phase marks a coordinator boundary, e.g. planner→executor handoff (Text =
 	// label such as "deepseek · planning").
 	Phase
+	// ApprovalRequest asks the frontend to approve a pending tool call
+	// (Approval: ID/Tool/Subject). The run blocks until the controller's
+	// Approve(ID, …) resolves it; a frontend shows a prompt and answers.
+	ApprovalRequest
+	// TurnDone marks the end of one top-level Run (Err non-nil on failure;
+	// nil also for a user cancellation, which is not an error). Always the
+	// last event of a turn.
+	TurnDone
 )
 
 // Level classifies a Notice so sinks can style or filter it.
@@ -65,6 +73,14 @@ type Tool struct {
 	Truncated bool // ToolResult: Output was head+tailed before display/model
 }
 
+// Approval identifies a pending tool-call approval for an ApprovalRequest
+// event. ID correlates the request with the controller's Approve(ID, …) reply.
+type Approval struct {
+	ID      string
+	Tool    string
+	Subject string
+}
+
 // Event is one increment in a turn's event stream. Read the field(s) documented
 // for Kind; the others are zero.
 type Event struct {
@@ -75,6 +91,8 @@ type Event struct {
 	Usage     *provider.Usage   // Usage
 	Pricing   *provider.Pricing // Usage: for cost display (nil = omit cost)
 	Level     Level             // Notice
+	Approval  Approval          // ApprovalRequest
+	Err       error             // TurnDone: non-nil on failure
 }
 
 // Sink consumes a turn's events. The agent calls Emit serially from its run
