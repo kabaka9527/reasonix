@@ -131,6 +131,22 @@ func TestReferencesInlined(t *testing.T) {
 	}
 }
 
+func TestBuiltinInitIsInlineSkill(t *testing.T) {
+	// /init must resolve to a built-in inline skill (the model-driven AGENTS.md
+	// bootstrap), present even with no project/user skills on disk.
+	st := New(Options{HomeDir: t.TempDir()})
+	sk, ok := st.Read("init")
+	if !ok {
+		t.Fatal("built-in init skill not found")
+	}
+	if sk.Scope != ScopeBuiltin || sk.RunAs != RunInline {
+		t.Errorf("init should be a builtin inline skill, got scope=%s runAs=%s", sk.Scope, sk.RunAs)
+	}
+	if _, listed := find(st.List(), "init"); !listed {
+		t.Error("init should appear in List() so it reaches the slash menu")
+	}
+}
+
 func TestBuiltinsPresentAndOverridable(t *testing.T) {
 	st := New(Options{HomeDir: t.TempDir()})
 	if _, ok := find(st.List(), "explore"); !ok {
