@@ -19,3 +19,4 @@
 
 # CodeGraph per-project index (rebuilt locally; never committed)
 .codegraph/
+/stage/
