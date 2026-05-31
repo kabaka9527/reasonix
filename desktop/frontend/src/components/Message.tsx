@@ -27,24 +27,27 @@ export function UserMessage({
     <div className="msg msg--user">
       <span className="msg__caret">›</span>
       <div className="msg__text">{text}</div>
-      {canRewind &&
-        (menu ? (
-          <div className="rewind__menu">
-            <button onClick={() => rewind("both")}>{t("rewind.both")}</button>
-            <button onClick={() => rewind("conversation")}>{t("rewind.conversation")}</button>
-            <button onClick={() => rewind("code")}>{t("rewind.code")}</button>
-            <button onClick={() => rewind("fork")}>{t("rewind.fork")}</button>
-            <button onClick={() => rewind("summ-from")}>{t("rewind.summFrom")}</button>
-            <button onClick={() => rewind("summ-upto")}>{t("rewind.summUpto")}</button>
-            <button className="rewind__cancel" onClick={() => setMenu(false)}>
-              ✕
-            </button>
-          </div>
-        ) : (
-          <button className="rewind__btn" title={t("rewind.label")} onClick={() => setMenu(true)}>
+      {canRewind && (
+        <div className="rewind">
+          <button
+            className="rewind__btn"
+            title={t("rewind.label")}
+            onClick={() => setMenu((v) => !v)}
+          >
             ⟲
           </button>
-        ))}
+          {menu && (
+            <div className="rewind__menu">
+              <button onClick={() => rewind("both")}>{t("rewind.both")}</button>
+              <button onClick={() => rewind("conversation")}>{t("rewind.conversation")}</button>
+              <button onClick={() => rewind("code")}>{t("rewind.code")}</button>
+              <button onClick={() => rewind("fork")}>{t("rewind.fork")}</button>
+              <button onClick={() => rewind("summ-from")}>{t("rewind.summFrom")}</button>
+              <button onClick={() => rewind("summ-upto")}>{t("rewind.summUpto")}</button>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

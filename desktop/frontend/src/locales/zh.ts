@@ -172,7 +172,7 @@ export const zh: Record<DictKey, string> = {
   // 助手消息
   "msg.thinking": "思考过程",
   "msg.copy": "复制",
-  "rewind.label": "回滚到这里",
+  "rewind.label": "回滚 / 分叉 / 摘要…",
   "rewind.both": "代码 + 对话",
   "rewind.conversation": "仅对话",
   "rewind.code": "仅代码",
