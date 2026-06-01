@@ -160,8 +160,9 @@ type ProviderEntry struct {
 	Price         *provider.Pricing `toml:"price"`
 	// Thinking / Effort are provider-kind-specific knobs forwarded to the provider
 	// via Config.Extra. The anthropic provider reads Thinking="adaptive" to enable
-	// extended thinking and Effort ("low".."max") to tune depth; the
-	// openai-compatible provider ignores them. Empty = off / provider default.
+	// extended thinking and Effort ("low".."max") to tune depth. The
+	// openai-compatible provider forwards Effort as reasoning_effort for
+	// thinking-capable models (e.g. MiMo) and ignores Thinking. Empty = provider default.
 	Thinking string `toml:"thinking"`
 	Effort   string `toml:"effort"`
 }
