@@ -92,6 +92,7 @@ var English = Messages{
 	CmdOutputStyle:  "list output styles",
 	CmdSkill:        "manage skills",
 	CmdVerbose:      "toggle thinking text",
+	CmdThinking:     "set DeepSeek thinking effort",
 	CmdHelp:         "list commands",
 	CmdTodo:         "dismiss the task list",
 	CmdQuit:         "exit the session",
@@ -106,6 +107,9 @@ var English = Messages{
 	ArgHooksList:    "list active hooks",
 	ArgHooksTrust:   "trust this project's hooks",
 	ArgModelCurrent: "current",
+	ArgThinkingHigh: "normal DeepSeek thinking effort",
+	ArgThinkingMax:  "maximum DeepSeek thinking effort",
+	ArgThinkingOff:  "disable DeepSeek thinking",
 
 	ListModelsHeaderFmt: "models (active: %s)",
 	ListModelsHint:      "switch with the model switcher, or type /model <provider/model>",

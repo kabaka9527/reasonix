@@ -208,11 +208,17 @@ func TestInsertNewlineKeyBinding(t *testing.T) {
 	}
 }
 
-func TestThinkingCommandWritesCurrentDeepSeekProvider(t *testing.T) {
+func isolateUserConfig(t *testing.T) {
+	t.Helper()
 	root := t.TempDir()
 	t.Setenv("HOME", root)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("AppData", filepath.Join(root, "AppData")) // os.UserConfigDir reads AppData on Windows
 	t.Chdir(root)
+}
+
+func TestThinkingCommandWritesCurrentDeepSeekProvider(t *testing.T) {
+	isolateUserConfig(t)
 
 	m := newTestChatTUI()
 	m.ctrl = control.New(control.Options{Label: "deepseek-flash"})
@@ -237,10 +243,7 @@ func TestThinkingCommandWritesCurrentDeepSeekProvider(t *testing.T) {
 }
 
 func TestThinkingCommandRejectsNonDeepSeekProvider(t *testing.T) {
-	root := t.TempDir()
-	t.Setenv("HOME", root)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
-	t.Chdir(root)
+	isolateUserConfig(t)
 
 	m := newTestChatTUI()
 	m.ctrl = control.New(control.Options{Label: "mimo-pro"})

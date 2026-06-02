@@ -93,6 +93,7 @@ var Chinese = Messages{
 	CmdOutputStyle:  "列出输出风格",
 	CmdSkill:        "管理 skills",
 	CmdVerbose:      "切换 thinking 原文显示",
+	CmdThinking:     "设置 DeepSeek 思考强度",
 	CmdHelp:         "查看命令列表",
 	CmdTodo:         "清除任务清单",
 	CmdQuit:         "退出会话",
@@ -107,6 +108,9 @@ var Chinese = Messages{
 	ArgHooksList:    "列出生效的 hooks",
 	ArgHooksTrust:   "信任本项目的 hooks",
 	ArgModelCurrent: "当前",
+	ArgThinkingHigh: "常规 DeepSeek 思考强度",
+	ArgThinkingMax:  "最高 DeepSeek 思考强度",
+	ArgThinkingOff:  "关闭 DeepSeek 思考",
 
 	ListModelsHeaderFmt: "模型（当前：%s）",
 	ListModelsHint:      "用底部的模型切换器，或输入 /model <provider/model>",

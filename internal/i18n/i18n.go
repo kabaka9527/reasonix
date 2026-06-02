@@ -125,6 +125,7 @@ type Messages struct {
 	CmdOutputStyle  string // /output-style
 	CmdSkill        string // /skill
 	CmdVerbose      string // /verbose
+	CmdThinking     string // /thinking
 	CmdHelp         string // /help
 	CmdTodo         string // /todo
 	CmdQuit         string // /quit (also accepts /exit as hidden alias)
@@ -139,6 +140,9 @@ type Messages struct {
 	ArgHooksList    string // /hooks list
 	ArgHooksTrust   string // /hooks trust
 	ArgModelCurrent string // /model <ref> active tag
+	ArgThinkingHigh string // /thinking high
+	ArgThinkingMax  string // /thinking max
+	ArgThinkingOff  string // /thinking off
 
 	// management listing notices (the Submit path: desktop / HTTP frontends)
 	ListModelsHeaderFmt string // "models (active: %s)"

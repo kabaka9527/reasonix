@@ -68,9 +68,9 @@ func SlashArgItems(line string, d ArgData) ([]SlashItem, int) {
 func thinkingArgItems(prior []string) []SlashItem {
 	if len(prior) <= 1 {
 		return []SlashItem{
-			{Label: "high", Insert: "high", Hint: "normal DeepSeek thinking effort"},
-			{Label: "max", Insert: "max", Hint: "maximum DeepSeek thinking effort"},
-			{Label: "off", Insert: "off", Hint: "disable DeepSeek thinking"},
+			{Label: "high", Insert: "high", Hint: i18n.M.ArgThinkingHigh},
+			{Label: "max", Insert: "max", Hint: i18n.M.ArgThinkingMax},
+			{Label: "off", Insert: "off", Hint: i18n.M.ArgThinkingOff},
 		}
 	}
 	return nil
