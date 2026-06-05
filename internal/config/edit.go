@@ -54,6 +54,21 @@ func (c *Config) SetPlannerModel(name string) error {
 	return nil
 }
 
+// SetAutoPlan sets the interactive auto-plan gate. "off" keeps plan mode manual;
+// "on" opts into automatic read-only planning for complex-looking turns.
+// "ask" is accepted as a legacy synonym for "on" but is never written back.
+func (c *Config) SetAutoPlan(mode string) error {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "off":
+		c.Agent.AutoPlan = "off"
+	case "on", "ask":
+		c.Agent.AutoPlan = "on"
+	default:
+		return fmt.Errorf("auto_plan %q: must be off|on", mode)
+	}
+	return nil
+}
+
 // UpsertProvider adds e, or replaces an existing provider with the same name
 // (preserving its position). Required fields (name, kind, base_url, model) are
 // validated; whether the kind is actually registered and the key resolves is
@@ -497,6 +512,31 @@ func (c *Config) SaveToScope(path string, scope RenderScope) error {
 	if strings.TrimSpace(path) == "" {
 		return fmt.Errorf("save: empty config path")
 	}
+	return writeConfigFile(path, RenderTOMLForScope(c, scope))
+}
+
+// SaveMinimalProjectAutoPlan writes a new project config that only overrides
+// [agent].auto_plan. It is intentionally minimal so toggling a project-local
+// auto-plan preference in an otherwise unconfigured workspace does not pin
+// default_model or providers from built-in defaults.
+func SaveMinimalProjectAutoPlan(path, mode string) (string, error) {
+	cfg := Default()
+	if err := cfg.SetAutoPlan(mode); err != nil {
+		return "", err
+	}
+	body := fmt.Sprintf(`# Reasonix project configuration.
+# Project-local overrides are merged over the user config.
+
+[agent]
+auto_plan = %q
+`, cfg.Agent.AutoPlan)
+	return cfg.Agent.AutoPlan, writeConfigFile(path, body)
+}
+
+func writeConfigFile(path, body string) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("save: empty config path")
+	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("save: create dir: %w", err)
@@ -506,7 +546,7 @@ func (c *Config) SaveToScope(path string, scope RenderScope) error {
 		return fmt.Errorf("save: create temp: %w", err)
 	}
 	tmpPath := tmp.Name()
-	if _, err := tmp.WriteString(RenderTOMLForScope(c, scope)); err != nil {
+	if _, err := tmp.WriteString(body); err != nil {
 		tmp.Close()
 		os.Remove(tmpPath)
 		return fmt.Errorf("save: write: %w", err)

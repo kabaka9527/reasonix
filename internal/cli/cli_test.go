@@ -151,6 +151,64 @@ func TestRunMetadataCommandsDoNotMigrateLegacyConfig(t *testing.T) {
 	}
 }
 
+func TestConfigAutoPlanCommandWritesUserConfig(t *testing.T) {
+	isolateCLIConfigHome(t)
+
+	out := captureStdout(t, func() {
+		if rc := Run([]string{"config", "auto-plan", "on"}, "test-version"); rc != 0 {
+			t.Fatalf("config auto-plan rc = %d, want 0", rc)
+		}
+	})
+	if !strings.Contains(out, `auto_plan = "on"`) {
+		t.Fatalf("config auto-plan output = %q", out)
+	}
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	if cfg.Agent.AutoPlan != "on" {
+		t.Fatalf("saved auto_plan = %q, want on", cfg.Agent.AutoPlan)
+	}
+}
+
+func TestConfigAutoPlanLocalCreatesMinimalProjectOverride(t *testing.T) {
+	isolateCLIConfigHome(t)
+
+	userCfg := config.Default()
+	userCfg.DefaultModel = "mimo-pro"
+	if err := userCfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("write user config: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		if rc := Run([]string{"config", "auto-plan", "--local", "on"}, "test-version"); rc != 0 {
+			t.Fatalf("config auto-plan --local rc = %d, want 0", rc)
+		}
+	})
+	if !strings.Contains(out, `auto_plan = "on"`) {
+		t.Fatalf("config auto-plan --local output = %q", out)
+	}
+
+	body, err := os.ReadFile("reasonix.toml")
+	if err != nil {
+		t.Fatalf("read project config: %v", err)
+	}
+	if strings.Contains(string(body), "default_model") {
+		t.Fatalf("project auto-plan override should not pin default_model:\n%s", body)
+	}
+	if !strings.Contains(string(body), "[agent]") || !strings.Contains(string(body), `auto_plan = "on"`) {
+		t.Fatalf("project config missing auto_plan override:\n%s", body)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("load merged config: %v", err)
+	}
+	if cfg.DefaultModel != "mimo-pro" {
+		t.Fatalf("default_model = %q, want global mimo-pro", cfg.DefaultModel)
+	}
+	if cfg.Agent.AutoPlan != "on" {
+		t.Fatalf("auto_plan = %q, want local on", cfg.Agent.AutoPlan)
+	}
+}
+
 // TestConfigureKeys verifies that a shared api_key_env (each vendor's SKUs use
 // the same env var) is asked only once, and entered keys become env lines.
 func TestConfigureKeys(t *testing.T) {

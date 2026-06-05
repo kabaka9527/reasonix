@@ -786,6 +786,13 @@ func (c *Controller) SetPlanMode(v bool) {
 	}
 }
 
+// SetAutoPlan updates the interactive auto-plan gate for subsequent turns.
+func (c *Controller) SetAutoPlan(mode string) {
+	c.mu.Lock()
+	c.autoPlan = normalizeAutoPlan(mode)
+	c.mu.Unlock()
+}
+
 // PlanMode reports whether outgoing turns currently receive the plan-mode
 // marker. Frontends use it after Compose because auto-plan may flip the mode.
 func (c *Controller) PlanMode() bool {

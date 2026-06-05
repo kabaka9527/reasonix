@@ -37,12 +37,10 @@ export function SettingsPanel({ onClose, onChanged }: { onClose: () => void; onC
   const [theme, setThemeState] = useState<Theme>(getTheme());
   const [themeStyle, setThemeStyleState] = useState<ThemeStyle>(() => getThemeStyle(getTheme()));
   const [tab, setTab] = useState<SettingsTab>("general");
-  const [platform, setPlatform] = useState("darwin");
 
   const reload = async () => setS(normalizeSettingsView(await app.Settings().catch(() => null)));
   useEffect(() => {
     void reload();
-    void app.Platform().then(setPlatform).catch(() => setPlatform("darwin"));
   }, []);
   useEffect(() => {
     if (!s) return;
@@ -98,7 +96,7 @@ export function SettingsPanel({ onClose, onChanged }: { onClose: () => void; onC
               </nav>
               <main className="settings-content">
                 {err && <div className="banner banner--error">{err}</div>}
-                {tab === "general" && <GeneralSection s={s} busy={busy} apply={apply} platform={platform} />}
+                {tab === "general" && <GeneralSection s={s} busy={busy} apply={apply} />}
                 {tab === "models" && <ModelsSection s={s} busy={busy} apply={apply} onManageProviders={() => setTab("providers")} />}
                 {tab === "providers" && <ProvidersSection s={s} busy={busy} apply={apply} />}
                 {tab === "network" && <NetworkSection s={s} busy={busy} apply={apply} />}
@@ -168,7 +166,7 @@ function settingsTabMeta(id: SettingsTab, s: SettingsView, t: ReturnType<typeof 
     case "models":
       return toRef(s.defaultModel, s) || t("common.none");
     case "general":
-      return closeBehaviorLabel(normalizeCloseBehavior(s.closeBehavior), t);
+      return `${closeBehaviorLabel(normalizeCloseBehavior(s.closeBehavior), t)} · ${t(`settings.autoPlan.${normalizeAutoPlan(s.autoPlan)}`)}`;
     case "providers":
       return t("settings.providerCount", { n: s.providers.length });
     case "network":
@@ -207,8 +205,11 @@ function toRef(model: string, s: SettingsView): string {
 
 const PROXY_MODES = ["auto", "custom", "off"] as const;
 const PROXY_TYPES = ["http", "https", "socks5", "socks5h"] as const;
+const LANGUAGE_PREFS: LangPref[] = ["", "zh", "en"];
+const AUTO_PLAN_MODES = ["off", "on"] as const;
 
 type ProxyMode = (typeof PROXY_MODES)[number];
+type AutoPlanMode = (typeof AUTO_PLAN_MODES)[number];
 
 function normalizeProxyMode(mode: string): ProxyMode {
   switch (mode) {
@@ -223,6 +224,10 @@ function normalizeProxyMode(mode: string): ProxyMode {
 
 function normalizeNetworkView(network: NetworkView): NetworkView {
   return { ...network, proxyMode: normalizeProxyMode(network.proxyMode) };
+}
+
+function normalizeAutoPlan(mode: string | undefined): AutoPlanMode {
+  return mode === "ask" || mode === "on" ? "on" : "off";
 }
 
 function normalizeSettingsView(view: SettingsView | null | undefined): SettingsView | null {
@@ -255,6 +260,7 @@ function normalizeSettingsView(view: SettingsView | null | undefined): SettingsV
       proxy: network.proxy ?? { type: "socks5", server: "", port: 0, username: "", password: "" },
     },
     agent,
+    autoPlan: normalizeAutoPlan(view.autoPlan),
     desktopLanguage: normalizeLangPref(view.desktopLanguage),
     desktopTheme: normalizeThemePreference(view.desktopTheme),
     desktopThemeStyle: normalizeThemeStyleForTheme(view.desktopThemeStyle, normalizeThemePreference(view.desktopTheme)),
@@ -272,12 +278,11 @@ function closeBehaviorLabel(mode: CloseBehavior, t: ReturnType<typeof useT>): st
   return mode === "quit" ? t("settings.closeBehavior.quit") : t("settings.closeBehavior.background");
 }
 
-function GeneralSection({ s, busy, apply, platform }: SectionProps & { platform: string }) {
+function GeneralSection({ s, busy, apply }: SectionProps) {
   const { t, setPref } = useI18n();
   const closeBehavior = normalizeCloseBehavior(s.closeBehavior);
+  const autoPlan = normalizeAutoPlan(s.autoPlan);
   const languagePref = normalizeLangPref(s.desktopLanguage);
-  const closeBehaviorHint =
-    platform === "darwin" ? t("settings.closeBehaviorHintMac") : t("settings.closeBehaviorHintDesktop");
   const setLanguage = (next: LangPref) => {
     setPref(next);
     void apply(() => app.SetDesktopLanguage(next));
@@ -287,11 +292,18 @@ function GeneralSection({ s, busy, apply, platform }: SectionProps & { platform:
       <div className="mem-section__title">{t("settings.tab.general")}</div>
       <div className="set-row">
         <label className="set-label">{t("settings.language")}</label>
-        <select className="mem-select set-grow" value={languagePref} onChange={(e) => setLanguage(e.target.value as LangPref)}>
-          <option value="">{t("settings.langAuto")}</option>
-          <option value="zh">中文</option>
-          <option value="en">English</option>
-        </select>
+        <div className="set-seg">
+          {LANGUAGE_PREFS.map((pref) => (
+            <button
+              key={pref || "auto"}
+              className={`set-seg__btn${languagePref === pref ? " set-seg__btn--on" : ""}`}
+              disabled={busy}
+              onClick={() => setLanguage(pref)}
+            >
+              {pref === "" ? t("settings.langAuto") : pref === "zh" ? "中文" : "English"}
+            </button>
+          ))}
+        </div>
       </div>
       <div className="set-row">
         <label className="set-label">{t("settings.closeBehavior")}</label>
@@ -308,7 +320,21 @@ function GeneralSection({ s, busy, apply, platform }: SectionProps & { platform:
           ))}
         </div>
       </div>
-      <div className="mem-hint set-hint">{closeBehaviorHint}</div>
+      <div className="set-row">
+        <label className="set-label">{t("settings.autoPlan")}</label>
+        <div className="set-seg">
+          {AUTO_PLAN_MODES.map((mode) => (
+            <button
+              key={mode}
+              className={`set-seg__btn${autoPlan === mode ? " set-seg__btn--on" : ""}`}
+              disabled={busy}
+              onClick={() => void apply(() => app.SetAutoPlan(mode))}
+            >
+              {t(`settings.autoPlan.${mode}`)}
+            </button>
+          ))}
+        </div>
+      </div>
     </section>
   );
 }

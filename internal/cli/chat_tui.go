@@ -2943,6 +2943,9 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 		m.toggleVerboseReasoning(true)
 	case "/effort":
 		return m.runEffortCommand(input)
+	case "/auto-plan":
+		m.echoLocalCommand(input)
+		m.runAutoPlanCommand(input)
 	case "/rewind":
 		m.echoLocalCommand(input)
 		m.openRewind()

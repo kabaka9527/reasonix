@@ -166,6 +166,7 @@ var English = Messages{
 	CmdSkill:        "manage skills",
 	CmdVerbose:      "toggle thinking text",
 	CmdEffort:       "set reasoning effort",
+	CmdAutoPlan:     "configure automatic plan mode",
 	CmdHelp:         "list commands",
 	CmdTodo:         "dismiss the task list",
 	CmdQuit:         "exit the session",
@@ -308,6 +309,7 @@ Usage:
   reasonix run  [--model NAME] [--max-steps N] <task>   run one task and exit
   reasonix serve [--model NAME] [--addr HOST:PORT]      serve the session over HTTP+SSE (browser client at /)
   reasonix setup [path]                                 interactive config wizard; writes reasonix.toml (+ .env)
+  reasonix config auto-plan [off|on]                    configure automatic plan mode
   reasonix mcp <add|remove|list>                        manage MCP servers in reasonix.toml
   reasonix doctor [--json]                              print redacted local diagnostics
   reasonix version

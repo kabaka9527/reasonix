@@ -72,6 +72,7 @@ type AgentView struct {
 type SettingsView struct {
 	DefaultModel      string          `json:"defaultModel"`
 	PlannerModel      string          `json:"plannerModel"`
+	AutoPlan          string          `json:"autoPlan"`
 	Providers         []ProviderView  `json:"providers"`
 	Permissions       PermissionsView `json:"permissions"`
 	Sandbox           SandboxView     `json:"sandbox"`
@@ -112,6 +113,7 @@ func (a *App) Settings() SettingsView {
 				Deny:  []string{},
 			},
 			Sandbox:           SandboxView{Bash: "enforce", AllowWrite: []string{}},
+			AutoPlan:          "off",
 			DesktopTheme:      "dark",
 			DesktopThemeStyle: "graphite",
 			CloseBehavior:     "background",
@@ -125,6 +127,7 @@ func (a *App) Settings() SettingsView {
 	v := SettingsView{
 		DefaultModel: cfg.DefaultModel,
 		PlannerModel: cfg.Agent.PlannerModel,
+		AutoPlan:     desktopAutoPlanMode(cfg.Agent.AutoPlan),
 		Providers:    []ProviderView{},
 		Permissions: PermissionsView{
 			Mode:  orDefault(cfg.Permissions.Mode, "ask"),
@@ -380,6 +383,20 @@ func (a *App) SetPlannerModel(ref string) error {
 		c.Agent.PlannerModel = ref
 		return nil
 	})
+}
+
+// SetAutoPlan updates the automatic plan-mode gate (off|on).
+func (a *App) SetAutoPlan(mode string) error {
+	return a.applyConfigChange(func(c *config.Config) error { return c.SetAutoPlan(mode) })
+}
+
+func desktopAutoPlanMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "on", "ask":
+		return "on"
+	default:
+		return "off"
+	}
 }
 
 // SaveProvider adds or updates a provider. A single model fills `model`; several

@@ -159,6 +159,27 @@ func TestSetPlannerModel(t *testing.T) {
 	}
 }
 
+func TestSetAutoPlan(t *testing.T) {
+	c := Default()
+	for _, mode := range []string{"on", "off"} {
+		if err := c.SetAutoPlan(mode); err != nil {
+			t.Fatalf("SetAutoPlan(%q): %v", mode, err)
+		}
+		if c.Agent.AutoPlan != mode {
+			t.Fatalf("auto_plan = %q, want %q", c.Agent.AutoPlan, mode)
+		}
+	}
+	if err := c.SetAutoPlan("ask"); err != nil {
+		t.Fatalf("legacy ask should be accepted: %v", err)
+	}
+	if c.Agent.AutoPlan != "on" {
+		t.Fatalf("legacy ask should save as on, got %q", c.Agent.AutoPlan)
+	}
+	if err := c.SetAutoPlan("auto"); err == nil {
+		t.Fatal("expected error for invalid auto_plan mode")
+	}
+}
+
 func TestUpsertProvider(t *testing.T) {
 	c := Default()
 	n := len(c.Providers)

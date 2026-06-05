@@ -167,6 +167,7 @@ var Chinese = Messages{
 	CmdSkill:        "管理 skills",
 	CmdVerbose:      "切换 thinking 原文显示",
 	CmdEffort:       "设置推理强度",
+	CmdAutoPlan:     "配置自动计划模式",
 	CmdHelp:         "查看命令列表",
 	CmdTodo:         "清除任务清单",
 	CmdQuit:         "退出会话",
@@ -309,6 +310,7 @@ var Chinese = Messages{
   reasonix run  [--model NAME] [--max-steps N] <task>   执行单次任务后退出
   reasonix serve [--model NAME] [--addr HOST:PORT]      通过 HTTP+SSE 提供会话（浏览器客户端在 /）
   reasonix setup [path]                                 交互式配置向导；生成 reasonix.toml（及 .env）
+  reasonix config auto-plan [off|on]                    配置自动计划模式
   reasonix mcp <add|remove|list>                        管理 reasonix.toml 里的 MCP 服务器
   reasonix doctor [--json]                              输出脱敏的本地诊断信息
   reasonix version

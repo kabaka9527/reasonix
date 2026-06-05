@@ -141,10 +141,13 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	fmt.Fprintf(&b, "max_steps   = %d\n", c.Agent.MaxSteps)
 	fmt.Fprintf(&b, "temperature = %s\n", formatFloat(c.Agent.Temperature))
 	autoPlan := c.Agent.AutoPlan
-	if autoPlan == "" {
-		autoPlan = "ask"
+	switch strings.ToLower(strings.TrimSpace(autoPlan)) {
+	case "on", "ask":
+		autoPlan = "on"
+	default:
+		autoPlan = "off"
 	}
-	fmt.Fprintf(&b, "auto_plan   = %q   # off|ask|on; ask/on auto-enter plan mode for complex tasks\n", autoPlan)
+	fmt.Fprintf(&b, "auto_plan   = %q   # off|on; off keeps plan mode manual\n", autoPlan)
 	if c.Agent.AutoPlanClassifier != "" {
 		fmt.Fprintf(&b, "auto_plan_classifier = %q   # optional provider/model for borderline auto-plan decisions\n", c.Agent.AutoPlanClassifier)
 	} else {

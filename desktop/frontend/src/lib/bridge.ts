@@ -163,6 +163,7 @@ export interface AppBindings {
   Settings(): Promise<SettingsView>;
   SetDefaultModel(ref: string): Promise<void>;
   SetPlannerModel(ref: string): Promise<void>;
+  SetAutoPlan(mode: string): Promise<void>;
   SaveProvider(p: ProviderView): Promise<void>;
   DeleteProvider(name: string): Promise<void>;
   SetProviderKey(apiKeyEnv: string, value: string): Promise<void>;
@@ -513,6 +514,7 @@ function makeMockApp(): AppBindings {
   const settings: SettingsView = {
     defaultModel: "deepseek-flash",
     plannerModel: "",
+    autoPlan: "off",
     providers: [
       { name: "deepseek-flash", kind: "openai", baseUrl: "https://api.deepseek.com", models: ["deepseek-v4-flash"], default: "deepseek-v4-flash", apiKeyEnv: "DEEPSEEK_API_KEY", keySet: true, balanceUrl: "https://api.deepseek.com/user/balance", contextWindow: 1_000_000 },
       { name: "mimo-pro", kind: "openai", baseUrl: "https://api.xiaomimimo.com/v1", models: ["mimo-v2.5-pro"], default: "mimo-v2.5-pro", apiKeyEnv: "MIMO_API_KEY", keySet: false, balanceUrl: "", contextWindow: 1_000_000 },
@@ -1342,6 +1344,9 @@ function makeMockApp(): AppBindings {
     },
     async SetPlannerModel(ref: string) {
       settings.plannerModel = ref;
+    },
+    async SetAutoPlan(mode: string) {
+      settings.autoPlan = mode;
     },
     async SaveProvider(p: ProviderView) {
       const i = settings.providers.findIndex((x) => x.name === p.name);

@@ -68,6 +68,9 @@ func Run(args []string, version string) int {
 	case "setup":
 		configureCLIThemeFromConfigForTTYOutput()
 		return setupConfig(rest)
+	case "config":
+		configureCLIThemeFromConfigNoProbe()
+		return configCommand(rest)
 	case "init":
 		// Project memory (AGENTS.md) is model-generated in-session — `/init` runs
 		// the codebase analysis. This CLI entry just points there (and to `setup`
@@ -101,7 +104,7 @@ func Run(args []string, version string) int {
 
 func shouldMigrateLegacyConfigForCLI(cmd string) bool {
 	switch cmd {
-	case "", "run", "chat", "code", "serve", "setup", "init", "acp", "mcp", "codegraph", "doctor":
+	case "", "run", "chat", "code", "serve", "setup", "config", "init", "acp", "mcp", "codegraph", "doctor":
 		return true
 	default:
 		return false
@@ -1523,4 +1526,92 @@ func welcome(version string) int {
 
 func usage() {
 	fmt.Print(i18n.M.UsageBody)
+}
+
+func configCommand(args []string) int {
+	if len(args) == 0 {
+		configUsage()
+		return 2
+	}
+	switch args[0] {
+	case "auto-plan":
+		return configAutoPlanCommand(args[1:])
+	default:
+		configUsage()
+		return 2
+	}
+}
+
+func configAutoPlanCommand(args []string) int {
+	fs := flag.NewFlagSet("config auto-plan", flag.ContinueOnError)
+	local := fs.Bool("local", false, "write ./reasonix.toml instead of the user config")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) > 1 {
+		configAutoPlanUsage()
+		return 2
+	}
+	if len(rest) == 0 {
+		cfg, err := config.Load()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+			return 1
+		}
+		mode := cfg.Agent.AutoPlan
+		mode = cliAutoPlanMode(mode)
+		fmt.Printf("auto_plan = %q\n", mode)
+		return 0
+	}
+	path := config.UserConfigPath()
+	if *local {
+		path = "reasonix.toml"
+	}
+	if path == "" {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, "cannot resolve config path")
+		return 1
+	}
+	if *local {
+		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+			probe := config.Default()
+			if err := probe.SetAutoPlan(rest[0]); err != nil {
+				fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+				return 2
+			}
+			mode, err := config.SaveMinimalProjectAutoPlan(path, rest[0])
+			if err != nil {
+				fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+				return 1
+			}
+			fmt.Printf("auto_plan = %q (%s)\n", mode, displayPath(path))
+			return 0
+		} else if err != nil {
+			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+			return 1
+		}
+	}
+	cfg := config.LoadForEdit(path)
+	if err := cfg.SetAutoPlan(rest[0]); err != nil {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+		return 2
+	}
+	if err := cfg.SaveTo(path); err != nil {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+		return 1
+	}
+	fmt.Printf("auto_plan = %q (%s)\n", cfg.Agent.AutoPlan, displayPath(path))
+	return 0
+}
+
+func configUsage() {
+	fmt.Print(`Usage:
+  reasonix config auto-plan [--local] [off|on]
+`)
+}
+
+func configAutoPlanUsage() {
+	fmt.Print(`Usage:
+  reasonix config auto-plan [--local] [off|on]
+`)
 }
