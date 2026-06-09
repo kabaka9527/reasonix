@@ -107,13 +107,13 @@ check("uppercase $I$ → math (math name in non-English prose)", () => isLikelyI
 check("uppercase $A$ → math", () => isLikelyInlineMath("A") === true);
 check("uppercase $V$ → math", () => isLikelyInlineMath("V") === true);
 
-console.log("\nisLikelyInlineMath — non-English math prose (regression)");
+console.log("\nisLikelyInlineMath — minimal LaTeX patterns (regression)");
 // LLMs frequently emit minimal LaTeX in math contexts that the older
-// English-tuned classifier rejected as currency / word tokens. These tests
-// pin down the deliberately-permissive rules added for non-English prose
-// (Chinese / Japanese / Korean math textbooks, etc.) — single digits as
-// indices, comma-separated variables in ordered pairs / tuples, and single
-// uppercase letters as set / algebra / group names.
+// classifier rejected as currency / word tokens. These tests pin down the
+// deliberately-permissive rules for common math patterns — single digits
+// as indices, comma-separated variables in ordered pairs / tuples, single
+// uppercase letters as set / algebra / group names, and one-sided
+// comparison operators. These patterns are language-agnostic.
 check("single-digit $1$, $2$, $5$ → math (LLM math indices)", () => isLikelyInlineMath("1") === true);
 check("$5 (single digit) → math", () => isLikelyInlineMath("5") === true);
 check("multi-digit $42$ → NOT math (currency-shaped)", () => isLikelyInlineMath("42") === false);
@@ -121,15 +121,15 @@ check("comma-separated $A, B$ → math (ordered pair)", () => isLikelyInlineMath
 check("comma-separated $1, 2, 3$ → math (sequence)", () => isLikelyInlineMath("1, 2, 3") === true);
 check("comma-separated $\\alpha, \\beta$ → math (Greek pair)", () => isLikelyInlineMath("\\alpha, \\beta") === true);
 check("parens-wrapped $(A, B)$ inner → math", () => isLikelyInlineMath("(A, B)") === true);
-check("$S$ (set name) followed by CJK → math", () => isLikelyInlineMath("S") === true);
-check("Chinese math: $S$ 非空 / $S$ 有上界 (regression)", () => {
+check("$S$ (set name) → math", () => isLikelyInlineMath("S") === true);
+check("$S$ with surrounding prose (regression)", () => {
   return normalizeMath("$S$ 非空\n$S$ 有上界") === "$S$ 非空\n$S$ 有上界";
 });
 check("one-sided comparison $< B$ → math", () => isLikelyInlineMath("< B") === true);
 check("one-sided comparison $<= 0$ → math", () => isLikelyInlineMath("<= 0") === true);
 check("one-sided comparison $> 5$ → math", () => isLikelyInlineMath("> 5") === true);
 check("one-sided comparison $A <$ → math", () => isLikelyInlineMath("A <") === true);
-check("Chinese math: $< B$ with surrounding prose", () => {
+check("$< B$ with surrounding prose", () => {
   return normalizeMath("A 的每个元素 $< B$ 的每个元素") === "A 的每个元素 $< B$ 的每个元素";
 });
 
