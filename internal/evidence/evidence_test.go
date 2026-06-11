@@ -387,3 +387,42 @@ func TestLedgerNoBaselineDoesNotConstrainCompletedTodos(t *testing.T) {
 		t.Fatalf("no baseline should not report missing completions, got %+v", missing)
 	}
 }
+
+func TestLedgerNumericCompleteStepAuthorizesRephrasedTodo(t *testing.T) {
+	ledger := NewLedger()
+	ledger.Record(Receipt{
+		ToolName: "todo_write",
+		Success:  true,
+		Todos: []TodoItem{
+			{Content: "Add parser", Status: "in_progress"},
+			{Content: "Write tests", Status: "pending"},
+		},
+	})
+	ledger.Record(Receipt{ToolName: "complete_step", Success: true, Step: "1"})
+
+	// The model rephrased item 1 (added detail) but it's the same task.
+	missing, hasBaseline := ledger.UnverifiedCompletedTodos([]TodoItem{
+		{Content: "Add parser with streaming support", Status: "completed"},
+		{Content: "Write tests", Status: "pending"},
+	})
+	if !hasBaseline {
+		t.Fatal("expected prior todo_write baseline")
+	}
+	if len(missing) != 0 {
+		t.Fatalf("rephrased todo at same index should be authorized by content overlap, missing = %+v", missing)
+	}
+
+	// The model also rephrased item 2; still ok because the new text contains the old.
+	missing, hasBaseline = ledger.UnverifiedCompletedTodos([]TodoItem{
+		{Content: "Add parser with streaming support", Status: "completed"},
+		{Content: "Write tests and benchmarks", Status: "completed"},
+	})
+	if !hasBaseline {
+		t.Fatal("expected prior todo_write baseline for second rephrase")
+	}
+	// Item 1 is already authorized; item 2 is also rephrased but lacks a
+	// complete_step — so it should still be flagged.
+	if len(missing) != 1 || missing[0].Content != "Write tests and benchmarks" {
+		t.Fatalf("rephrased todo without complete_step should still be missing, got %+v", missing)
+	}
+}

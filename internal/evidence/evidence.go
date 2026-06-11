@@ -681,7 +681,14 @@ func hasSuccessfulCompleteStepForTodo(receipts []Receipt, index int, current []T
 			if index >= 1 && index <= len(current) && sameTodoMatch(current[index-1], *r.TodoStep) {
 				return true
 			}
-			continue
+			// sameTodoMatch failed — the todo content changed.
+			// Allow the fallback (matchTodoStep by index or text) only
+			// when the old and new content are recognisably related
+			// (substring overlap); otherwise block a replaced todo
+			// from reusing an old numeric complete_step receipt.
+			if !todoContentRelates(current[index-1], *r.TodoStep) {
+				continue
+			}
 		}
 		match := matchTodoStep(r.Step, current)
 		if match.Found && match.Index == index {
@@ -704,6 +711,33 @@ func latestTodoStep(step string, receipts []Receipt) TodoStepMatch {
 
 func sameTodoMatch(todo TodoItem, match TodoStepMatch) bool {
 	return sameStepText(todo.Content, match.Content) || sameStepText(todo.ActiveForm, match.ActiveForm)
+}
+
+// todoContentRelates reports whether a todo item's preferred text has a
+// recognisable semantic relationship (substring overlap) with the step match
+// that was stored against a previous todo_write list.  It returns true when
+// the model has rephrased the same task, not swapped it for a different one.
+func todoContentRelates(todo TodoItem, match TodoStepMatch) bool {
+	return textOverlaps(todo.Content, match.Content) ||
+		textOverlaps(todo.ActiveForm, match.ActiveForm)
+}
+
+func textOverlaps(a, b string) bool {
+	a = normalizeStepText(a)
+	b = normalizeStepText(b)
+	if a == "" || b == "" {
+		return false
+	}
+	// Require ≥6 runes on the shorter side to avoid false positives on
+	// short shared substrings (same guard as stepTextContains).
+	short := a
+	if utf8.RuneCountInString(b) < utf8.RuneCountInString(a) {
+		short = b
+	}
+	if utf8.RuneCountInString(short) < 6 {
+		return false
+	}
+	return strings.Contains(a, b) || strings.Contains(b, a)
 }
 
 func matchTodoStep(step string, todos []TodoItem) TodoStepMatch {
