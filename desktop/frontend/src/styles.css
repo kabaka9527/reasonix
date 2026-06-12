@@ -5214,8 +5214,7 @@ a[href] {
   left: 0;
   z-index: var(--z-local-popover);
   min-width: 200px;
-  max-width: 320px;
-  max-height: 280px;
+  max-height: 50vh;
   overflow-y: auto;
   background: var(--bg-elev);
   border: 1px solid var(--border);
@@ -5248,6 +5247,32 @@ a[href] {
   max-height: min(calc(100vh - 16px), 50vh);
   overflow-y: auto;
 }
+.modelsw__search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  padding: 4px 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg-faint);
+}
+.modelsw__search:focus-within {
+  border-color: var(--accent);
+}
+.modelsw__search-input {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+}
+.modelsw__search-input::placeholder {
+  color: var(--fg-faint);
+}
 .modelsw__item {
   display: flex;
   align-items: center;
@@ -5269,6 +5294,9 @@ a[href] {
 }
 .modelsw__item--current {
   color: var(--accent);
+}
+.modelsw__group .modelsw__item {
+  padding-left: 26px;
 }
 .modelsw__copy {
   flex: 1;
@@ -5298,6 +5326,17 @@ a[href] {
   padding: 6px 9px;
   color: var(--fg-faint);
   font-size: 11.5px;
+}
+.modelsw__group-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px 3px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--accent);
 }
 
 /* effort switcher: same status-bar affordance as the model switcher */
@@ -15483,6 +15522,9 @@ a[href] {
 /* ----------------------------------------------------------------------------
  * Native-feel: overscroll containment, reduced-motion, view-transition suppression
  * -------------------------------------------------------------------------- */
+
+  opacity: 1;
+}
 
 /* Prevent rubber-band / pull-to-refresh on scrollable panels so the webview
    feels like a native window, not a browser tab. */
