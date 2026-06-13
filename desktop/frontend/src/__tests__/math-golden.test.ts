@@ -444,11 +444,21 @@ check("\\yng(4,3,2,1) renders as (4,3,2,1) Young diagram", () => {
   const html = renderHtml("$$\\yng(4,3,2,1)$$");
   return html.includes("katex-display") && !html.includes("katex-error");
 });
+check("\\yng(3,2,1) uses left-aligned array (rows start at same x)", () => {
+  // A Young diagram's shorter rows must start at the same x-position
+  // as the longest row's first cell — `{l}` (left) instead of `{c}`
+  // (centered) gives that layout. Without this, the diagram looks
+  // like each row is independently centred, which isn't a Young
+  // diagram.
+  const out = expandYoungDiagrams("\\yng(3,2,1)");
+  return out.includes("\\begin{array}{l}")
+    && !out.includes("\\begin{array}{c}");
+});
 check("expandYoungDiagrams substitutes correct array form", () => {
   // Direct unit test on the translator — no need to go through the
   // full pipeline for this assertion.
   const out = expandYoungDiagrams("\\yng(2,1)");
-  return out.includes("\\begin{array}{c}")
+  return out.includes("\\begin{array}{l}")
     && out.includes("\\square")
     && out.includes(" \\\\ ");
 });
@@ -457,7 +467,7 @@ check("expandYoungDiagrams handles \\yng with content", () => {
   // math; macros already inside a `$…$` block just substitute the inner
   // form (the surrounding delimiters are preserved).
   const out = expandYoungDiagrams("\\yng(2,1){a&b\\\\c}");
-  return out === "$\\begin{array}{c}a \\, b \\\\ c\\end{array}$";
+  return out === "$\\begin{array}{l}a \\, b \\\\ c\\end{array}$";
 });
 check("expandYoungDiagrams leaves non-Young macros alone", () => {
   const out = expandYoungDiagrams("\\frac{a}{b}");

@@ -80,7 +80,12 @@ function expandShape(rows: number[], content: string | undefined): string {
   const arrRows = cells.map((row, ri) =>
     row.slice(0, rows[ri]).join(" \\, "),
   );
-  return "\\begin{array}{c}" + arrRows.join(" \\\\ ") + "\\end{array}";
+  // Use `{l}` (left) instead of `{c}` (centered): a Young diagram has
+  // every row's first cell at the same horizontal position — the
+  // shorter rows just have fewer cells to the right. `{c}` would
+  // centre each row relative to the widest row, which doesn't look
+  // like a Young diagram.
+  return "\\begin{array}{l}" + arrRows.join(" \\\\ ") + "\\end{array}";
 }
 
 // Find the end of a `\yng(…)` or `\young(…)` call, including optional
