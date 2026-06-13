@@ -462,12 +462,23 @@ check("expandYoungDiagrams uses flush cells (\\! cancels \\,) ", () => {
   const out = expandYoungDiagrams("\\yng(3)");
   return out.includes("\\!") && !out.includes("\\, ");
 });
+check("expandYoungDiagrams raises cells so rows are flush (no vertical gap)", () => {
+  // The math axis positions a \square glyph centred on the row baseline,
+  // which leaves a visible ~0.2-0.3em gap between the bottom of one
+  // row's box and the top of the next row's box. Wrapping each cell in
+  // \raisebox{-0.35em}{...} shifts the square down by half the math-axis
+  // offset so consecutive rows touch. Without this, a multi-row diagram
+  // looks like a column of disconnected boxes.
+  const out = expandYoungDiagrams("\\yng(2,1)");
+  return out.includes("\\raisebox{-0.35em}");
+});
 check("expandYoungDiagrams substitutes correct array form", () => {
   // Direct unit test on the translator — no need to go through the
   // full pipeline for this assertion.
   const out = expandYoungDiagrams("\\yng(2,1)");
   return out.includes("\\begin{array}{l}")
-    && out.includes("\\square")
+    && out.includes("\\raisebox{-0.35em}")
+    && out.includes(" \\! ")
     && out.includes(" \\\\ ");
 });
 check("expandYoungDiagrams handles \\yng with content", () => {
@@ -475,9 +486,15 @@ check("expandYoungDiagrams handles \\yng with content", () => {
   // math; macros already inside a `$…$` block just substitute the inner
   // form (the surrounding delimiters are preserved).
   // Cells are joined with `\!` (negative thin space) so adjacent
-  // boxes are flush, like a real Young diagram.
+  // boxes are flush, and each cell is raised by -0.35em so consecutive
+  // rows sit flush (no math-axis gap between rows).
+  //
+  // The raise argument uses `\square` / raw tokens directly — NOT
+  // wrapped in `$…$` — because the whole macro is already inside math
+  // mode (whether the model wrote `$…$` or the prose wrapper added
+  // it). Nesting `$` inside `$…$` would break the katex parser.
   const out = expandYoungDiagrams("\\yng(2,1){a&b\\\\c}");
-  return out === "$\\begin{array}{l}a \\! b \\\\ c\\end{array}$";
+  return out === "$\\begin{array}{l}\\raisebox{-0.35em}{a} \\! \\raisebox{-0.35em}{b} \\\\ \\raisebox{-0.35em}{c}\\end{array}$";
 });
 check("expandYoungDiagrams leaves non-Young macros alone", () => {
   const out = expandYoungDiagrams("\\frac{a}{b}");
