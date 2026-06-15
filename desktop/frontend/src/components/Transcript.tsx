@@ -2,7 +2,6 @@ import { createContext, memo, type CSSProperties, type MouseEvent as ReactMouseE
 import type { Item, LiveStream } from "../lib/useController";
 import type { CheckpointMeta } from "../lib/types";
 import { useT } from "../lib/i18n";
-import { replaceAttachmentRefsForDisplay } from "../lib/attachmentDisplay";
 import { AssistantMessage, TurnActions, UserMessage } from "./Message";
 import { ProcessCompactIcon, ProcessPhaseIcon } from "./ProcessCard";
 import { ToolCard } from "./ToolCard";
@@ -14,11 +13,11 @@ import { isReadOnlyTool } from "../lib/useController";
 import { useGSAPCollapse } from "../lib/useGSAPCollapse";
 import { useEntranceAnimation } from "../lib/useEntranceAnimation";
 import { useScrollManager } from "../lib/useScrollManager";
+import { buildTurnGroups, compactQuestionText, questionAnchorId, scrollVersion, warmUserPreview, type QuestionAnchor, type TurnGroup } from "../lib/transcriptGrouping";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type AssistantItem = Extract<Item, { kind: "assistant" }>;
 type OpenTurnAction = { turn: number; menu: "summary" | "rewind" };
-type QuestionAnchor = { id: string; text: string; turn: number };
 
 const QUESTION_NAV_MIN_COUNT = 2;
 const LiveStreamContext = createContext<LiveStream | undefined>(undefined);
@@ -70,87 +69,6 @@ const HOT_TURNS = 30;
 const WARM_PAGE_SIZE = 20; // cold-zone pagination batch
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-function questionAnchorId(id: string): string {
-  return `question-anchor-${id}`;
-}
-
-function compactQuestionText(text: string): string {
-  const cleaned = replaceAttachmentRefsForDisplay(text).replace(/\s+/g, " ").trim();
-  if (cleaned.length <= 80) return cleaned;
-  return cleaned.slice(0, 80);
-}
-
-function scrollVersion(items: Item[]): string {
-  return items
-    .map((it) => {
-      switch (it.kind) {
-        case "assistant":
-          return `${it.id}:a:${it.streaming ? 1 : 0}`;
-        case "tool":
-          return `${it.id}:t:${it.status}`;
-        default:
-          return `${it.id}:${it.kind}`;
-      }
-    })
-    .join("|");
-}
-
-// Summarise a warm turn for its compact card.
-function warmUserPreview(text: string): string {
-  const cleaned = replaceAttachmentRefsForDisplay(text).replace(/\s+/g, " ").trim();
-  return cleaned.length <= 80 ? cleaned : cleaned.slice(0, 77) + "...";
-}
-
-// ── Turn grouping ─────────────────────────────────────────────────────────────
-// A turn is everything from one UserMessage up to (but not including) the next
-// UserMessage. This grouping is used only for warm-zone rendering; the hot zone
-// still uses the flat items array to preserve the existing rendering logic.
-
-interface TurnGroup {
-  userItem: Item;
-  assistantPreview: string;
-  toolCount: number;
-  startIdx: number; // first index in items[] (the user message)
-  endIdx: number;   // exclusive end
-}
-
-function buildTurnGroups(items: Item[], questions: QuestionAnchor[]): TurnGroup[] {
-  const groups: TurnGroup[] = [];
-  let turnIdx = 0;
-  let start = -1;
-  for (let i = 0; i < items.length; i++) {
-    if (items[i].kind === "user") {
-      if (start >= 0) {
-        // finalise previous turn
-        groups[groups.length - 1].endIdx = i;
-      }
-      start = i;
-      turnIdx = questions.findIndex((q) => q.id === items[i].id);
-      if (turnIdx < 0) turnIdx = groups.length;
-      groups.push({
-        userItem: items[i],
-        assistantPreview: "",
-        toolCount: 0,
-        startIdx: i,
-        endIdx: items.length,
-      });
-    } else if (start >= 0 && groups.length > 0) {
-      const g = groups[groups.length - 1];
-      const it = items[i];
-      if (it.kind === "assistant" && !it.streaming) {
-        const previewText = it.text?.trim() || "";
-        if (previewText) {
-          g.assistantPreview = warmUserPreview(previewText);
-        }
-      }
-      if (it.kind === "tool" && !it.parentId) {
-        g.toolCount++;
-      }
-    }
-  }
-  return groups;
-}
 
 // ── Transcript component ──────────────────────────────────────────────────────
 
@@ -295,10 +213,9 @@ export function Transcript({
   const [expandedWarmTurns, setExpandedWarmTurns] = useState<Set<number>>(new Set());
   const [coldPage, setColdPage] = useState(0);
 
-  // Compute turn groups (memoised — only rebuilds when user turns change,
-  // not on every streaming token). The warm previews are static once built.
-  const turnGroupKey = questions.length;
-  const turnGroups = useMemo(() => buildTurnGroups(items, questions), [turnGroupKey, questions]);
+  // Compute turn groups from the structural item list. Streaming text updates
+  // keep the same items[] reference, so this stays out of the token hot path.
+  const turnGroups = useMemo(() => buildTurnGroups(items), [items]);
 
   // hotStartIdx: first index of the hot zone in items[].
   const hotStartIdx = useMemo(() => {
