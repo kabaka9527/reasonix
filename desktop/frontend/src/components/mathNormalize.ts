@@ -29,7 +29,7 @@ const TEXT_MODE_PAIR = /\$\s*(\\[A-Za-z]+\{(?:[^{}]|\{[^{}]*\})*\}[^$]*?)\s*\$/g
 const DM = "__REASONIX_MATH_DISPLAY__";
 const IM = "__REASONIX_MATH_INLINE__";
 const LB = "__REASONIX_LATEX_LINEBREAK__";
-const ED = "__REASONIX_ESCAPED_DOLLAR__";
+const ED_BASE = "REASONIXESCAPEDDOLLAR";
 const DOLLAR = "&#36;";
 
 export function normalizeMath(s: string): string {
@@ -64,7 +64,8 @@ function normalizeMathText(s: string): string {
   // Escaped dollars are literal prose dollars, not math delimiters. Hide them
   // before the $...$ classifier passes so they cannot pair with inserted Young
   // macro wrappers.
-  r = r.replace(/\\\$/g, ED);
+  const escapedDollarToken = unusedEscapedDollarToken(r);
+  r = r.split("\\$").join(escapedDollarToken);
 
   // Step 3: repair inline $$. CommonMark requires a blank line before
   // block math; without it remark-math parses the opening $$ as an
@@ -113,7 +114,17 @@ function normalizeMathText(s: string): string {
   return r
     .replace(new RegExp(DM, "g"), () => "$$")
     .replace(new RegExp(IM, "g"), "$")
-    .replace(new RegExp(ED, "g"), () => "\\$");
+    .split(escapedDollarToken).join("\\$");
+}
+
+function unusedEscapedDollarToken(s: string): string {
+  let token = ED_BASE;
+  let n = 0;
+  while (s.includes(token)) {
+    n += 1;
+    token = `${ED_BASE}${n}`;
+  }
+  return token;
 }
 
 function protectMarkdownCode(s: string): { text: string; prefix: string; segments: string[] } {

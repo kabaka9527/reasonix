@@ -268,7 +268,12 @@ export function expandYoungDiagrams(src: string): string {
     const ch = src[i];
 
     if (ch === "$") {
-      if (isEscapedDollar(src, i) || isCurrencyLikeDollar(src, i)) {
+      if (isEscapedDollar(src, i)) {
+        out += ch;
+        i += 1;
+        continue;
+      }
+      if (depth === 0 && isCurrencyLikeDollar(src, i) && !opensYoungMathSpan(src, i)) {
         out += ch;
         i += 1;
         continue;
@@ -319,7 +324,9 @@ export function expandYoungDiagrams(src: string): string {
         // Wrap in `$…$` only if we're outside math. Inside math, the
         // surrounding `$`/`$$` already supplies the math delimiters.
         if (depth === 0) {
-          out += "$" + expanded + "$";
+          const leadingSep = out.endsWith("$") && !isEscapedDollar(out, out.length - 1) ? " " : "";
+          const trailingSep = src[callEnd] === "$" && !isEscapedDollar(src, callEnd) ? " " : "";
+          out += leadingSep + "$" + expanded + "$" + trailingSep;
         } else {
           out += expanded;
         }
@@ -342,4 +349,22 @@ function isEscapedDollar(src: string, i: number): boolean {
 
 function isCurrencyLikeDollar(src: string, i: number): boolean {
   return /\d/.test(src[i + 1] ?? "") || /[\d%]/.test(src[i - 1] ?? "");
+}
+
+function opensYoungMathSpan(src: string, dollarIdx: number): boolean {
+  if (src[dollarIdx + 1] === "$") return false;
+
+  let closeIdx = -1;
+  for (let i = dollarIdx + 1; i < src.length && src[i] !== "\n"; i++) {
+    if (src[i] === "$" && !isEscapedDollar(src, i)) {
+      closeIdx = i;
+      break;
+    }
+  }
+  if (closeIdx < 0) return false;
+
+  for (let i = dollarIdx + 1; i < closeIdx; i++) {
+    if (readYoungStart(src, i)) return true;
+  }
+  return false;
 }

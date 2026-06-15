@@ -282,6 +282,12 @@ check("$\\text{baryon #}$ # escaped", () => {
 check("$\\text{a & b}$ & escaped", () => {
   return normalizeMath("$\\text{a & b}$") === "$\\text{a \\& b}$";
 });
+check("$\\text{cost is \\$5}$ escaped dollar stays literal", () => {
+  return normalizeMath("$\\text{cost is \\$5}$") === "$\\text{cost is \\$5}$";
+});
+check("$\\textrm{cost is \\$5}$ escaped dollar stays literal", () => {
+  return normalizeMath("$\\textrm{cost is \\$5}$") === "$\\textrm{cost is \\$5}$";
+});
 check("$\\sqrt{x}$ non-text command preserved", () => {
   return normalizeMath("$\\sqrt{x}$") === "$\\sqrt{x}$";
 });
@@ -444,6 +450,26 @@ check("escaped dollar before bare \\yng does not suppress wrapping", () => {
   const src = String.raw`Price is \$5; shape \yng(2,1)`;
   const expected = String.raw`Price is \$5; shape $\begin{array}{l}\square \! \square \\[-0.525em] \square\end{array}$`;
   return normalizeMath(src) === expected;
+});
+check("digit-starting inline math with \\yng does not get nested wrappers", () => {
+  const out = normalizeMath("$3\\,\\yng(2,1)$");
+  return out === "$3\\,\\begin{array}{l}\\square \\! \\square \\\\[-0.525em] \\square\\end{array}$";
+});
+check("digit-starting inline math with \\young does not get nested wrappers", () => {
+  const out = normalizeMath("$2 + \\young(ab,c)$");
+  return out === "$2 + \\begin{array}{l}\\boxed{a} \\! \\boxed{b} \\\\[-0.525em] \\boxed{c}\\end{array}$";
+});
+check("display math ending in digit closes before following bare \\yng", () => {
+  const out = normalizeMath("$$x^2$$ \\yng(1)");
+  return out === "$$x^2$$ $\\begin{array}{l}\\square\\end{array}$";
+});
+check("bare \\yng after inline math is separated from adjacent dollars", () => {
+  const out = normalizeMath("$x$\\yng(1)");
+  return out === "$x$ $\\begin{array}{l}\\square\\end{array}$";
+});
+check("bare \\yng before inline math is separated from adjacent dollars", () => {
+  const out = normalizeMath("\\yng(1)$x$");
+  return out === "$\\begin{array}{l}\\square\\end{array}$ $x$";
 });
 check("\\yng (2,1) with a space before parens gets wrapped and rendered", () => {
   const html = renderHtml("The partition \\yng (2,1) is symmetric.");
