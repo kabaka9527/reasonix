@@ -28,6 +28,37 @@ import (
 // window before the next compaction runs.
 const maxToolOutputBytes = 32 * 1024
 
+// planModeDeniedTools lists tools that are unconditionally denied in plan mode.
+// These are never shown to the LLM and cannot be called even if the agent
+// somehow references them. The write_file, edit_file, and multi_edit tools are
+// the canonical file-writing tools; apply_patch is a structured write variant.
+var planModeDeniedTools = map[string]bool{
+	"write_file":  true,
+	"edit_file":   true,
+	"multi_edit":  true,
+	"apply_patch": true,
+}
+
+// planModeBashMetachars defines shell metacharacters that indicate command
+// chaining, redirection, or substitution. When any of these appear in a bash
+// command during plan mode, the command is blocked — even if the command prefix
+// matches a safe read-only entry — because chaining can introduce side effects
+// after an otherwise safe prefix.
+var planModeBashMetachars = []string{";", "&&", "||", "|", ">", ">>", "<", "<<", "$(", "\x60"}
+
+// planModeSafeBashCommands are bash command prefixes that are safe to run in
+// plan mode. Each entry is matched as a prefix against the trimmed, lowercased
+// command string. The match requires a word boundary after the prefix: a space,
+// a dash, or end-of-string — so "echop" never matches "echo".
+var planModeSafeBashCommands = []string{
+	"git status", "git diff", "git log", "git show",
+	"git ls-files", "git grep", "git blame",
+	"ls", "cat", "grep", "find", "head", "tail", "pwd",
+	"echo", "wc", "which", "type", "uname", "hostname",
+	"go version", "go list", "go doc", "go vet",
+	"node -v", "npm list", "python --version",
+}
+
 const maxFinalReadinessBlocks = 3
 const maxEmptyFinalBlocks = 3
 const maxStreamRecoveries = 1
@@ -259,6 +290,11 @@ type Agent struct {
 	// session without touching the cache-stable prefix. Set via SetMemoryQueue.
 	memQueue memory.Queue
 
+	// planModeAllowedTools is the set of tool names that are exempt from the
+	// plan-mode gate. When non-empty, these tools bypass the read-only check.
+	// Populated from Options.PlanModeAllowedTools during construction.
+	planModeAllowedTools map[string]bool
+
 	// Context management: when a turn's prompt nears contextWindow, the older
 	// middle of the session is summarized away, keeping a token-bounded recent
 	// tail verbatim (recentKeep is the message floor) and archiving the originals
@@ -310,6 +346,16 @@ const (
 // running it. The cache-friendly bits — system prompt, tools schema, message
 // history — are left untouched, so the toggle costs nothing in cache hits.
 func (a *Agent) SetPlanMode(v bool) { a.planMode.Store(v) }
+
+// SetTools replaces the agent's tool registry. The next API call picks up the
+// new tool schema; tools already cached in the provider prefix are unaffected
+// until the prefix is invalidated. Safe to call between turns.
+func (a *Agent) SetTools(tools *tool.Registry) {
+	if a == nil {
+		return
+	}
+	a.tools = tools
+}
 
 // SetReasoningLanguage updates the visible reasoning language preference for
 // subsequent user-role messages emitted by this agent.
@@ -511,6 +557,24 @@ type Options struct {
 	// ReasoningLanguage controls visible reasoning language preference as transient
 	// user-turn context. Empty/auto injects nothing.
 	ReasoningLanguage string
+
+	// PlanModeAllowedTools names tools that bypass the plan-mode read-only gate.
+	// When a tool named here is called while planMode is true, it executes
+	// without the "plan mode is read-only" block — even if its ReadOnly contract
+	// returns false. Use sparingly; the caller is responsible for ensuring the
+	// tool invocation is safe in a read-only context (e.g. bash for git status).
+	PlanModeAllowedTools []string
+}
+
+func stringSet(ss []string) map[string]bool {
+	if len(ss) == 0 {
+		return nil
+	}
+	m := make(map[string]bool, len(ss))
+	for _, s := range ss {
+		m[s] = true
+	}
+	return m
 }
 
 // New constructs an Agent. MaxSteps <= 0 means no cap — the run loop continues
@@ -546,27 +610,28 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		maxStepsKey = "agent.max_steps"
 	}
 	a := &Agent{
-		prov:              prov,
-		tools:             tools,
-		session:           session,
-		maxSteps:          opts.MaxSteps,
-		maxStepsKey:       maxStepsKey,
-		temperature:       opts.Temperature,
-		pricing:           opts.Pricing,
-		usageSource:       usageSourceOrDefault(opts.UsageSource, event.UsageSourceExecutor),
-		sink:              sink,
-		gate:              gate,
-		hooks:             hooks,
-		jobs:              opts.Jobs,
-		evidence:          evidence.NewLedger(),
-		projectChecks:     append([]instruction.VerifyCheck(nil), opts.ProjectChecks...),
-		contextWindow:     opts.ContextWindow,
-		softCompactRatio:  opts.SoftCompactRatio,
-		compactRatio:      opts.CompactRatio,
-		compactForceRatio: opts.CompactForceRatio,
-		recentKeep:        opts.RecentKeep,
-		archiveDir:        opts.ArchiveDir,
-		keepPolicy:        opts.KeepPolicy,
+		prov:                 prov,
+		tools:                tools,
+		session:              session,
+		maxSteps:             opts.MaxSteps,
+		maxStepsKey:          maxStepsKey,
+		temperature:          opts.Temperature,
+		pricing:              opts.Pricing,
+		usageSource:          usageSourceOrDefault(opts.UsageSource, event.UsageSourceExecutor),
+		sink:                 sink,
+		gate:                 gate,
+		hooks:                hooks,
+		jobs:                 opts.Jobs,
+		evidence:             evidence.NewLedger(),
+		projectChecks:        append([]instruction.VerifyCheck(nil), opts.ProjectChecks...),
+		contextWindow:        opts.ContextWindow,
+		softCompactRatio:     opts.SoftCompactRatio,
+		compactRatio:         opts.CompactRatio,
+		compactForceRatio:    opts.CompactForceRatio,
+		recentKeep:           opts.RecentKeep,
+		archiveDir:           opts.ArchiveDir,
+		keepPolicy:           opts.KeepPolicy,
+		planModeAllowedTools: stringSet(opts.PlanModeAllowedTools),
 	}
 	a.SetReasoningLanguage(opts.ReasoningLanguage)
 	return a
@@ -1418,11 +1483,13 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 			errMsg:  "blocked by loop guard",
 		}
 	}
-	if a.planMode.Load() && !t.ReadOnly() {
-		return toolOutcome{
-			output:  fmt.Sprintf("blocked: %q is a writer tool and plan mode is read-only. Keep exploring with read-only tools, then write your plan as your reply — the user will be asked to approve it before any changes are made.", call.Name),
-			blocked: true,
-			errMsg:  "blocked: plan mode is read-only",
+	if a.planMode.Load() {
+		if blocked, msg := a.planModeBlocked(call.Name, t.ReadOnly(), json.RawMessage(call.Arguments)); blocked {
+			return toolOutcome{
+				output:  msg,
+				blocked: true,
+				errMsg:  "blocked: plan mode is read-only",
+			}
 		}
 	}
 	if a.gate != nil {
@@ -1532,6 +1599,57 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 	}
 	body, truncMsg := truncateToolOutput(result)
 	return toolOutcome{output: body, truncated: truncMsg != "", truncMsg: truncMsg}
+}
+
+func (a *Agent) planModeBlocked(toolName string, readOnly bool, args json.RawMessage) (blocked bool, message string) {
+	if readOnly {
+		return false, ""
+	}
+	if planModeDeniedTools[toolName] {
+		return true, fmt.Sprintf("blocked: %q is not available in plan mode. Keep exploring with read-only tools — the user will be asked to approve the plan before any changes are made.", toolName)
+	}
+	if a.planModeAllowedTools != nil && a.planModeAllowedTools[toolName] {
+		return false, ""
+	}
+	if toolName == "bash" {
+		if blocked, msg := planModeBashBlocked(args); blocked {
+			return true, msg
+		}
+		return false, ""
+	}
+	return true, fmt.Sprintf("blocked: %q is a writer tool and plan mode is read-only. Keep exploring with read-only tools, then write your plan as your reply — the user will be asked to approve it before any changes are made.", toolName)
+}
+
+func planModeBashBlocked(args json.RawMessage) (bool, string) {
+	var p struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil || p.Command == "" {
+		return false, ""
+	}
+	cmd := strings.TrimSpace(p.Command)
+	lower := strings.ToLower(cmd)
+
+	// Reject commands containing shell metacharacters — chaining, piping,
+	// redirection, or command substitution can introduce side effects after
+	// an otherwise safe prefix.
+	for _, mc := range planModeBashMetachars {
+		if strings.Contains(lower, mc) {
+			return true, fmt.Sprintf("blocked: bash command in plan mode must not contain shell operators (%q). Use separate calls for chained commands.", mc)
+		}
+	}
+
+	// Check the command prefix against the safe read-only whitelist.
+	// Require a word boundary after the match to avoid prefix collisions.
+	for _, safe := range planModeSafeBashCommands {
+		if strings.HasPrefix(lower, safe) {
+			if len(lower) == len(safe) || lower[len(safe)] == ' ' || lower[len(safe)] == '-' {
+				return false, ""
+			}
+		}
+	}
+
+	return true, fmt.Sprintf("blocked: bash commands in plan mode must be read-only. %q is not in the safe command list. Use read-only tools for exploration, then exit plan mode to run this command.", cmd)
 }
 
 func (a *Agent) repeatedSuccessBlock(call provider.ToolCall, t tool.Tool) (string, bool) {

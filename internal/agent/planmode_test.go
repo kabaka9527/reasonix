@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"reasonix/internal/event"
 	"strings"
 	"testing"
@@ -81,4 +82,283 @@ func serializeToolNames(ts []provider.ToolSchema) string {
 		names = append(names, t.Name)
 	}
 	return strings.Join(names, ",")
+}
+
+// --- planModeBlocked tests ---
+
+func TestPlanModeDeniedToolsBlocked(t *testing.T) {
+	denied := []string{"write_file", "edit_file", "multi_edit", "apply_patch"}
+	for _, name := range denied {
+		t.Run(name, func(t *testing.T) {
+			blocked, msg := (&Agent{}).planModeBlocked(name, false, nil)
+			if !blocked {
+				t.Errorf("planModeBlocked(%q) = false, want true", name)
+			}
+			if !strings.Contains(msg, "not available in plan mode") {
+				t.Errorf("unexpected message: %s", msg)
+			}
+		})
+	}
+}
+
+func TestPlanModeReadOnlyToolsAllowed(t *testing.T) {
+	blocked, _ := (&Agent{}).planModeBlocked("read_file", true, nil)
+	if blocked {
+		t.Error("ReadOnly tools should not be blocked in plan mode")
+	}
+}
+
+func TestPlanModeAllowedToolsOverride(t *testing.T) {
+	a := &Agent{planModeAllowedTools: map[string]bool{"custom_tool": true}}
+	blocked, _ := a.planModeBlocked("custom_tool", false, nil)
+	if blocked {
+		t.Error("tool in planModeAllowedTools should not be blocked")
+	}
+}
+
+func TestPlanModeGenericWriterBlocked(t *testing.T) {
+	blocked, msg := (&Agent{}).planModeBlocked("some_writer_tool", false, nil)
+	if !blocked {
+		t.Error("generic writer tool should be blocked in plan mode")
+	}
+	if !strings.Contains(msg, "writer tool") {
+		t.Errorf("unexpected message: %s", msg)
+	}
+}
+
+// --- planModeBashBlocked tests ---
+
+func TestPlanModeBashBlocked_SafeCommands(t *testing.T) {
+	safe := []string{
+		"git status",
+		"git diff",
+		"git diff --staged",
+		"git log --oneline -10",
+		"git show HEAD",
+		"git ls-files",
+		"git grep 'func main'",
+		"git blame file.go",
+		"ls -la",
+		"cat file.go",
+		"grep -rn 'pattern' .",
+		"find . -name '*.go'",
+		"head -20 file.go",
+		"tail -5 file.go",
+		"pwd",
+		"echo hello",
+		"wc -l file.go",
+		"which go",
+		"type git",
+		"uname -a",
+		"hostname",
+		"go version",
+		"go list ./...",
+		"go doc fmt.Println",
+		"go vet ./...",
+		"node -v",
+		"npm list",
+		"python --version",
+	}
+	for _, cmd := range safe {
+		t.Run(cmd, func(t *testing.T) {
+			args := json.RawMessage(`{"command":"` + strings.ReplaceAll(cmd, `"`, `\"`) + `"}`)
+			blocked, msg := planModeBashBlocked(args)
+			if blocked {
+				t.Errorf("planModeBashBlocked(%q) = blocked, want allowed; msg: %s", cmd, msg)
+			}
+		})
+	}
+}
+
+func TestPlanModeBashBlocked_Metacharacters(t *testing.T) {
+	tests := []struct {
+		name string
+		cmd  string
+	}{
+		{"semicolon", "git status; rm file.go"},
+		{"and", "git status && rm file.go"},
+		{"or", "git status || rm file.go"},
+		{"pipe", "ls | grep foo"},
+		{"redirect_out", "echo hello > file.go"},
+		{"redirect_append", "echo hello >> file.go"},
+		{"redirect_in", "cat < file.go"},
+		{"heredoc", "cat << EOF"},
+		{"cmd_sub_dollar", "echo $(rm file.go)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := json.RawMessage(`{"command":"` + strings.ReplaceAll(tt.cmd, `"`, `\"`) + `"}`)
+			blocked, msg := planModeBashBlocked(args)
+			if !blocked {
+				t.Errorf("planModeBashBlocked(%q) = allowed, want blocked", tt.cmd)
+			}
+			if !strings.Contains(msg, "shell operators") {
+				t.Errorf("unexpected message: %s", msg)
+			}
+		})
+	}
+}
+
+func TestPlanModeBashBlocked_UnsafeCommands(t *testing.T) {
+	unsafe := []string{
+		"rm -rf /tmp/foo",
+		"cp file1 file2",
+		"mv old new",
+		"mkdir newdir",
+		"touch newfile",
+		"chmod 755 script.sh",
+		"git add .",
+		"git commit -m 'msg'",
+		"git push origin main",
+		"git checkout -b new-branch",
+		"go build ./...",
+		"go test ./...",
+		"npm install",
+		"npm run build",
+		"pip install requests",
+		"docker build .",
+		"make all",
+		"sed -i 's/old/new/' file.go",
+		"awk '{print $1}' file",
+		"tee output.txt",
+		"dd if=/dev/zero of=file",
+		"ssh user@host",
+		"curl https://example.com",
+		"wget https://example.com",
+		"python -c 'print(1)'",
+		"node -e 'console.log(1)'",
+		"ruby -e 'puts 1'",
+		"perl -e 'print 1'",
+	}
+	for _, cmd := range unsafe {
+		t.Run(cmd, func(t *testing.T) {
+			args := json.RawMessage(`{"command":"` + strings.ReplaceAll(cmd, `"`, `\"`) + `"}`)
+			blocked, _ := planModeBashBlocked(args)
+			if !blocked {
+				t.Errorf("planModeBashBlocked(%q) = allowed, want blocked", cmd)
+			}
+		})
+	}
+}
+
+func TestPlanModeBashBlocked_BoundaryCheck(t *testing.T) {
+	// "echop" should NOT match "echo" prefix
+	args := json.RawMessage(`{"command":"echop hello"}`)
+	blocked, _ := planModeBashBlocked(args)
+	if !blocked {
+		t.Error("echop should not match echo prefix — boundary check failed")
+	}
+
+	// "lsblk" should NOT match "ls" prefix
+	args = json.RawMessage(`{"command":"lsblk"}`)
+	blocked, _ = planModeBashBlocked(args)
+	if !blocked {
+		t.Error("lsblk should not match ls prefix — boundary check failed")
+	}
+
+	// "git status" with dash boundary should match
+	args = json.RawMessage(`{"command":"git status --short"}`)
+	blocked, _ = planModeBashBlocked(args)
+	if blocked {
+		t.Error("git status --short should match git status prefix")
+	}
+}
+
+func TestPlanModeBashBlocked_EmptyCommand(t *testing.T) {
+	// Empty/missing command should not crash
+	blocked, _ := planModeBashBlocked(json.RawMessage(`{}`))
+	if blocked {
+		t.Error("empty command should not be blocked")
+	}
+	blocked, _ = planModeBashBlocked(json.RawMessage(`{"command":""}`))
+	if blocked {
+		t.Error("empty string command should not be blocked")
+	}
+}
+
+func TestPlanModeBashBlocked_InvalidJSON(t *testing.T) {
+	blocked, _ := planModeBashBlocked(json.RawMessage(`not json`))
+	if blocked {
+		t.Error("invalid JSON should not be blocked (fail-open)")
+	}
+}
+
+func TestPlanModeBash_BashToolIntegration(t *testing.T) {
+	// Integration test: planModeBlocked with toolName="bash" delegates to planModeBashBlocked
+	reg := tool.NewRegistry()
+	reg.Add(fakeTool{name: "bash", readOnly: false})
+
+	a := New(nil, reg, NewSession(""), Options{}, event.Discard)
+	a.SetPlanMode(true)
+
+	// Safe command should execute
+	safeResult := a.executeOne(context.Background(), provider.ToolCall{
+		Name:      "bash",
+		Arguments: `{"command":"git status"}`,
+	})
+	if strings.HasPrefix(safeResult.output, "blocked:") {
+		t.Errorf("git status should not be blocked in plan mode: %s", safeResult.output)
+	}
+
+	// Unsafe command should be blocked
+	unsafeResult := a.executeOne(context.Background(), provider.ToolCall{
+		Name:      "bash",
+		Arguments: `{"command":"rm -rf /"}`,
+	})
+	if !strings.HasPrefix(unsafeResult.output, "blocked:") {
+		t.Errorf("rm -rf should be blocked in plan mode: %s", unsafeResult.output)
+	}
+
+	// Chained command should be blocked
+	chainResult := a.executeOne(context.Background(), provider.ToolCall{
+		Name:      "bash",
+		Arguments: `{"command":"git status && rm file.go"}`,
+	})
+	if !strings.HasPrefix(chainResult.output, "blocked:") {
+		t.Errorf("chained command should be blocked in plan mode: %s", chainResult.output)
+	}
+}
+
+func TestPlanMode_BashAllowedToolsOverride(t *testing.T) {
+	// If bash is in planModeAllowedTools, it should bypass the bash validation
+	reg := tool.NewRegistry()
+	reg.Add(fakeTool{name: "bash", readOnly: false})
+
+	a := New(nil, reg, NewSession(""), Options{
+		PlanModeAllowedTools: []string{"bash"},
+	}, event.Discard)
+	a.SetPlanMode(true)
+
+	// Even an unsafe command should pass because bash is in allowedTools
+	result := a.executeOne(context.Background(), provider.ToolCall{
+		Name:      "bash",
+		Arguments: `{"command":"rm -rf /"}`,
+	})
+	if strings.HasPrefix(result.output, "blocked:") {
+		t.Errorf("bash in planModeAllowedTools should bypass validation: %s", result.output)
+	}
+}
+
+func TestPlanModeOff_AllToolsAllowed(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Add(fakeTool{name: "write_file", readOnly: false})
+	reg.Add(fakeTool{name: "bash", readOnly: false})
+
+	a := New(nil, reg, NewSession(""), Options{}, event.Discard)
+	// planMode is OFF by default
+
+	// write_file should execute normally
+	result := a.executeOne(context.Background(), provider.ToolCall{Name: "write_file"})
+	if strings.HasPrefix(result.output, "blocked:") {
+		t.Error("write_file should not be blocked when plan mode is off")
+	}
+
+	// bash with any command should execute normally
+	result = a.executeOne(context.Background(), provider.ToolCall{
+		Name:      "bash",
+		Arguments: `{"command":"rm -rf /"}`,
+	})
+	if strings.HasPrefix(result.output, "blocked:") {
+		t.Error("bash should not be blocked when plan mode is off")
+	}
 }

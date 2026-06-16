@@ -726,21 +726,22 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 
 	execSess := agent.NewSession(sysPrompt)
 	executor := agent.New(execProv, reg, execSess, agent.Options{
-		MaxSteps:          maxSteps,
-		Temperature:       cfg.Agent.Temperature,
-		Pricing:           entry.Price,
-		Gate:              headlessGate,
-		Hooks:             hookRunner,
-		Jobs:              jm,
-		ProjectChecks:     projectChecks,
-		ContextWindow:     entry.ContextWindow,
-		SoftCompactRatio:  cfg.Agent.SoftCompactRatio,
-		CompactRatio:      cfg.Agent.CompactRatio,
-		CompactForceRatio: cfg.Agent.CompactForceRatio,
-		RecentKeep:        cfg.Agent.RecentKeep,
-		ArchiveDir:        config.ArchiveDir(),
-		KeepPolicy:        keepPolicy,
-		ReasoningLanguage: cfg.ReasoningLanguage(),
+		MaxSteps:             maxSteps,
+		Temperature:          cfg.Agent.Temperature,
+		Pricing:              entry.Price,
+		Gate:                 headlessGate,
+		Hooks:                hookRunner,
+		Jobs:                 jm,
+		ProjectChecks:        projectChecks,
+		ContextWindow:        entry.ContextWindow,
+		SoftCompactRatio:     cfg.Agent.SoftCompactRatio,
+		CompactRatio:         cfg.Agent.CompactRatio,
+		CompactForceRatio:    cfg.Agent.CompactForceRatio,
+		RecentKeep:           cfg.Agent.RecentKeep,
+		ArchiveDir:           config.ArchiveDir(),
+		KeepPolicy:           keepPolicy,
+		ReasoningLanguage:    cfg.ReasoningLanguage(),
+		PlanModeAllowedTools: cfg.Agent.PlanModeAllowedTools,
 	}, sink)
 
 	var runner agent.Runner = executor
@@ -821,6 +822,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		ReasoningLanguage:      cfg.ReasoningLanguage(),
 		DisableColdResumePrune: !cfg.ColdResumePruneEnabled(),
 		Shell:                  shell,
+		PlanModeAllowedTools:   cfg.Agent.PlanModeAllowedTools,
 		OnRemember: func(rule string) control.RememberResult {
 			return rememberPermissionRule(root, rule)
 		},

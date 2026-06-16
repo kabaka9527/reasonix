@@ -1269,14 +1269,13 @@ export default function App() {
     [patchActiveComposerProfile, syncModeToController],
   );
   const applyCollaborationMode = useCallback(
-    (m: CollaborationMode) => {
+    (m: CollaborationMode): Promise<void> => {
       if (m === "goal") {
         patchActiveComposerProfile({ collaborationMode: "normal", goalDraftMode: true, goal: "" }, ["collaborationMode", "goal"]);
-        void setControllerCollaborationMode("normal");
-        return;
+        return setControllerCollaborationMode("normal");
       }
       patchActiveComposerProfile({ collaborationMode: m, goalDraftMode: false, goal: "" }, ["collaborationMode", "goal"]);
-      void setControllerCollaborationMode(m);
+      return setControllerCollaborationMode(m);
     },
     [patchActiveComposerProfile, setControllerCollaborationMode],
   );
@@ -2853,18 +2852,19 @@ export default function App() {
               <ApprovalModal
                 key={state.approval.id}
                 approval={state.approval}
-                onAnswer={(allow, session, persist) => {
-                  // Approving an exit_plan_mode plan leaves plan mode; sync the
-                  // tab-local indicator and persisted safe mode immediately.
-                  if (state.approval!.tool === "exit_plan_mode" && allow) applyCollaborationMode("normal");
+                onAnswer={async (allow, session, persist) => {
+                  // Approving an exit_plan_mode plan leaves plan mode; await the
+                  // mode switch before sending the approval so the controller
+                  // observes the updated state before it unblocks.
+                  if (state.approval!.tool === "exit_plan_mode" && allow) await applyCollaborationMode("normal");
                   approve(state.approval!.id, allow, session, persist);
                 }}
                 onRevisePlan={(text) => {
                   setPendingPlanRevision(text);
                   approve(state.approval!.id, false, false, false);
                 }}
-                onExitPlan={() => {
-                  applyCollaborationMode("normal");
+                onExitPlan={async () => {
+                  await applyCollaborationMode("normal");
                   approve(state.approval!.id, false, false, false);
                 }}
                 onStop={() => {

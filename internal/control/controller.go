@@ -287,6 +287,9 @@ type Options struct {
 	// persist to disk (e.g. "Bash(go test:*)"). The callback is wired into the
 	// permission Gate on EnableInteractiveApproval.
 	OnRemember func(rule string) RememberResult
+	// PlanModeAllowedTools names tools exempt from the plan-mode read-only gate.
+	// Passed through to the executor agent so user-configured exceptions work.
+	PlanModeAllowedTools []string
 }
 
 // New builds a Controller. A nil Sink is replaced with event.Discard.
@@ -1397,6 +1400,9 @@ func (c *Controller) SetPlanMode(v bool) {
 	c.mu.Unlock()
 	if c.executor != nil {
 		c.executor.SetPlanMode(v)
+	}
+	if setter, ok := c.runner.(interface{ SetPlanMode(bool) }); ok {
+		setter.SetPlanMode(v)
 	}
 }
 

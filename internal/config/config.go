@@ -767,6 +767,11 @@ type AgentConfig struct {
 	// ColdResumePrune elides stale tool results when a session reopens past the
 	// provider cache window. nil = default enabled.
 	ColdResumePrune *bool `toml:"cold_resume_prune"`
+	// PlanModeAllowedTools names tools that are exempt from the plan-mode read-only
+	// gate. When a tool named here is called while in plan mode, it executes without
+	// the "plan mode is read-only" block. Use sparingly — prefer the built-in safe
+	// bash commands for read-only exploration.
+	PlanModeAllowedTools []string `toml:"plan_mode_allowed_tools"`
 }
 
 // ProviderEntry declares a model provider instance. ContextWindow is the model's
