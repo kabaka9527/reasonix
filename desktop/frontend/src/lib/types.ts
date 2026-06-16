@@ -889,7 +889,7 @@ export interface SettingsView {
   statusBarItems: string[]; // ordered visible status bar item ids
   checkUpdates: boolean; // check for new versions on startup
   telemetry: boolean; // anonymous launch ping (install id + version + OS)
-  metrics: boolean; // opt-in aggregate agent metrics (anonymous signal/bucket counts)
+  metrics: boolean; // opt-in aggregate desktop metrics (anonymous signal/bucket counts)
   configPath: string;
   providerKinds: string[]; // provider implementations the kernel registered (for the kind picker)
   autoApproveTools: boolean;
