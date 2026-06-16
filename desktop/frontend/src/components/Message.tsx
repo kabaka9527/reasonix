@@ -8,6 +8,7 @@ import { ComposerContextCard } from "./ComposerContextCard";
 import { formatAttachmentRefForDisplay, formatAttachmentRefForSubmit, parseAttachmentRefsForDisplay, sortDisplayAttachments } from "../lib/attachmentDisplay";
 import type { DisplayAttachment } from "../lib/attachmentDisplay";
 import { app } from "../lib/bridge";
+import { replaySubmitText } from "../lib/editReplay";
 import { useT } from "../lib/i18n";
 import { useGSAPCollapse } from "../lib/useGSAPCollapse";
 import { displayReasoningText } from "../lib/reasoningDisplay";
@@ -89,6 +90,7 @@ function formatMessageTime(date: Date): string {
 
 export function UserMessage({
   text,
+  submitText,
   failed,
   turn,
   anchorId,
@@ -98,6 +100,7 @@ export function UserMessage({
   editDisabled = false,
 }: {
   text: string;
+  submitText?: string;
   failed?: boolean;
   turn?: number;
   anchorId?: string;
@@ -182,7 +185,8 @@ export function UserMessage({
     const displayRefs = nextAttachments.map(formatAttachmentRefForDisplay).join(" ");
     const submitRefs = nextAttachments.map(formatAttachmentRefForSubmit).join(" ");
     const next = [bodyText, displayRefs].filter(Boolean).join(bodyText && displayRefs ? " " : "");
-    const submit = [bodyText, submitRefs].filter(Boolean).join(bodyText && submitRefs ? " " : "");
+    const fallbackSubmit = [bodyText, submitRefs].filter(Boolean).join(bodyText && submitRefs ? " " : "");
+    const submit = replaySubmitText(submitText, actionText, next, fallbackSubmit);
     if (!next) return;
     setEditSubmitting(true);
     try {

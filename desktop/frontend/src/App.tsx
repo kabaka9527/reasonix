@@ -812,6 +812,7 @@ export default function App() {
     state,
     activeTabId,
     send,
+    sendToTab,
     runShell,
     steer,
     notice,
@@ -2138,16 +2139,17 @@ export default function App() {
   }, [activeTab?.readOnly, state.items, rewind, refreshTabMetas, setComposerInsertRequest]);
 
   const handleEditPrompt = useCallback(async (turn: number, displayText: string, submitText?: string): Promise<boolean> => {
-    if (activeTab?.readOnly || rewindStateRef.current || state.running || state.messageAction != null || state.approval != null || state.ask != null || clearContextPending) return false;
+    const sourceTabId = activeTabId;
+    if (!sourceTabId || activeTab?.readOnly || rewindStateRef.current || state.running || state.messageAction != null || state.approval != null || state.ask != null || clearContextPending) return false;
     const next = displayText.trim();
     if (!next) return false;
     const submit = (submitText ?? displayText).trim();
     const ok = await rewind(turn, "conversation");
     if (!ok) return false;
     setRewindSignal((v) => v + 1);
-    send(next, submit);
+    sendToTab(sourceTabId, next, submit);
     return true;
-  }, [activeTab?.readOnly, clearContextPending, send, state.approval, state.ask, state.messageAction, state.running, rewind]);
+  }, [activeTab?.readOnly, activeTabId, clearContextPending, sendToTab, state.approval, state.ask, state.messageAction, state.running, rewind]);
 
   const handleOpenTopic = useCallback(async (scope: string, workspaceRoot: string, topicId: string, sessionPath?: string) => {
     closeTransientOverlays();

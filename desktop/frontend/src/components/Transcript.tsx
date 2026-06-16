@@ -389,18 +389,20 @@ export function Transcript({
           flushCollapseBatch();
           pushTurnActions();
           const tn = userTurn.get(first.id);
+          const checkpoint = tn == null ? undefined : checkpointsByTurn.get(tn);
           activeTurn = tn;
           out.push(
             <UserMessage
               key={first.id}
               id={first.id}
               text={first.text}
+              submitText={first.submitText}
               failed={first.failed}
               createdAt={first.createdAt}
               turn={tn}
               anchorId={questionAnchorId(first.id)}
               onEdit={onEditPrompt}
-              editDisabled={rewindDisabled}
+              editDisabled={rewindDisabled || !checkpoint?.canConversation}
             />,
           );
           continue;
@@ -487,18 +489,20 @@ export function Transcript({
           case "user": {
             pushTurnActions();
             const tn = userTurn.get(it.id);
+            const checkpoint = tn == null ? undefined : checkpointsByTurn.get(tn);
             activeTurn = tn;
             out.push(
               <UserMessage
                 key={it.id}
                 id={it.id}
                 text={it.text}
+                submitText={it.submitText}
                 failed={it.failed}
                 createdAt={it.createdAt}
                 turn={tn}
                 anchorId={questionAnchorId(it.id)}
                 onEdit={onEditPrompt}
-                editDisabled={rewindDisabled}
+                editDisabled={rewindDisabled || !checkpoint?.canConversation}
               />,
             );
             break;
@@ -786,17 +790,19 @@ function WarmTurnItems({
       case "user": {
         pushTurnActions();
         const tn = userTurnMap.get(it.id);
+        const checkpoint = tn == null ? undefined : checkpoints.get(tn);
         activeTurn = tn;
         nodes.push(
           <UserMessage
             key={it.id}
             text={it.text}
+            submitText={it.submitText}
             failed={it.failed}
             createdAt={it.createdAt}
             turn={tn}
             anchorId={questionAnchorId(it.id)}
             onEdit={onEdit}
-            editDisabled={rewindDisabled}
+            editDisabled={rewindDisabled || !checkpoint?.canConversation}
           />,
         );
         break;

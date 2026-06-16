@@ -2693,6 +2693,7 @@ func (a *App) SwitchWorkspace(dir string) (string, error) {
 type HistoryMessage struct {
 	Role               string            `json:"role"`
 	Content            string            `json:"content"`
+	SubmitText         string            `json:"submitText,omitempty"`
 	Reasoning          string            `json:"reasoning,omitempty"`
 	Level              string            `json:"level,omitempty"`
 	ToolCalls          []HistoryToolCall `json:"toolCalls,omitempty"`
@@ -2760,6 +2761,9 @@ func historyMessages(msgs []provider.Message, resolveUserContent func(string) st
 			reasoning = m.ReasoningContent
 		}
 		hm := HistoryMessage{Role: string(m.Role), Content: content, Reasoning: reasoning}
+		if m.Role == provider.RoleUser && content != m.Content {
+			hm.SubmitText = m.Content
+		}
 		if m.Role == provider.RoleAssistant && len(m.ToolCalls) > 0 {
 			hm.ToolCalls = make([]HistoryToolCall, len(m.ToolCalls))
 			for i, tc := range m.ToolCalls {

@@ -237,6 +237,7 @@ export interface ChangedFileInfo {
 export interface HistoryMessage {
   role: string;
   content: string;
+  submitText?: string;
   createdAt?: number;
   reasoning?: string;
   level?: "info" | "warn";
