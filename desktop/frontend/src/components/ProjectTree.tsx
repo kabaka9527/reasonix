@@ -1325,7 +1325,7 @@ export function ProjectTree({
 
     if (editingProject?.key === key) {
       return (
-        <div key={key}>
+        <div key={key} className="project-tree__project-wrapper">
           <div
             className={`project-tree__folder project-tree__folder--editing${projectActive ? " project-tree__folder--active" : ""}`}
             style={{ paddingLeft: 8 + depth * 16 }}
@@ -1354,7 +1354,7 @@ export function ProjectTree({
     }
 
     return (
-      <div key={key}>
+      <div key={key} className="project-tree__project-wrapper">
         <div
           className={`project-tree__folder${scopeClass}${pinnedClass}${draggableProject ? " project-tree__folder--draggable" : ""}${projectActive ? " project-tree__folder--active" : ""}${projectMenuOpen ? " project-tree__folder--menu-open" : ""}${dragProjectRoot === projectDragKey ? " project-tree__folder--dragging" : ""}${projectDropPosition ? ` project-tree__folder--drop-${projectDropPosition}` : ""}`}
           style={accentStyle}
@@ -1374,25 +1374,23 @@ export function ProjectTree({
             className="project-tree__folder-main"
             style={{ paddingLeft: 8 + depth * 16 }}
             onClick={() => {
-              if (hasChildren) toggleExpand(key);
+              toggleExpand(key);
             }}
             onKeyDown={(event) => {
               if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
                 openProjectMenu(event);
               }
             }}
-            aria-expanded={hasChildren ? isExpanded : undefined}
+            aria-expanded={isExpanded || undefined}
           >
-            {hasChildren ? (
-              <span className={`project-tree__chevron${isExpanded ? " project-tree__chevron--open" : ""}`}>
-                <ChevronRight size={12} />
+            <span className="project-tree__icon-stack">
+              <span className={`project-tree__chevron project-tree__chevron--on-hover${isExpanded ? " project-tree__chevron--open" : ""}`}>
+                <ChevronRight size={16} strokeWidth={2} />
               </span>
-            ) : (
-              <span style={{ width: 12 }} />
-            )}
-            <Folder size={12} />
+              {isExpanded ? <FolderOpen size={14} className="project-tree__folder-icon" /> : <Folder size={14} className="project-tree__folder-icon" />}
+            </span>
             <span className="project-tree__folder-color" aria-hidden="true" />
-            <span className="project-tree__folder-label">{projectLabel}</span>
+            <span className={`project-tree__folder-label${!hasChildren ? " project-tree__folder-label--empty" : ""}`}>{projectLabel}</span>
           </button>
           {compactTopics && (
             <Tooltip label={t("projectTree.projectActions")} className="project-tree__folder-action-slot">

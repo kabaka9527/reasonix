@@ -17110,7 +17110,7 @@ a[href] {
   opacity: 0;
   transform: translateY(-4px);
   pointer-events: none;
-  transition: grid-template-rows 0.2s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.16s ease, transform 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: opacity 0.16s ease, transform 0.2s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .project-tree__children--expanded {
@@ -17137,6 +17137,131 @@ a[href] {
 
 .project-tree__chevron--open {
   transform: rotate(90deg);
+}
+
+/* Project tree: icon stack holds chevron + folder icon at same position */
+.project-tree__icon-stack {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  position: relative;
+}
+.project-tree__icon-stack > .project-tree__folder-icon {
+  width: 14px;
+  height: 14px;
+  color: var(--fg-faint);
+}
+.project-tree__icon-stack > .project-tree__chevron {
+  position: absolute;
+  color: var(--fg-faint);
+}
+/* Override workbench width constraint on chevron */
+.sidebar--workbench .project-tree__icon-stack > .project-tree__chevron {
+  width: auto;
+  height: auto;
+}
+.project-tree__icon-stack > .project-tree__chevron > svg {
+  display: block;
+}
+/* Default: hide chevron, show folder icon */
+.project-tree__chevron--on-hover {
+  display: none;
+}
+/* Hover: show chevron, hide folder icon */
+:root[data-theme-style] .project-tree__folder-main:hover .project-tree__chevron--on-hover,
+.project-tree__folder-main:hover .project-tree__chevron--on-hover {
+  display: inline-flex;
+}
+:root[data-theme-style] .project-tree__folder-main:hover .project-tree__icon-stack > .project-tree__folder-icon,
+.project-tree__folder-main:hover .project-tree__icon-stack > .project-tree__folder-icon {
+  display: none;
+}
+/* Topic hover/active effect: full row width (remove left margin) */
+:root[data-theme-style] .sidebar--workbench .project-tree__topic {
+  margin-left: 0;
+}
+
+/* Project name de-emphasis: empty projects (no children) use lighter color */
+:root[data-theme-style] .project-tree__folder-label--empty {
+  color: var(--fg-faint);
+}
+:root[data-theme-style] .project-tree__folder-label:not(.project-tree__folder-label--empty) {
+  color: color-mix(in srgb, var(--fg-dim) 58%, var(--fg-faint) 42%);
+}
+:root[data-theme-style] .project-tree__topic-label {
+  color: var(--fg);
+  font-weight: 550;
+}
+
+/* Extra spacing after expanded project section */
+/* Extra spacing only after expanded project that actually has children */
+.project-tree__project-wrapper {
+  contain: layout;
+}
+.project-tree__project-wrapper:has(.project-tree__folder-main[aria-expanded="true"]):has(.project-tree__children) {
+  margin-bottom: 6px;
+}
+.project-tree__project-wrapper:has(.project-tree__folder-main[aria-expanded="true"]):has(.project-tree__children) + .project-tree__project-wrapper {
+  margin-top: 6px;
+}
+
+/* Weaken topic time display */
+:root[data-theme-style] .sidebar--workbench .project-tree__topic-side {
+  font-size: 11px;
+  color: color-mix(in srgb, var(--fg-faint) 72%, transparent);
+}
+
+/* Folder: no active background, but very weak hover hint */
+:root[data-theme-style] .sidebar--workbench .project-tree__folder:hover {
+  background: color-mix(in srgb, var(--sidebar-hover) 60%, transparent);
+}
+:root[data-theme-style] .sidebar--workbench .project-tree__folder--active,
+:root[data-theme-style] .sidebar--workbench .project-tree__folder--menu-open,
+:root[data-theme-style] .sidebar--workbench .project-tree__folder--active:hover,
+:root[data-theme-style] .sidebar--workbench .project-tree__folder--menu-open:hover {
+  background: transparent;
+}
+
+/* Topic name left-aligned with project name */
+:root[data-theme-style] .sidebar--workbench .project-tree__topic-main {
+  padding-left: 30px !important;
+}
+
+/* Active topic: keep text style unchanged (no color/font-weight change) */
+:root[data-theme-style] .sidebar--workbench .project-tree__topic--active .project-tree__topic-label {
+  color: var(--fg);
+  font-weight: 550;
+}
+
+/* Topic action icons (pin, archive): clean, no background, no border */
+:root[data-theme-style] .sidebar--workbench .project-tree__topic-action {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+:root[data-theme-style] .sidebar--workbench .project-tree__topic-action:hover {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  transform: none;
+}
+
+/* Remove right-side slide animations on topic hover */
+:root[data-theme-style] .sidebar--workbench .project-tree__topic-actions {
+  transform: translateY(-50%) translateX(0);
+}
+:root[data-theme-style] .sidebar--workbench .project-tree__topic:hover .project-tree__topic-actions,
+:root[data-theme-style] .sidebar--workbench .project-tree__topic:focus-within .project-tree__topic-actions,
+:root[data-theme-style] .sidebar--workbench .project-tree__topic--menu-open .project-tree__topic-actions {
+  transform: translateY(-50%) translateX(0);
+}
+:root[data-theme-style] .sidebar--workbench .project-tree__topic:hover .project-tree__topic-side,
+:root[data-theme-style] .sidebar--workbench .project-tree__topic:focus-within .project-tree__topic-side,
+:root[data-theme-style] .sidebar--workbench .project-tree__topic--menu-open .project-tree__topic-side {
+  transform: translateX(0);
 }
 
 @media (prefers-reduced-motion: reduce) {
