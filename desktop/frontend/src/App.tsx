@@ -1869,15 +1869,23 @@ export default function App() {
     openWorkspacePanel("context");
   }, [closeWorkspacePanel, openWorkspacePanel, pulseWorkspaceToggle, workspacePanelRenderable]);
 
+  const clearWorkspaceRequests = useCallback(() => {
+    setWorkspaceRevealRequest(null);
+    setWorkspaceChangeRevealRequest(null);
+    setWorkspaceFileListRequest(null);
+    setWorkspaceChangeListRequest(null);
+  }, []);
+
+  useEffect(() => {
+    clearWorkspaceRequests();
+  }, [activeTabId, clearWorkspaceRequests]);
+
   const openRightDockMode = useCallback(
     (mode: RightDockMode) => {
-      setWorkspaceRevealRequest(null);
-      setWorkspaceChangeRevealRequest(null);
-      setWorkspaceFileListRequest(null);
-      setWorkspaceChangeListRequest(null);
+      clearWorkspaceRequests();
       openWorkspacePanel(mode);
     },
-    [openWorkspacePanel],
+    [clearWorkspaceRequests, openWorkspacePanel],
   );
 
   const openRightDockFile = useCallback(
@@ -1979,10 +1987,11 @@ export default function App() {
 
   const handleTabChange = useCallback(async (id: string) => {
     closeTransientOverlays();
+    clearWorkspaceRequests();
     const tabs = await switchTab(id);
     if (tabs) setTabMetas(tabs);
     setTabRevealSignal((signal) => signal + 1);
-  }, [closeTransientOverlays, switchTab]);
+  }, [clearWorkspaceRequests, closeTransientOverlays, switchTab]);
 
   const handleTabClose = useCallback(async (id: string) => {
     closeTransientOverlays();
@@ -3106,6 +3115,7 @@ export default function App() {
               ) : (
                 <WorkspacePanel
                   open={workspacePanelRenderable}
+                  tabId={activeTabId}
                   cwd={state.meta?.cwd}
                   maximized={workspacePanelMaximized}
                   panelWidth={workspacePanelRenderWidth}
