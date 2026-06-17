@@ -284,7 +284,7 @@ func providerViewFromEntryForRoot(p config.ProviderEntry, builtIn, added bool, r
 	if p.Vision {
 		visionModels = models
 	}
-	key := config.ResolveCredentialForRoot(root, p.APIKeyEnv)
+	key := config.ResolveCredentialForRootGlobalFirst(root, p.APIKeyEnv)
 	return ProviderView{
 		Name: p.Name, BuiltIn: builtIn, Added: added, Kind: p.Kind, BaseURL: p.BaseURL,
 		Models: nonNil(models), VisionModels: nonNil(providerVisionModels(models, visionModels)), VisionModelsSet: visionModelsSet, ModelsURL: p.ModelsURL, Default: p.DefaultModel(),
@@ -338,7 +338,7 @@ func officialProviderAddedSet(cfg *config.Config) map[string]bool {
 
 // Settings returns the current configuration for the Settings panel.
 func (a *App) Settings() SettingsView {
-	cfg, cfgPath, err := a.loadDesktopUserConfigForEdit()
+	cfg, cfgPath, err := a.loadDesktopUserConfigForView()
 	if err != nil {
 		return SettingsView{
 			Providers:         []ProviderView{},
@@ -568,6 +568,38 @@ func (a *App) loadDesktopUserConfigForEdit() (*config.Config, string, error) {
 		return cfg, userPath, nil
 	}
 	legacyCfg := config.LoadForEdit(legacyPath)
+	normalizeLegacyDesktopProviderAccessForSettings(legacyCfg, legacyPath)
+	legacyCfg.ConfigVersion = config.Default().ConfigVersion
+	if err := migrateLegacyBotConfigToUser(cfg, legacyCfg, userPath); err != nil {
+		return nil, "", err
+	}
+	return legacyCfg, userPath, nil
+}
+
+func (a *App) loadDesktopUserConfigForView() (*config.Config, string, error) {
+	userPath := config.UserConfigPath()
+	if userPath == "" {
+		return nil, "", fmt.Errorf("cannot resolve user config directory")
+	}
+	if _, err := os.Stat(userPath); err == nil {
+		cfg := config.LoadForEditWithoutCredentials(userPath)
+		normalizeLegacyDesktopProviderAccessForSettings(cfg, userPath)
+		legacyPath := config.SourcePathForRoot(a.activeWorkspaceRoot())
+		if legacyPath != "" && !sameConfigPath(legacyPath, userPath) {
+			legacyCfg := config.LoadForEditWithoutCredentials(legacyPath)
+			if err := migrateLegacyBotConfigToUser(cfg, legacyCfg, userPath); err != nil {
+				return nil, "", err
+			}
+		}
+		return cfg, userPath, nil
+	}
+	cfg := config.LoadForEditWithoutCredentials(userPath)
+	legacyPath := config.SourcePathForRoot(a.activeWorkspaceRoot())
+	if legacyPath == "" || sameConfigPath(legacyPath, userPath) {
+		normalizeLegacyDesktopProviderAccessForSettings(cfg, userPath)
+		return cfg, userPath, nil
+	}
+	legacyCfg := config.LoadForEditWithoutCredentials(legacyPath)
 	normalizeLegacyDesktopProviderAccessForSettings(legacyCfg, legacyPath)
 	legacyCfg.ConfigVersion = config.Default().ConfigVersion
 	if err := migrateLegacyBotConfigToUser(cfg, legacyCfg, userPath); err != nil {
@@ -1364,10 +1396,64 @@ func (a *App) SetProviderKey(apiKeyEnv, value string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if err := a.ensureProviderAccessForKey(apiKeyEnv); err != nil {
+		return "", err
+	}
 	if err := a.rebuild(); err != nil {
 		return "", err
 	}
 	return warning, nil
+}
+
+func (a *App) ensureProviderAccessForKey(apiKeyEnv string) error {
+	apiKeyEnv = strings.TrimSpace(apiKeyEnv)
+	if apiKeyEnv == "" {
+		return nil
+	}
+	cfg, path, err := a.loadDesktopUserConfigForEdit()
+	if err != nil {
+		return err
+	}
+	access := providerAccessSet(cfg.Desktop.ProviderAccess)
+	changed := false
+	addAccess := func(name string) {
+		if name == "" || access[name] {
+			return
+		}
+		addProviderAccess(cfg, name)
+		access[name] = true
+		changed = true
+	}
+	for i := range cfg.Providers {
+		p := cfg.Providers[i]
+		if strings.TrimSpace(p.APIKeyEnv) != apiKeyEnv {
+			continue
+		}
+		if len(p.ModelList()) == 0 {
+			continue
+		}
+		if isOfficialBuiltInProvider(p) {
+			addAccess(config.CanonicalDesktopOfficialProviderName(p.Name))
+		} else {
+			addAccess(strings.TrimSpace(p.Name))
+		}
+	}
+	if !changed && apiKeyEnv == "DEEPSEEK_API_KEY" {
+		entries, _, err := officialProviderTemplate("deepseek", cfg.DeepSeekOfficialPricingLanguage())
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if err := cfg.UpsertProvider(e); err != nil {
+				return err
+			}
+			addAccess(e.Name)
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return cfg.SaveTo(path)
 }
 
 // ClearProviderKey removes a provider secret from the global credential store

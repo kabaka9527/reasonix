@@ -1005,6 +1005,106 @@ effort = "max"
 	}
 }
 
+func TestLoadForRootKeepsUserProviderOverSameNamedProjectProvider(t *testing.T) {
+	isolateUserConfigHome(t)
+	root := t.TempDir()
+	userPath := UserConfigPath()
+	if err := os.MkdirAll(filepath.Dir(userPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(userPath, []byte(`
+[[providers]]
+name = "shared"
+kind = "openai"
+base_url = "https://global.example/v1"
+model = "global-model"
+api_key_env = "GLOBAL_SHARED_KEY"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "reasonix.toml"), []byte(`
+[[providers]]
+name = "shared"
+kind = "openai"
+base_url = "https://project.example/v1"
+model = "project-model"
+api_key_env = "PROJECT_SHARED_KEY"
+
+[[providers]]
+name = "project-only"
+kind = "openai"
+base_url = "https://project.example/v1"
+model = "project-only-model"
+api_key_env = "PROJECT_ONLY_KEY"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadForRoot(root)
+	if err != nil {
+		t.Fatalf("LoadForRoot: %v", err)
+	}
+	shared, ok := cfg.Provider("shared")
+	if !ok {
+		t.Fatalf("shared provider missing: %+v", cfg.Providers)
+	}
+	if shared.BaseURL != "https://global.example/v1" || shared.APIKeyEnv != "GLOBAL_SHARED_KEY" || shared.Model != "global-model" {
+		t.Fatalf("shared provider = %+v, want global provider to win over project provider", shared)
+	}
+	if _, ok := cfg.Provider("project-only"); !ok {
+		t.Fatalf("project-only provider missing: %+v", cfg.Providers)
+	}
+}
+
+func TestSaveForRootPreservesShadowedProjectProvider(t *testing.T) {
+	isolateUserConfigHome(t)
+	root := t.TempDir()
+	userPath := UserConfigPath()
+	if err := os.MkdirAll(filepath.Dir(userPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(userPath, []byte(`
+[[providers]]
+name = "shared"
+kind = "openai"
+base_url = "https://global.example/v1"
+model = "global-model"
+api_key_env = "GLOBAL_SHARED_KEY"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	projectPath := filepath.Join(root, "reasonix.toml")
+	if err := os.WriteFile(projectPath, []byte(`
+[[providers]]
+name = "shared"
+kind = "openai"
+base_url = "https://project.example/v1"
+model = "project-model"
+api_key_env = "PROJECT_SHARED_KEY"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadForRoot(root)
+	if err != nil {
+		t.Fatalf("LoadForRoot: %v", err)
+	}
+	if err := cfg.SaveForRoot(root); err != nil {
+		t.Fatalf("SaveForRoot: %v", err)
+	}
+	var saved Config
+	if _, err := toml.DecodeFile(projectPath, &saved); err != nil {
+		t.Fatalf("saved project config does not parse: %v", err)
+	}
+	shared, ok := saved.Provider("shared")
+	if !ok {
+		t.Fatalf("saved project provider missing: %+v", saved.Providers)
+	}
+	if shared.BaseURL != "https://project.example/v1" || shared.APIKeyEnv != "PROJECT_SHARED_KEY" {
+		t.Fatalf("saved provider = %+v, want original project provider", shared)
+	}
+}
+
 func TestSaveForRootDoesNotWriteUserProvidersIntoProjectConfig(t *testing.T) {
 	isolateUserConfigHome(t)
 	root := t.TempDir()
