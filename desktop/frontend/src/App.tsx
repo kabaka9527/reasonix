@@ -1312,15 +1312,6 @@ export default function App() {
     },
     [patchActiveComposerProfile, setTokenMode],
   );
-  const startGoal = useCallback(
-    (nextGoal: string) => {
-      const trimmed = nextGoal.trim();
-      if (!trimmed) return;
-      applyGoal(trimmed);
-      commitThenSend(trimmed, `/goal ${trimmed}`);
-    },
-    [applyGoal, send],
-  );
   // Shift+Tab toggles only the collaboration axis; Ctrl/Cmd+Y toggles YOLO on the
   // tool-permission axis while preserving the Ask/Auto base mode.
   const cycleMode = useCallback(() => {
@@ -2856,7 +2847,6 @@ export default function App() {
               onSetCollaborationMode={applyCollaborationMode}
               onSetToolApprovalMode={applyToolApprovalMode}
               onToggleYoloApprovalMode={toggleYoloApprovalMode}
-              onSetGoal={startGoal}
               onClearGoal={() => applyGoal("")}
               onSwitchModel={switchModel}
               onSetEffort={setEffort}
