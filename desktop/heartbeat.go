@@ -26,14 +26,14 @@ import (
 // HeartbeatTask defines a single scheduled prompt.
 type HeartbeatTask struct {
 	ID            string `json:"id"`
-	Title         string `json:"title"`                     // user-visible label
-	Prompt        string `json:"prompt"`                    // the prompt to submit
-	Interval      string `json:"interval"`                  // e.g. "5m", "1h", "30s"
+	Title         string `json:"title"`    // user-visible label
+	Prompt        string `json:"prompt"`   // the prompt to submit
+	Interval      string `json:"interval"` // e.g. "5m", "1h", "30s"
 	Enabled       bool   `json:"enabled"`
-	Scope         string `json:"scope,omitempty"`           // "global" or "project"
-	WorkspaceRoot string `json:"workspaceRoot,omitempty"`   // project root path when scope="project"
-	TopicID       string `json:"topicId,omitempty"`         // created topic, reused on re-run
-	LastRunAt     int64  `json:"lastRunAt,omitempty"`       // unix millis
+	Scope         string `json:"scope,omitempty"`         // "global" or "project"
+	WorkspaceRoot string `json:"workspaceRoot,omitempty"` // project root path when scope="project"
+	TopicID       string `json:"topicId,omitempty"`       // created topic, reused on re-run
+	LastRunAt     int64  `json:"lastRunAt,omitempty"`     // unix millis
 	CreatedAt     int64  `json:"createdAt,omitempty"`
 }
 
@@ -47,11 +47,11 @@ type heartbeatConfig struct {
 // HeartbeatEngine runs scheduled task execution in a background goroutine.
 // It is owned by App and started during App.startup.
 type HeartbeatEngine struct {
-	mu       sync.Mutex
-	tasks    []HeartbeatTask
-	done     chan struct{}
-	running  bool
-	app      *App // back-reference for CreateTopic & SubmitToTab
+	mu      sync.Mutex
+	tasks   []HeartbeatTask
+	done    chan struct{}
+	running bool
+	app     *App // back-reference for CreateTopic & SubmitToTab
 }
 
 func newHeartbeatEngine(app *App) *HeartbeatEngine {

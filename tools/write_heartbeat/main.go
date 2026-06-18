@@ -29,7 +29,7 @@ func main() {
 		Tasks []Task `json:"tasks"`
 	}
 	if len(b) > 0 {
-		json.Unmarshal(b, &data)
+		_ = json.Unmarshal(b, &data)
 	}
 	if data.Tasks == nil {
 		data.Tasks = []Task{}
