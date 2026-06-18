@@ -1,0 +1,27 @@
+name: Cache impact guard
+
+on:
+  pull_request:
+    branches: [main-v2]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cache-impact-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cache-impact:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check cache-sensitive PR metadata
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash scripts/check-cache-impact.sh
