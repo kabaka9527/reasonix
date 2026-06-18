@@ -534,7 +534,7 @@ const planApprovedMessage = "Plan approved — plan mode is off; you’re cleare
 
 // planApprovedHint is appended to planApprovedMessage to suggest parallel
 // execution for independent tasks.
-const planApprovedHint = "\n\nIf some steps are independent (no overlapping files or dependencies), you can use the parallel_tasks tool to dispatch them concurrently for faster execution."
+const planApprovedHint = "\n\nUse parallel_tasks for independent steps (different files, no deps)."
 
 // runTurn runs one model turn, then applies the plan-approval gate. This is the
 // single, frontend-agnostic plan flow: in plan mode the model just researches
@@ -765,7 +765,7 @@ func (c *Controller) advanceGoalAfterTurn() bool {
 			c.goalIdleTurns++
 			if c.goalIdleTurns >= maxGoalIdleTurns {
 				c.goalIdleTurns = 0
-				c.goalInterceptMsg = "The agent has gone multiple turns without any tool calls. If progress is being made, describe what you are doing and use tools to verify. If you are blocked, explain the issue and use [goal:blocked:<reason>]."
+				c.goalInterceptMsg = "No tool calls in recent turns. Either make progress with tools or signal [goal:blocked:<reason>]."
 			}
 		}
 	}
@@ -822,12 +822,13 @@ func (c *Controller) incompleteGoalTodos() string {
 	}
 
 	var b strings.Builder
-	b.WriteString("The agent signaled goal completion but the following issues remain:\n")
+	b.WriteString("Goal signaled complete but issues remain:\n")
 	for _, p := range parts {
+		b.WriteString("- ")
 		b.WriteString(p)
 		b.WriteString("\n")
 	}
-	b.WriteString("\nIf the work is actually done, update your task list with todo_write or complete_step and run the required verification commands, then signal [goal:complete] again. Otherwise finish the remaining work.")
+	b.WriteString("Fix or use todo_write/complete_step to mark done, then [goal:complete] again.")
 	return b.String()
 }
 
@@ -1302,7 +1303,7 @@ func (c *Controller) applyPlanExec(input, display string) {
 	}
 
 	var b strings.Builder
-	b.WriteString("You are the execution conductor. Your job: route each plan step to the right sub-agent so each sub-agent has a clean, focused context.\n\n")
+	b.WriteString("You are the execution conductor. Route each step to the right sub-agent by module.\n\n")
 
 	// Detect project structure for module-aware routing.
 	modules := c.detectProjectModules()
@@ -1327,14 +1328,11 @@ func (c *Controller) applyPlanExec(input, display string) {
 		fmt.Fprintf(&b, "- [%s] %s (%s)\n", mark, t.Content, status)
 	}
 	b.WriteString("\n## Routing rules\n")
-	b.WriteString("1. Analyze each step: what files/directories does it touch? What module is it about?\n")
-	b.WriteString("2. Group steps by MODULE \u2014 steps in different modules can run in parallel batches\n")
-	b.WriteString("3. Research/exploration steps across different modules should use parallel_tasks\n")
-	b.WriteString("4. Steps in the SAME module must run sequentially (to avoid context pollution)\n")
-	b.WriteString("5. Dispatch each batch using parallel_tasks \u2014 each sub-agent gets ONLY its module\u2019s context\n")
-	b.WriteString("6. After each batch, verify results before proceeding to the next batch\n")
-	b.WriteString("7. If a step fails, fix it before moving on\n")
-	b.WriteString("8. Report which module each batch covered\n")
+	b.WriteString("1. Group steps by MODULE \u2014 same module = serial, different modules = parallel batches\n")
+	b.WriteString("2. Research/exploration across modules = use parallel_tasks\n")
+	b.WriteString("3. Dispatch each batch via parallel_tasks \u2014 each sub-agent gets one module\u2019s context\n")
+	b.WriteString("4. Verify each batch before the next\n")
+	b.WriteString("5. Failures: fix before moving on\n")
 	b.WriteString("\nGoal: each sub-agent focuses on one module and does not carry irrelevant context.\n")
 	if done > 0 {
 		fmt.Fprintf(&b, "\nNote: %d/%d steps are already completed. Focus on the remaining %d steps.\n", done, total, total-done)
@@ -1358,7 +1356,7 @@ func (c *Controller) applyPlanExec(input, display string) {
 }
 
 // prometheusPrompt is the strategic planner system prompt.
-const prometheusPrompt = "You are Prometheus, a strategic planner. Your job is to interview the user and produce a plan organized by project module.\n\nProcess:\n1. Ask one clarifying question at a time\n2. Cover: scope, module boundaries, files involved, constraints, test strategy\n3. Understand which modules/directories are affected\n4. When ready, output a numbered plan with each step tagged by module, plus acceptance criteria\n5. End with [goal:complete]\n6. Do not start implementing\n7. If research is needed before planning (e.g. exploring codebase patterns, checking existing implementations), use parallel_tasks to dispatch independent research directions concurrently instead of doing them one by one\n\nEach plan step should specify which file, directory, or module it belongs to. This lets the execution conductor route steps to the right sub-agent."
+const prometheusPrompt = "You are Prometheus, a strategic planner. Interview the user one question at a time. Cover: scope, modules, files, constraints, tests. When ready, output a numbered plan with each step tagged by module. End with [goal:complete]. Do not implement.\n\nFor independent research directions, use parallel_tasks before planning."
 
 // applyPrometheus starts an interactive planning interview, inspired by OMO's
 // Prometheus agent. It enters goal mode with a structured interview prompt.
