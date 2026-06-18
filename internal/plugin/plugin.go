@@ -778,6 +778,13 @@ func newTransport(ctx context.Context, s Spec) (transport, error) {
 }
 
 func (c *Client) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	res, err := c.t.call(ctx, method, params)
+	if err == nil || method == "initialize" || !isHTTPSessionExpired(err) {
+		return res, err
+	}
+	if initErr := c.initialize(ctx); initErr != nil {
+		return nil, fmt.Errorf("%w; reinitialize failed: %v", err, initErr)
+	}
 	return c.t.call(ctx, method, params)
 }
 
@@ -786,6 +793,11 @@ func (c *Client) notify(ctx context.Context, method string, params any) error {
 }
 
 func (c *Client) close() { c.t.close() }
+
+func isHTTPSessionExpired(err error) bool {
+	var expired *httpSessionExpiredError
+	return errors.As(err, &expired)
+}
 
 func (c *Client) initialize(ctx context.Context) error {
 	res, err := c.call(ctx, "initialize", map[string]any{
