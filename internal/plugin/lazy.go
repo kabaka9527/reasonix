@@ -92,11 +92,28 @@ func (s *lazySpawn) run() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err != nil {
+		if IsServerAlreadyConnected(err) {
+			// The server was already started by another controller sharing
+			// the same host. Fetch the tools from the existing client
+			// instead of entering the failed state.
+			if tools, err2 := s.host.ToolsFor(s.spec.Name); err2 == nil {
+				s.real = make(map[string]tool.Tool, len(tools))
+				for _, t := range tools {
+					s.real[t.Name()] = t
+				}
+				s.state = spawnReady
+				s.trySwap()
+				return
+			}
+			// ToolsFor failed — still not a real failure; just mark failed
+			// without recording it so /mcp status stays clean.
+			s.state = spawnFailed
+			s.spawnErr = err
+			return
+		}
 		s.state = spawnFailed
 		s.spawnErr = err
-		if !IsServerAlreadyConnected(err) {
-			s.host.RecordFailure(s.spec, err)
-		}
+		s.host.RecordFailure(s.spec, err)
 		return
 	}
 	s.real = make(map[string]tool.Tool, len(real))
@@ -204,11 +221,30 @@ func (lt *lazyTool) Execute(ctx context.Context, args json.RawMessage) (string, 
 		sp.mu.Lock()
 		defer sp.mu.Unlock()
 		if err != nil {
+			if IsServerAlreadyConnected(err) {
+				// Another tab on the shared host already started the
+				// server. Fetch the tools from the existing client.
+				if tools, err2 := sp.host.ToolsFor(sp.spec.Name); err2 == nil {
+					sp.real = make(map[string]tool.Tool, len(tools))
+					for _, t := range tools {
+						sp.real[t.Name()] = t
+					}
+					sp.state = spawnReady
+					sp.trySwap()
+					r := sp.real[lt.name]
+					if r != nil {
+						sp.mu.Unlock() // release lock before forwarding
+						return r.Execute(ctx, args)
+					}
+				}
+				// ToolsFor failed — not our fault, don't record as failure.
+				sp.state = spawnFailed
+				sp.spawnErr = err
+				return "", fmt.Errorf("MCP server %q failed to start: %w", sp.spec.Name, err)
+			}
 			sp.state = spawnFailed
 			sp.spawnErr = err
-			if !IsServerAlreadyConnected(err) {
-				sp.host.RecordFailure(sp.spec, err)
-			}
+			sp.host.RecordFailure(sp.spec, err)
 			return "", fmt.Errorf("MCP server %q failed to start: %w", sp.spec.Name, err)
 		}
 		sp.real = make(map[string]tool.Tool, len(real))

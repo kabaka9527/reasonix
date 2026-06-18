@@ -36,6 +36,7 @@ type WorkspaceTab struct {
 	ID            string              // stable random id
 	Scope         string              // "project" | "global"
 	WorkspaceRoot string              // project root dir (empty for global)
+	SharedHostKey string              // opaque key for the shared plugin host (set by buildTabController)
 	TopicID       string              // topic within the project
 	TopicTitle    string              // display title
 	SessionPath   string              // exact .jsonl file this tab continues
@@ -1396,6 +1397,12 @@ func (a *App) CloseTab(tabID string) error {
 		a.quiesceTabAutosave(tab)   // wait for any in-flight snapshot to finish
 		tab.Ctrl.Cancel()
 		tab.Ctrl.Close()
+		// Release the shared plugin host reference. The host stays alive as
+		// long as any other tab for the same workspace root holds a reference;
+		// on the last release the host is closed and its subprocesses exit.
+		if tab.SharedHostKey != "" {
+			a.releaseSharedHost(tab.SharedHostKey)
+		}
 	}
 	if tab.sink != nil {
 		tab.sink.clearContext() // stop further emissions (nil ctx -> Emit becomes no-op)
@@ -1516,6 +1523,15 @@ func (a *App) buildTabControllerWithLoadedSession(tab *WorkspaceTab, loadedSessi
 	a.saveTabsLocked()
 	a.mu.Unlock()
 
+	// Acquire a shared plugin host for this workspace root so MCP processes
+	// are launched once per root, not once per tab.
+	rootKey := tab.WorkspaceRoot
+	if rootKey == "" {
+		rootKey = "__global__" // stable key for global workspace tabs
+	}
+	tab.SharedHostKey = rootKey
+	sharedHost := a.acquireSharedHost(rootKey)
+
 	ctrl, err := boot.Build(buildCtx, boot.Options{
 		Model:          model,
 		RequireKey:     false,
@@ -1524,6 +1540,7 @@ func (a *App) buildTabControllerWithLoadedSession(tab *WorkspaceTab, loadedSessi
 		SessionDir:     sessionDir,
 		EffortOverride: cloneStringPtr(tab.effort),
 		TokenMode:      currentTabTokenMode(tab),
+		SharedHost:     sharedHost,
 	})
 	if err != nil {
 		a.mu.Lock()

@@ -635,6 +635,39 @@ func (h *Host) hasLocked(name string) bool {
 	return false
 }
 
+// HasClient reports whether a server with this name is already connected to the host.
+func (h *Host) HasClient(name string) bool { return h.has(name) }
+
+// ToolsFor returns the namespaced tool instances for an already-connected client.
+// An error is returned when no client with that name is connected.
+func (h *Host) ToolsFor(name string) ([]tool.Tool, error) {
+	h.mu.RLock()
+	closed := h.closed
+	h.mu.RUnlock()
+	if closed {
+		return nil, fmt.Errorf("plugin host is closed")
+	}
+
+	// Attempt to resolve via the existing Client.
+	c := h.client(name)
+	if c == nil {
+		return nil, fmt.Errorf("client %q not found on shared host", name)
+	}
+	return c.listTools(context.Background())
+}
+
+// client returns the named connected client, or nil.
+func (h *Host) client(name string) *Client {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for _, c := range h.clients {
+		if c.name == name {
+			return c
+		}
+	}
+	return nil
+}
+
 // Add connects one server live: it performs the MCP handshake, discovers the
 // server's tools (and prompts/resources when advertised), appends it to the
 // host, and returns its namespaced tools for the caller to register. ctx bounds a

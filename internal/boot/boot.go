@@ -101,6 +101,11 @@ type Options struct {
 	// SessionDir overrides where persisted chat transcripts are written. When
 	// empty, the shared CLI/global session directory is used.
 	SessionDir string
+	// SharedHost is an optional plugin.Host shared across controllers for the
+	// same workspace root. When set, boot.Build reuses its running clients
+	// instead of creating new subprocesses, and the caller manages the host's
+	// lifecycle. When nil, Build creates and owns a new host as before.
+	SharedHost *plugin.Host
 }
 
 // Build loads config, resolves the model(s), and returns a Controller wrapping a
@@ -245,9 +250,13 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		enabledBuiltins = tokenEconomyBuiltins(enabledBuiltins)
 	}
 	addBuiltins(reg, enabledBuiltins, cfg.WriteRootsForRoot(root), bashSpec, bashTimeout, searchSpec, stderr, root, proxySpec)
-	// Always construct a host, even with no plugins configured, so the controller's
-	// host pointer is stable for the session and `/mcp add` can hot-add into it.
-	pluginHost := plugin.NewHost()
+	// Use the caller-supplied shared host when set, so controllers for the same
+	// workspace root reuse running MCP processes (e.g. one CodeGraph daemon
+	// instead of one per tab). Otherwise construct a private host per controller.
+	pluginHost := opts.SharedHost
+	if pluginHost == nil {
+		pluginHost = plugin.NewHost()
+	}
 
 	// Partition configured plugins by tier so eager/lazy/background can each
 	// take the path that fits them. User entries default to background: the
@@ -312,17 +321,42 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 
 	// Eager: block until handshake. Failures show up in /mcp.
 	if len(eagerSpecs) > 0 {
-		host, ptools := plugin.StartAvailable(ctx, eagerSpecs)
-		pluginHost = host
-		for _, t := range ptools {
-			reg.Add(t)
-		}
-		// PhaseB (prompts + resources) runs on the boot ctx — which is the
-		// controller's session-scoped PluginCtx — so the auxiliary surfaces
-		// keep streaming in after Start returns without holding up the agent.
-		go host.StartPhaseB(ctx, sink)
-		if text, ok := MCPStartupNotice(host.Failures()); ok {
-			sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: text})
+		// When using a shared host, reuse already-connected clients and
+		// add new ones directly to the host instead of creating a separate one.
+		if opts.SharedHost != nil {
+			for _, s := range eagerSpecs {
+				if pluginHost.HasClient(s.Name) {
+					tools, err := pluginHost.ToolsFor(s.Name)
+					if err == nil {
+						for _, t := range tools {
+							reg.Add(t)
+						}
+						continue
+					}
+				}
+				tools, err := pluginHost.Add(ctx, s)
+				if err != nil {
+					sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
+						Text: fmt.Sprintf("mcp %s: %v", s.Name, err)})
+					continue
+				}
+				for _, t := range tools {
+					reg.Add(t)
+				}
+			}
+		} else {
+			host, ptools := plugin.StartAvailable(ctx, eagerSpecs)
+			pluginHost = host
+			for _, t := range ptools {
+				reg.Add(t)
+			}
+			// PhaseB (prompts + resources) runs on the boot ctx — which is the
+			// controller's session-scoped PluginCtx — so the auxiliary surfaces
+			// keep streaming in after Start returns without holding up the agent.
+			go host.StartPhaseB(ctx, sink)
+			if text, ok := MCPStartupNotice(host.Failures()); ok {
+				sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: text})
+			}
 		}
 	}
 
@@ -332,9 +366,31 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// and Close see one cohesive set of servers regardless of tier.
 	registerDeferred := func(specs []plugin.Spec, kick bool) {
 		for _, s := range specs {
-			cs, _ := plugin.LoadCachedSchema(s.Name, plugin.SpecFingerprint(s))
-			for _, t := range plugin.LazyToolset(s, cs, pluginHost, reg, ctx, kick) {
-				reg.Add(t)
+			// Already running on the shared host? Register tools directly.
+			if pluginHost.HasClient(s.Name) {
+				tools, err := pluginHost.ToolsFor(s.Name)
+				if err == nil {
+					for _, t := range tools {
+						reg.Add(t)
+					}
+					continue
+				}
+			}
+			if opts.SharedHost != nil {
+				// Shared host: register lazy tools WITHOUT kicking so the
+				// subprocess only starts on the first actual tool call.
+				// This avoids spawning MCP processes (e.g. CodeGraph) for
+				// every workspace root on boot — a tab that sits unused for
+				// days never pays the startup cost.
+				cs, _ := plugin.LoadCachedSchema(s.Name, plugin.SpecFingerprint(s))
+				for _, t := range plugin.LazyToolset(s, cs, pluginHost, reg, ctx, false) {
+					reg.Add(t)
+				}
+			} else {
+				cs, _ := plugin.LoadCachedSchema(s.Name, plugin.SpecFingerprint(s))
+				for _, t := range plugin.LazyToolset(s, cs, pluginHost, reg, ctx, kick) {
+					reg.Add(t)
+				}
 			}
 		}
 	}
@@ -346,6 +402,12 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	}
 
 	cleanup := pluginHost.Close
+	if opts.SharedHost != nil {
+		// The caller owns the shared host's lifecycle; the controller must not
+		// close it. A no-op cleanup keeps Controller.Close happy without
+		// shutting down MCP processes that other controllers still use.
+		cleanup = func() {}
+	}
 
 	// LSP tools resolve their servers on PATH and spawn lazily on first query, so
 	// registering them is cheap even when no server is installed (a query then
