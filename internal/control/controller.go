@@ -162,11 +162,11 @@ type Controller struct {
 	// goalIdleTurns counts consecutive turns without any tool call. When this
 	// exceeds the threshold an idle reminder is injected via goalInterceptMsg.
 	goalIdleTurns int
-	sessionPath       string
-	approvals         map[string]pendingApproval
-	asks              map[string]pendingAsk
-	granted           map[string]bool
-	nextID            int
+	sessionPath   string
+	approvals     map[string]pendingApproval
+	asks          map[string]pendingAsk
+	granted       map[string]bool
+	nextID        int
 	// turn counts model turns this session, passed to hooks in their payload.
 	turn int
 	// approvedPlanAutoApproveTools auto-allows writer tool calls without prompting.
@@ -917,13 +917,13 @@ func (c *Controller) saveGoalState() {
 	}
 	todos := c.executor.CanonicalTodoState()
 	state := goalState{
-		Goal:       c.goal,
-		Status:     c.goalStatus,
-		Turns:      c.goalTurns,
-		Blocks:     c.goalBlocks,
-		Block:      c.goalBlock,
-		Strict:     c.goalStrict,
-		Todos:      todos,
+		Goal:   c.goal,
+		Status: c.goalStatus,
+		Turns:  c.goalTurns,
+		Blocks: c.goalBlocks,
+		Block:  c.goalBlock,
+		Strict: c.goalStrict,
+		Todos:  todos,
 	}
 	data, err := json.Marshal(state)
 	if err != nil {
@@ -935,12 +935,12 @@ func (c *Controller) saveGoalState() {
 
 // goalState is the serializable form of a running goal.
 type goalState struct {
-	Goal   string            `json:"goal,omitempty"`
-	Status string            `json:"status,omitempty"`
-	Turns  int               `json:"turns,omitempty"`
-	Blocks int               `json:"blocks,omitempty"`
-	Block  string            `json:"block,omitempty"`
-	Strict bool              `json:"strict,omitempty"`
+	Goal   string              `json:"goal,omitempty"`
+	Status string              `json:"status,omitempty"`
+	Turns  int                 `json:"turns,omitempty"`
+	Blocks int                 `json:"blocks,omitempty"`
+	Block  string              `json:"block,omitempty"`
+	Strict bool                `json:"strict,omitempty"`
 	Todos  []evidence.TodoItem `json:"todos,omitempty"`
 }
 
@@ -3854,9 +3854,6 @@ func hasFile(dir, name string) bool {
 	_, err := os.Stat(filepath.Join(dir, name))
 	return err == nil
 }
-
-
-
 
 func listSourceDirs(root string, maxDepth int) []string {
 	skip := map[string]bool{

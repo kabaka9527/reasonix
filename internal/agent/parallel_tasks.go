@@ -7,15 +7,18 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
+	"reasonix/internal/event"
 	"reasonix/internal/jobs"
+	"reasonix/internal/provider"
 	"reasonix/internal/tool"
 )
 
 // ParallelTasksTool dispatches multiple sub-agent tasks concurrently and
-// collects all results. Each task runs in its own background sub-agent; the
-// tool blocks until every task finishes, then returns the aggregated output.
-// It wraps an inner *TaskTool to reuse its sub-agent machinery.
+// collects all results. Each sub-task runs as a foreground sub-agent in its
+// own goroutine, emitting nested events so the frontend renders independent
+// cards for each sub-task.
 type ParallelTasksTool struct {
 	taskTool *TaskTool
 	reg      *tool.Registry
@@ -30,7 +33,7 @@ func NewParallelTasksTool(taskTool *TaskTool, reg *tool.Registry) *ParallelTasks
 func (p *ParallelTasksTool) Name() string { return "parallel_tasks" }
 
 func (p *ParallelTasksTool) Description() string {
-	return "Dispatch multiple sub-agent tasks concurrently and collect their results. Each task runs in its own sub-agent in parallel. Blocks until all complete."
+	return "Dispatch multiple sub-agent tasks concurrently and collect their results. Each task runs in its own sub-agent in parallel. Blocks until all tasks complete."
 }
 
 func (p *ParallelTasksTool) Schema() json.RawMessage {
@@ -44,8 +47,8 @@ func (p *ParallelTasksTool) Schema() json.RawMessage {
       "type":"object",
       "properties":{
         "prompt":{"type":"string","description":"The task prompt for the sub-agent."},
-        "description":{"type":"string","description":"Optional short label shown in the job list."},
-        "tools":{"type":"array","items":{"type":"string"},"description":"Optional tool whitelist for the sub-agent."},
+        "description":{"type":"string","description":"Optional short label."},
+        "tools":{"type":"array","items":{"type":"string"},"description":"Optional tool whitelist."},
         "max_steps":{"type":"integer","description":"Optional max tool-call rounds.","minimum":1},
         "model":{"type":"string","description":"Optional model override."},
         "effort":{"type":"string","description":"Optional reasoning effort override."},
@@ -61,8 +64,7 @@ func (p *ParallelTasksTool) Schema() json.RawMessage {
 
 func (p *ParallelTasksTool) ReadOnly() bool { return false }
 
-// ParallelTaskItem mirrors one entry in the schema's tasks array.
-type ParallelTaskItem struct {
+type parallelTaskItem struct {
 	Prompt      string   `json:"prompt"`
 	Description string   `json:"description"`
 	Tools       []string `json:"tools"`
@@ -74,7 +76,7 @@ type ParallelTaskItem struct {
 
 func (p *ParallelTasksTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	var params struct {
-		Tasks []ParallelTaskItem `json:"tasks"`
+		Tasks []parallelTaskItem `json:"tasks"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", fmt.Errorf("invalid args: %w", err)
@@ -85,8 +87,26 @@ func (p *ParallelTasksTool) Execute(ctx context.Context, args json.RawMessage) (
 	if len(params.Tasks) == 1 {
 		return "", fmt.Errorf("parallel_tasks with a single task is equivalent to task; use task instead")
 	}
-	if err := validateParallelTaskItems(params.Tasks); err != nil {
-		return "", err
+
+	// Validate all tasks upfront before dispatching any.
+	for i, t := range params.Tasks {
+		if strings.TrimSpace(t.Prompt) == "" {
+			return "", fmt.Errorf("task %d: prompt is required", i+1)
+		}
+		for _, dep := range t.DependsOn {
+			if dep < 0 || dep >= len(params.Tasks) {
+				return "", fmt.Errorf("task %d: depends_on[%d] = %d out of range (0-%d)", i+1, dep, dep, len(params.Tasks)-1)
+			}
+			if dep == i {
+				return "", fmt.Errorf("task %d: self-referencing depends_on", i+1)
+			}
+		}
+	}
+
+	parentID, sink, _, ok := CallContext(ctx)
+	if !ok || sink == nil {
+		// Fallback: no event sink available, use background-jobs approach.
+		return p.runAsBackgroundJobs(ctx, params.Tasks)
 	}
 
 	type subResult struct {
@@ -126,10 +146,10 @@ func (p *ParallelTasksTool) Execute(ctx context.Context, args json.RawMessage) (
 
 	// Channels for task completion signals and for spawning tasks.
 	type runRequest struct {
-		idx    int
-		prompt string
-		label  string
-		tools  []string
+		idx      int
+		prompt   string
+		label    string
+		tools    []string
 		maxSteps int
 		model    string
 		effort   string
@@ -338,10 +358,14 @@ func (p *ParallelTasksTool) runAsBackgroundJobs(ctx context.Context, tasks []par
 	type jobRef struct {
 		id    string
 		label string
+		idx   int
 	}
 	var refs []jobRef
 
-	for i, t := range params.Tasks {
+	for i, t := range tasks {
+		if strings.TrimSpace(t.Prompt) == "" {
+			return "", fmt.Errorf("task %d: prompt is required", i+1)
+		}
 		label := t.Description
 		if label == "" {
 			label = fmt.Sprintf("task-%d", i+1)
@@ -374,7 +398,7 @@ func (p *ParallelTasksTool) runAsBackgroundJobs(ctx context.Context, tasks []par
 		if err != nil {
 			return "", fmt.Errorf("task %d dispatch: %w", i+1, err)
 		}
-		refs = append(refs, jobRef{id: extractJobID(result), label: label})
+		refs = append(refs, jobRef{id: extractJobID(result), label: label, idx: i})
 		_ = result
 	}
 
@@ -383,8 +407,10 @@ func (p *ParallelTasksTool) runAsBackgroundJobs(ctx context.Context, tasks []par
 	}
 
 	jobIDs := make([]string, len(refs))
-	for i, r := range refs {
-		jobIDs[i] = r.id
+	order := make(map[string]int)
+	for _, r := range refs {
+		jobIDs = append(jobIDs, r.id)
+		order[r.id] = r.idx
 	}
 
 	results := jm.WaitForSession(ctx, session, jobIDs, 0)
@@ -393,30 +419,29 @@ func (p *ParallelTasksTool) runAsBackgroundJobs(ctx context.Context, tasks []par
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "Completed %d parallel tasks:\n", len(results))
-	for i, r := range results {
-		if i > 0 {
-			b.WriteString("\n")
-		}
+	b.WriteString(fmt.Sprintf("Completed %d parallel tasks:\n", len(results)))
+	for _, r := range results {
+		idx := order[r.ID]
 		label := r.ID
 		if r.Label != "" {
 			label = r.Label
 		}
 		fmt.Fprintf(&b, "── %s ──\n[%s] %s\n%s", label, r.ID, r.Status, strings.TrimSpace(r.Output))
+		_ = idx
 	}
 	return b.String(), nil
 }
 
-func validateParallelTaskItems(tasks []ParallelTaskItem) error {
-	for i, t := range tasks {
-		if strings.TrimSpace(t.Prompt) == "" {
-			return fmt.Errorf("task %d: prompt is required", i+1)
-		}
+// resolveSubagentProvider resolves a provider for a sub-agent, using the
+// TaskTool's resolver or falling back to the task tool's own provider.
+func resolveSubagentProvider(tt *TaskTool, modelRef, effortRef string) (provider.Provider, *provider.Pricing, int, error) {
+	if tt.resolveProvider != nil && (modelRef != "" || effortRef != "") {
+		return tt.resolveProvider(modelRef, effortRef)
 	}
-	return nil
+	// Use the task tool's own defaults.
+	return tt.prov, tt.pricing, tt.contextWindow, nil
 }
 
-// extractJobID pulls the background job id from a task tool start message.
 func extractJobID(msg string) string {
 	quote := strings.Index(msg, `"`)
 	if quote < 0 {
