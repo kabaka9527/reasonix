@@ -24440,7 +24440,7 @@ a[href] {
 :root[data-theme-style] .app--creation .reasoning > .reasoning__head > span:first-of-type::before,
 .app--creation .turn-collapse[data-kind="reasoning"] > .reasoning__head > .turn-collapse__label::before,
 :root[data-theme-style] .app--creation .turn-collapse[data-kind="reasoning"] > .reasoning__head > .turn-collapse__label::before {
-  content: "深度思考";
+  content: attr(data-creation-label);
   font-size: 13px;
 }
 
@@ -24448,7 +24448,7 @@ a[href] {
 :root[data-theme-style] .app--creation .readonly-batch > .reasoning__head > .readonly-batch__label::before,
 .app--creation .turn-collapse[data-kind="tool"] > .reasoning__head > .turn-collapse__label::before,
 :root[data-theme-style] .app--creation .turn-collapse[data-kind="tool"] > .reasoning__head > .turn-collapse__label::before {
-  content: "工具调用";
+  content: attr(data-creation-label);
   font-size: 13px;
 }
 

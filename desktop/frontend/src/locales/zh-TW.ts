@@ -46,6 +46,12 @@ export const zhTW: Record<DictKey, string> = {
   "sidebar.expand": "展開側邊欄",
   "sidebar.expandBlocked": "關閉右側檔案面板後可展開側邊欄",
   "sidebar.resize": "調整側邊欄寬度",
+  "creation.sidebar.newChat": "新建對話",
+  "creation.sidebar.features": "功能",
+  "creation.sidebar.skills": "技能",
+  "creation.sidebar.messageChannels": "訊息通道",
+  "creation.reasoningLabel": "深度思考",
+  "creation.toolCallsLabel": "工具呼叫",
   "drawer.resize": "調整抽屜寬度",
 
   // 右側停靠區

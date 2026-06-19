@@ -625,6 +625,10 @@ function clampCreationSidebarWidth(width: number): number {
   return Math.min(SIDEBAR_MAX_WIDTH, Math.max(CREATION_SIDEBAR_MIN_WIDTH, Math.round(width)));
 }
 
+function clampStoredSidebarWidth(width: number): number {
+  return Math.min(SIDEBAR_MAX_WIDTH, Math.max(CREATION_SIDEBAR_MIN_WIDTH, Math.round(width)));
+}
+
 function clampRightDockPreviewWidth(width: number): number {
   return Math.min(RIGHT_DOCK_MAX_WIDTH, Math.max(RIGHT_DOCK_PREVIEW_MIN_WIDTH, Math.round(width)));
 }
@@ -663,11 +667,11 @@ function saveSidebarCollapsed(collapsed: boolean): void {
 }
 
 function loadSidebarWidth(): number {
-  return loadLayoutSize("sidebarWidthGraphite", defaultSidebarWidth(), clampSidebarWidth);
+  return loadLayoutSize("sidebarWidthGraphite", defaultSidebarWidth(), clampStoredSidebarWidth);
 }
 
 function saveSidebarWidth(width: number): void {
-  saveLayoutSize("sidebarWidthGraphite", width, clampSidebarWidth);
+  saveLayoutSize("sidebarWidthGraphite", width, clampStoredSidebarWidth);
 }
 
 function normalizeDesktopPlatform(value: string): DesktopPlatform {
@@ -1682,6 +1686,12 @@ export default function App() {
   const sidebarWidthClamp = desktopLayoutStyle === "creation" ? clampCreationSidebarWidth : clampSidebarWidth;
   const sidebarResizeMinWidth = desktopLayoutStyle === "creation" ? CREATION_SIDEBAR_MIN_WIDTH : SIDEBAR_MIN_WIDTH;
 
+  useEffect(() => {
+    if (desktopLayoutStyle === "creation" || sidebarWidth >= SIDEBAR_MIN_WIDTH) return;
+    setSidebarWidth(SIDEBAR_MIN_WIDTH);
+    saveSidebarWidth(SIDEBAR_MIN_WIDTH);
+  }, [desktopLayoutStyle, sidebarWidth]);
+
   const setExpandedSidebarWidth = useCallback((width: number) => {
     closeTransientOverlays();
     const next = sidebarWidthClamp(width);
@@ -2481,14 +2491,14 @@ export default function App() {
                 }}
               >
                 <SquarePen size={18} />
-                <span>{sidebarCreation ? "New Chat" : t("topbar.newSession")}</span>
+                <span>{sidebarCreation ? t("creation.sidebar.newChat") : t("topbar.newSession")}</span>
               </button>
             </>
           )}
 
           {sidebarCreation && (
             <section className="sidebar-feature-zone" aria-label={t("settings.title")}>
-              <div className="sidebar-feature-zone__title">功能</div>
+              <div className="sidebar-feature-zone__title">{t("creation.sidebar.features")}</div>
               <div className="sidebar-feature-zone__items">
                 <button
                   className="sidebar-feature-zone__item"
@@ -2499,7 +2509,7 @@ export default function App() {
                   }}
                 >
                   <Command size={14} aria-hidden="true" />
-                  <span>Skill技能</span>
+                  <span>{t("creation.sidebar.skills")}</span>
                 </button>
                 <button
                   className="sidebar-feature-zone__item"
@@ -2521,7 +2531,7 @@ export default function App() {
                   }}
                 >
                   <MessageSquare size={14} aria-hidden="true" />
-                  <span>消息通道</span>
+                  <span>{t("creation.sidebar.messageChannels")}</span>
                 </button>
                 <button
                   className="sidebar-feature-zone__item"

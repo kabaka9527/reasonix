@@ -951,6 +951,11 @@ function TurnCollapse({ items, durationMs, mode, subcalls, tabId }: TurnCollapse
     : displayItems.some((it) => it.kind === "assistant" && Boolean(it.reasoning))
       ? "reasoning"
       : "process";
+  const creationLabel = collapseKind === "tool"
+    ? t("creation.toolCallsLabel")
+    : collapseKind === "reasoning"
+      ? t("creation.reasoningLabel")
+      : label;
 
   // Pre-compute body: group consecutive completed read-only tools into ReadOnlyBatch
   const body: ReactNode[] = [];
@@ -992,7 +997,7 @@ function TurnCollapse({ items, durationMs, mode, subcalls, tabId }: TurnCollapse
         aria-expanded={open}
       >
         <ChevronRight className={`reasoning__chevron${open ? " reasoning__chevron--open" : ""}`} size={12} />
-        <span className="turn-collapse__label">{label}</span>
+        <span className="turn-collapse__label" data-creation-label={creationLabel}>{label}</span>
       </button>
       <div ref={bodyRef} className="turn-collapse__body">{body}</div>
     </div>

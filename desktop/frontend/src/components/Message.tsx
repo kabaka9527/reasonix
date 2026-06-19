@@ -617,7 +617,7 @@ export const AssistantMessage = memo(function AssistantMessage({
             aria-expanded={reasoningOpen}
           >
             <ProcessBrainIcon size={12} />
-            <span>{t("msg.thinking")}</span>
+            <span data-creation-label={t("creation.reasoningLabel")}>{t("msg.thinking")}</span>
             <span className="reasoning__meta">{item.streaming && !item.reasoningComplete ? t("msg.thinkingRunning") : t("msg.thinkingDone")}</span>
             <ChevronRight className={`reasoning__chevron${reasoningOpen ? " reasoning__chevron--open" : ""}`} size={12} />
           </button>
