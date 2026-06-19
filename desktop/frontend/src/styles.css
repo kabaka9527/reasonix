@@ -22886,8 +22886,430 @@ a[href] {
   display: none;
 }
 
-.app--creation .sidebar {
+.app--creation .sidebar,
+:root[data-theme-style] .app--creation .sidebar {
+  --project-tree-row-radius: 9px;
+  padding: 18px 12px 14px;
   border-right: 0;
+  background:
+    radial-gradient(110% 70% at 18% 0%, color-mix(in srgb, var(--accent) 5%, transparent) 0%, transparent 52%),
+    color-mix(in srgb, var(--sidebar-bg) 88%, transparent);
+}
+
+.app--creation .sidebar__brand,
+:root[data-theme-style] .app--creation .sidebar__brand {
+  min-height: 30px;
+  margin-bottom: 18px;
+  padding-inline: 8px;
+}
+
+.app--creation .sidebar__brand-logo,
+:root[data-theme-style] .app--creation .sidebar__brand-logo {
+  width: 118px;
+  height: 28px;
+  margin-left: -15px;
+}
+
+.app--creation .sidebar__new,
+:root[data-theme-style] .app--creation .sidebar__new {
+  flex-basis: 38px;
+  height: 38px;
+  min-height: 38px;
+  margin-bottom: 12px;
+  padding-inline: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: color-mix(in srgb, var(--accent) 84%, var(--fg));
+  box-shadow: none;
+}
+
+.app--creation .sidebar__new:hover,
+:root[data-theme-style] .app--creation .sidebar__new:hover {
+  border-color: color-mix(in srgb, var(--accent) 34%, transparent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: color-mix(in srgb, var(--accent) 94%, var(--fg));
+  filter: none;
+  transform: none;
+}
+
+.app--creation .sidebar-feature-zone,
+:root[data-theme-style] .app--creation .sidebar-feature-zone {
+  flex: 0 0 auto;
+  display: grid;
+  gap: 6px;
+  margin: 2px 0 16px;
+  padding: 0 0 2px;
+}
+
+.app--creation .sidebar-feature-zone__title,
+.app--creation .project-tree__header-title,
+:root[data-theme-style] .app--creation .sidebar-feature-zone__title,
+:root[data-theme-style] .app--creation .project-tree__header-title {
+  min-height: 24px;
+  padding: 2px 6px 0;
+  color: color-mix(in srgb, var(--fg-faint) 78%, transparent);
+  font-size: 12px;
+  font-weight: 640;
+  line-height: 1.3;
+}
+
+.app--creation .sidebar-feature-zone__items,
+:root[data-theme-style] .app--creation .sidebar-feature-zone__items {
+  display: grid;
+  gap: 4px;
+}
+
+.app--creation .sidebar-feature-zone__item,
+:root[data-theme-style] .app--creation .sidebar-feature-zone__item {
+  --wails-draggable: no-drag;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: color-mix(in srgb, var(--fg-dim) 86%, transparent);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 540;
+  text-align: left;
+}
+
+.app--creation .sidebar-feature-zone__item svg,
+:root[data-theme-style] .app--creation .sidebar-feature-zone__item svg {
+  flex: 0 0 auto;
+  color: color-mix(in srgb, var(--accent) 72%, var(--fg-faint));
+}
+
+.app--creation .sidebar-feature-zone__item:hover,
+.app--creation .sidebar-feature-zone__item:focus-visible,
+:root[data-theme-style] .app--creation .sidebar-feature-zone__item:hover,
+:root[data-theme-style] .app--creation .sidebar-feature-zone__item:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 12%, transparent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  color: var(--fg);
+}
+
+.app--creation .project-tree,
+:root[data-theme-style] .app--creation .project-tree {
+  gap: 13px;
+}
+
+.app--creation .project-tree__search,
+:root[data-theme-style] .app--creation .project-tree__search {
+  order: 1;
+  flex-basis: 36px;
+  height: 36px;
+  min-height: 36px;
+  margin: 0;
+  padding-inline: 11px;
+  border-color: color-mix(in srgb, var(--fg-faint) 9%, transparent);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--bg-elev) 12%, transparent);
+}
+
+.app--creation .project-tree__search:focus-within,
+:root[data-theme-style] .app--creation .project-tree__search:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 24%, transparent);
+  background: color-mix(in srgb, var(--bg-elev) 18%, transparent);
+}
+
+.app--creation .project-tree__header,
+:root[data-theme-style] .app--creation .project-tree__header {
+  order: 2;
+  min-height: 24px;
+  padding: 2px 6px 0;
+  color: color-mix(in srgb, var(--fg-faint) 78%, transparent);
+  font-size: 11px;
+  font-weight: 560;
+}
+
+.app--creation .project-tree__list,
+:root[data-theme-style] .app--creation .project-tree__list {
+  order: 3;
+}
+
+.app--creation .project-tree__header-icon,
+:root[data-theme-style] .app--creation .project-tree__header-icon {
+  opacity: 0.52;
+}
+
+.app--creation .project-tree__header-actions .project-tree__add-project,
+.app--creation .project-tree__header-actions .project-tree__collapse-all,
+.app--creation .project-tree__header-actions .project-tree__header-action-btn,
+:root[data-theme-style] .app--creation .project-tree__header-actions .project-tree__add-project,
+:root[data-theme-style] .app--creation .project-tree__header-actions .project-tree__collapse-all,
+:root[data-theme-style] .app--creation .project-tree__header-actions .project-tree__header-action-btn {
+  border-color: color-mix(in srgb, var(--fg-faint) 10%, transparent);
+  background: transparent;
+  box-shadow: none;
+  opacity: 0.62;
+}
+
+.app--creation .project-tree__header-actions,
+:root[data-theme-style] .app--creation .project-tree__header-actions {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.14s var(--ease-out);
+}
+
+.app--creation .project-tree__header:hover .project-tree__header-actions,
+.app--creation .project-tree__header:focus-within .project-tree__header-actions,
+:root[data-theme-style] .app--creation .project-tree__header:hover .project-tree__header-actions,
+:root[data-theme-style] .app--creation .project-tree__header:focus-within .project-tree__header-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.app--creation .project-tree__folder,
+.app--creation .project-tree__topic,
+:root[data-theme-style] .app--creation .project-tree__folder,
+:root[data-theme-style] .app--creation .project-tree__topic {
+  border-radius: var(--project-tree-row-radius);
+}
+
+.app--creation .project-tree__folder,
+:root[data-theme-style] .app--creation .project-tree__folder {
+  height: 32px;
+  min-height: 32px;
+  padding-inline: 2px;
+}
+
+.app--creation .project-tree__folder-main,
+:root[data-theme-style] .app--creation .project-tree__folder-main {
+  gap: 8px;
+  padding-left: 9px !important;
+}
+
+.app--creation .project-tree__icon-stack,
+:root[data-theme-style] .app--creation .project-tree__icon-stack {
+  display: none;
+}
+
+.app--creation .project-tree__folder-label,
+:root[data-theme-style] .app--creation .project-tree__folder-label {
+  font-size: 12px;
+  font-weight: 540;
+}
+
+.app--creation .project-tree__action-slot,
+:root[data-theme-style] .app--creation .project-tree__action-slot {
+  flex-basis: 28px;
+  width: 28px;
+  pointer-events: auto;
+}
+
+.app--creation .project-tree__new-topic,
+:root[data-theme-style] .app--creation .project-tree__new-topic {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.app--creation .project-tree__folder:hover .project-tree__new-topic,
+.app--creation .project-tree__folder:focus-within .project-tree__new-topic,
+.app--creation .project-tree__new-topic:focus-visible,
+.app--creation .project-tree__new-topic--active,
+:root[data-theme-style] .app--creation .project-tree__folder:hover .project-tree__new-topic,
+:root[data-theme-style] .app--creation .project-tree__folder:focus-within .project-tree__new-topic,
+:root[data-theme-style] .app--creation .project-tree__new-topic:focus-visible,
+:root[data-theme-style] .app--creation .project-tree__new-topic--active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.app--creation .project-tree__folder-color,
+:root[data-theme-style] .app--creation .project-tree__folder-color {
+  width: 7px;
+  height: 7px;
+}
+
+.app--creation .project-tree__folder:hover,
+.app--creation .project-tree__topic:hover,
+:root[data-theme-style] .app--creation .project-tree__folder:hover,
+:root[data-theme-style] .app--creation .project-tree__topic:hover {
+  background: color-mix(in srgb, var(--fg-faint) 5%, transparent);
+}
+
+.app--creation .project-tree__folder--active,
+.app--creation .project-tree__folder--menu-open,
+.app--creation .project-tree__folder--active:hover,
+:root[data-theme-style] .app--creation .project-tree__folder--active,
+:root[data-theme-style] .app--creation .project-tree__folder--menu-open,
+:root[data-theme-style] .app--creation .project-tree__folder--active:hover {
+  background: transparent;
+}
+
+.app--creation .project-tree__topic,
+:root[data-theme-style] .app--creation .project-tree__topic {
+  margin-left: 17px;
+  margin-right: 2px;
+  border: 1px solid transparent;
+}
+
+.app--creation .project-tree__topic--active,
+.app--creation .project-tree__topic--active:hover,
+:root[data-theme-style] .app--creation .project-tree__topic--active,
+:root[data-theme-style] .app--creation .project-tree__topic--active:hover {
+  border-color: transparent;
+  background: transparent;
+}
+
+.app--creation .project-tree__topic--active::before,
+:root[data-theme-style] .app--creation .project-tree__topic--active::before {
+  left: 6px;
+  top: 10px;
+  bottom: 10px;
+  width: 2px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--project-accent, var(--accent)) 82%, transparent);
+}
+
+.app--creation .project-tree__topic-main,
+:root[data-theme-style] .app--creation .project-tree__topic-main {
+  padding-left: 12px;
+}
+
+.app--creation .project-tree__topic--with-side,
+:root[data-theme-style] .app--creation .project-tree__topic--with-side {
+  min-height: 34px;
+}
+
+.app--creation .project-tree__topic--with-side .project-tree__topic-main,
+:root[data-theme-style] .app--creation .project-tree__topic--with-side .project-tree__topic-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  min-height: 34px;
+}
+
+.app--creation .project-tree__topic--with-side .project-tree__topic-copy,
+:root[data-theme-style] .app--creation .project-tree__topic--with-side .project-tree__topic-copy {
+  min-width: 0;
+  display: block;
+}
+
+.app--creation .project-tree__topic--with-side .project-tree__topic-heading,
+:root[data-theme-style] .app--creation .project-tree__topic--with-side .project-tree__topic-heading {
+  min-width: 0;
+}
+
+.app--creation .project-tree__topic-side,
+:root[data-theme-style] .app--creation .project-tree__topic-side {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 38px;
+  color: color-mix(in srgb, var(--fg-faint) 76%, transparent);
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.app--creation .sidebar__nav,
+:root[data-theme-style] .app--creation .sidebar__nav {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  padding: 12px 0 0;
+  border-top-color: color-mix(in srgb, var(--fg-faint) 9%, transparent);
+}
+
+.app--creation .sidebar__nav > .tooltip-trigger,
+:root[data-theme-style] .app--creation .sidebar__nav > .tooltip-trigger {
+  min-width: 0;
+}
+
+.app--creation .sidebar__navitem,
+:root[data-theme-style] .app--creation .sidebar__navitem {
+  width: 100%;
+  height: 30px;
+  justify-content: center;
+  padding: 0;
+  color: color-mix(in srgb, var(--fg-faint) 76%, transparent);
+}
+
+.app--creation .sidebar__navitem span,
+:root[data-theme-style] .app--creation .sidebar__navitem span {
+  display: none;
+}
+
+.app--creation .sidebar__navitem:hover,
+.app--creation .sidebar__navitem--active,
+:root[data-theme-style] .app--creation .sidebar__navitem:hover {
+  background: color-mix(in srgb, var(--fg-faint) 6%, transparent);
+  color: var(--fg-dim);
+}
+
+.app--creation .sidebar__navitem--active,
+:root[data-theme-style] .app--creation .sidebar__navitem--active {
+  color: var(--accent);
+}
+
+.app--creation .sidebar-collapse-toggle,
+:root[data-theme-style] .app--creation .sidebar-collapse-toggle {
+  --wails-draggable: no-drag;
+  position: absolute;
+  top: 50%;
+  left: calc(var(--sidebar-width) - 13px);
+  z-index: var(--z-layout-resizer-active);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 46px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--fg-faint) 13%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-elev) 34%, var(--bg));
+  color: color-mix(in srgb, var(--fg-faint) 80%, var(--accent));
+  box-shadow: 0 8px 20px color-mix(in srgb, #000 14%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+  transition: opacity 0.14s, border-color 0.14s, background 0.14s, color 0.14s, transform 0.14s;
+}
+
+.app--creation .sidebar:hover ~ .sidebar-collapse-toggle,
+.app--creation .sidebar-collapse-toggle:hover,
+.app--creation .sidebar-collapse-toggle:focus-visible,
+:root[data-theme-style] .app--creation .sidebar:hover ~ .sidebar-collapse-toggle,
+:root[data-theme-style] .app--creation .sidebar-collapse-toggle:hover,
+:root[data-theme-style] .app--creation .sidebar-collapse-toggle:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.app--creation .sidebar-collapse-toggle:hover,
+.app--creation .sidebar-collapse-toggle:focus-visible,
+:root[data-theme-style] .app--creation .sidebar-collapse-toggle:hover,
+:root[data-theme-style] .app--creation .sidebar-collapse-toggle:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+  background: color-mix(in srgb, var(--bg-elev) 54%, var(--bg));
+  color: var(--accent);
+}
+
+.app--creation .sidebar-collapse-toggle--pressed,
+:root[data-theme-style] .app--creation .sidebar-collapse-toggle--pressed {
+  transform: translateY(-50%) scale(0.96);
+}
+
+.app--creation .sidebar-collapse-toggle--collapsed,
+:root[data-theme-style] .app--creation .sidebar-collapse-toggle--collapsed {
+  left: 8px;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.app--creation .layout--sidebar-collapsed .sidebar-collapse-toggle,
+:root[data-theme-style] .app--creation .layout--sidebar-collapsed .sidebar-collapse-toggle {
+  left: 8px;
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .app--creation .sidebar-resizer::after,

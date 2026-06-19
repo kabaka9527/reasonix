@@ -11,6 +11,7 @@ import {
   CircleHelp,
   Command,
   Download,
+  Search,
   SquarePen,
   PanelLeft,
   PanelRight,
@@ -938,6 +939,8 @@ export default function App() {
   const [renamingTopicId, setRenamingTopicId] = useState<string | null>(null);
   const [topicTitleDraft, setTopicTitleDraft] = useState("");
   const [topicExportOpen, setTopicExportOpen] = useState(false);
+  const [sidebarSearchOpen, setSidebarSearchOpen] = useState(false);
+  const [sidebarSearchFocusSignal, setSidebarSearchFocusSignal] = useState(0);
   const [sidebarTogglePressed, setSidebarTogglePressed] = useState(false);
   const [workspaceTogglePressed, setWorkspaceTogglePressed] = useState(false);
   const [clearContextPending, setClearContextPending] = useState(false);
@@ -1564,6 +1567,17 @@ export default function App() {
     return tabs;
   }, []);
 
+  useEffect(() => {
+    const unsub = onEvent((e) => {
+      if (e.kind !== "turn_done") return;
+      window.setTimeout(() => {
+        setProjectRevision((value) => value + 1);
+        void refreshTabMetas();
+      }, 250);
+    });
+    return unsub;
+  }, [refreshTabMetas]);
+
   const blankSessionTarget = useCallback(() => {
     const activeWorkspaceRoot = activeTab?.scope === "project" ? activeTab.workspaceRoot || "" : "";
     const scope = activeWorkspaceRoot ? "project" : "global";
@@ -1655,6 +1669,7 @@ export default function App() {
     pulseSidebarToggle();
     anchorAppScrollToChat();
     const nextCollapsed = !sidebarCollapsed;
+    if (nextCollapsed) setSidebarSearchOpen(false);
     setSidebarCollapsed(nextCollapsed);
     saveSidebarCollapsed(nextCollapsed);
   }, [anchorAppScrollToChat, closeTransientOverlays, pulseSidebarToggle, sidebarCollapsed]);
@@ -2463,6 +2478,47 @@ export default function App() {
             </>
           )}
 
+          {sidebarCreation && (
+            <section className="sidebar-feature-zone" aria-label={t("settings.title")}>
+              <div className="sidebar-feature-zone__title">功能</div>
+              <div className="sidebar-feature-zone__items">
+                <button
+                  className="sidebar-feature-zone__item"
+                  type="button"
+                  onClick={() => {
+                    closeTransientOverlays();
+                    setSettingsTarget("skills");
+                  }}
+                >
+                  <Command size={14} aria-hidden="true" />
+                  <span>Skill技能</span>
+                </button>
+                <button
+                  className="sidebar-feature-zone__item"
+                  type="button"
+                  onClick={() => {
+                    closeTransientOverlays();
+                    setSettingsTarget("memory");
+                  }}
+                >
+                  <Brain size={14} aria-hidden="true" />
+                  <span>{t("settings.tab.memory")}</span>
+                </button>
+                <button
+                  className="sidebar-feature-zone__item"
+                  type="button"
+                  onClick={() => {
+                    closeTransientOverlays();
+                    setSettingsTarget("bots");
+                  }}
+                >
+                  <MessageSquare size={14} aria-hidden="true" />
+                  <span>消息通道</span>
+                </button>
+              </div>
+            </section>
+          )}
+
           <section className="sidebar__section sidebar__section--projects">
             <ProjectTree
               activeScope={activeTab?.scope}
@@ -2481,7 +2537,9 @@ export default function App() {
               }}
               timeFilter={topicTimeFilter}
               onTimeFilterChange={setTopicTimeFilter}
-              variant={sidebarWorkbench ? "workbench" : "classic"}
+              variant={sidebarWorkbench ? "workbench" : sidebarCreation ? "creation" : "classic"}
+              searchExpanded={!sidebarCreation || sidebarSearchOpen}
+              searchFocusSignal={sidebarSearchFocusSignal}
             />
           </section>
 
@@ -2535,6 +2593,23 @@ export default function App() {
             </nav>
           ) : (
             <nav className="sidebar__nav">
+              {sidebarCreation && (
+                <Tooltip label={t("projectTree.searchPlaceholder")} fill side="right" disabled={sidebarNavTooltipDisabled}>
+                  <button
+                    className={`sidebar__navitem sidebar__navitem--search${sidebarSearchOpen ? " sidebar__navitem--active" : ""}`}
+                    type="button"
+                    aria-label={t("projectTree.searchPlaceholder")}
+                    aria-pressed={sidebarSearchOpen}
+                    onClick={() => {
+                      setSidebarSearchOpen((open) => !open);
+                      setSidebarSearchFocusSignal((signal) => signal + 1);
+                    }}
+                  >
+                    <Search size={15} />
+                    <span>{t("tabBar.commandSearchCompact")}</span>
+                  </button>
+                </Tooltip>
+              )}
               <Tooltip label={t("sidebar.allHistory")} fill side="right" disabled={sidebarNavTooltipDisabled}>
                 <button
                   className="sidebar__navitem"
@@ -2578,6 +2653,18 @@ export default function App() {
           )}
 
         </aside>
+        {sidebarCreation && (
+          <button
+            className={`sidebar-collapse-toggle${sidebarCollapsed ? " sidebar-collapse-toggle--collapsed" : ""}${sidebarTogglePressed ? " sidebar-collapse-toggle--pressed" : ""}`}
+            type="button"
+            onClick={toggleSidebar}
+            aria-label={sidebarToggleTitle}
+            aria-pressed={!sidebarCollapsed}
+            title={sidebarToggleTitle}
+          >
+            {sidebarCollapsed ? <PanelRight size={14} /> : <PanelLeft size={14} />}
+          </button>
+        )}
         <button
           className="sidebar-resizer"
           type="button"
