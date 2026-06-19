@@ -170,12 +170,12 @@ export function AskCard({
       }
       actions={
         <>
-          {q.options.map((o) => {
+          {q.options.map((o, index) => {
             const on = (sel[q.id] ?? []).includes(o.label);
             return (
               <PromptAction
                 key={o.label}
-                keyLabel=""
+                keyLabel={q.options.length <= 9 ? String(index + 1) : ""}
                 label={o.label}
                 description={o.description}
                 onClick={() => toggle(q, o.label)}
