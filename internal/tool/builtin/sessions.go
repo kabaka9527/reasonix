@@ -26,7 +26,7 @@ func NewListSessionsTool(sessionDir string) *listSessionsTool {
 	return &listSessionsTool{sessionDir: sessionDir}
 }
 
-func (t *listSessionsTool) Name() string  { return "list_sessions" }
+func (t *listSessionsTool) Name() string   { return "list_sessions" }
 func (t *listSessionsTool) ReadOnly() bool { return true }
 
 func (t *listSessionsTool) Description() string {
@@ -79,14 +79,14 @@ func (t *listSessionsTool) Execute(_ context.Context, _ json.RawMessage) (string
 	})
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("# Saved Sessions (%d total)\n\n", len(sessions)))
+	fmt.Fprintf(&b, "# Saved Sessions (%d total)\n\n", len(sessions))
 	b.WriteString("| # | Timestamp | Model | Turns | File\n")
 	b.WriteString("|---|-----------|-------|-------|-----\n")
 	for i, s := range sessions {
 		ts := s.modTime.Format("2006-01-02 15:04")
 		model := modelFromPath(s.path)
-		b.WriteString(fmt.Sprintf("| %d | %s | %s | %d | `%s`\n",
-			i+1, ts, model, s.turns, filepath.Base(s.path)))
+		fmt.Fprintf(&b, "| %d | %s | %s | %d | `%s`\n",
+			i+1, ts, model, s.turns, filepath.Base(s.path))
 	}
 	b.WriteString("\nUse `read_session` with the filename under \"File\" to view the full conversation.\n")
 	return b.String(), nil
@@ -104,7 +104,7 @@ func NewReadSessionTool(sessionDir string) *readSessionTool {
 	return &readSessionTool{sessionDir: sessionDir}
 }
 
-func (t *readSessionTool) Name() string  { return "read_session" }
+func (t *readSessionTool) Name() string   { return "read_session" }
 func (t *readSessionTool) ReadOnly() bool { return true }
 
 func (t *readSessionTool) Description() string {
@@ -167,8 +167,8 @@ func (t *readSessionTool) Execute(_ context.Context, args json.RawMessage) (stri
 	}
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("# Session: %s\n", filepath.Base(sessionPath)))
-	b.WriteString(fmt.Sprintf("Messages: %d\n\n", len(msgs)))
+	fmt.Fprintf(&b, "# Session: %s\n", filepath.Base(sessionPath))
+	fmt.Fprintf(&b, "Messages: %d\n\n", len(msgs))
 
 	turnCount := 0
 	for _, m := range msgs {
@@ -184,12 +184,12 @@ func (t *readSessionTool) Execute(_ context.Context, args json.RawMessage) (stri
 				b.WriteString("... (truncated, use `max_turns` to increase limit)\n")
 				break
 			}
-			b.WriteString(fmt.Sprintf("## User (turn %d)\n\n", turnCount))
+			fmt.Fprintf(&b, "## User (turn %d)\n\n", turnCount)
 			b.WriteString(m.Content)
 			b.WriteString("\n\n")
 
 		case provider.RoleAssistant:
-			b.WriteString(fmt.Sprintf("## Assistant (turn %d)\n\n", max(turnCount, 1)))
+			fmt.Fprintf(&b, "## Assistant (turn %d)\n\n", max(turnCount, 1))
 			if m.ReasoningContent != "" {
 				const maxReasoning = 500
 				rc := m.ReasoningContent
@@ -207,13 +207,13 @@ func (t *readSessionTool) Execute(_ context.Context, args json.RawMessage) (stri
 			if len(m.ToolCalls) > 0 {
 				b.WriteString("### Tool Calls\n\n")
 				for _, tc := range m.ToolCalls {
-					b.WriteString(fmt.Sprintf("- `%s(%s)`\n", tc.Name, string(tc.Arguments)))
+					fmt.Fprintf(&b, "- `%s(%s)`\n", tc.Name, string(tc.Arguments))
 				}
 				b.WriteString("\n")
 			}
 
 		case provider.RoleTool:
-			b.WriteString(fmt.Sprintf("### Tool Result: %s\n\n", m.Name))
+			fmt.Fprintf(&b, "### Tool Result: %s\n\n", m.Name)
 			const maxToolResult = 1000
 			content := m.Content
 			if len(content) > maxToolResult {
