@@ -11,6 +11,7 @@ import (
 	"unicode"
 
 	"reasonix/internal/evidence"
+	"reasonix/internal/store"
 )
 
 const (
@@ -85,10 +86,7 @@ type goalAdvanceResult struct {
 
 // goalStatePath derives a session's persisted goal-state sidecar.
 func goalStatePath(sessionPath string) string {
-	if sessionPath == "" {
-		return ""
-	}
-	return strings.TrimSuffix(sessionPath, ".jsonl") + ".goal-state.json"
+	return store.SessionGoalState(sessionPath)
 }
 
 func (g *goalMachine) setStatePath(path string) {

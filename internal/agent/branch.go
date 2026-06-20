@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"reasonix/internal/fileutil"
+	"reasonix/internal/store"
 )
 
 // BranchMeta is the small sidecar record that turns flat session files into a
@@ -84,10 +85,7 @@ func BranchID(path string) string {
 }
 
 func BranchMetaPath(sessionPath string) string {
-	if sessionPath == "" {
-		return ""
-	}
-	return sessionPath + ".meta"
+	return store.SessionMeta(sessionPath)
 }
 
 func LoadBranchMeta(sessionPath string) (BranchMeta, bool, error) {

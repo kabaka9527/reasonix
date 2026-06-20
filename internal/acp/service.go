@@ -21,6 +21,7 @@ import (
 	"reasonix/internal/jobs"
 	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
+	"reasonix/internal/store"
 )
 
 // SessionParams is everything a Factory needs to assemble one ACP session's
@@ -1423,7 +1424,7 @@ func parseSessionUpdatedAt(s string) time.Time {
 func deleteSessionFiles(sessionPath string) error {
 	paths := []string{
 		sessionPath,
-		sessionPath + ".meta",
+		store.SessionMeta(sessionPath),
 		acpMetaPath(sessionPath),
 	}
 	for _, path := range paths {
@@ -1469,10 +1470,7 @@ func delayedDeleteSessionFiles(sessionPath string, destroy control.SessionDestro
 }
 
 func checkpointPath(sessionPath string) string {
-	if sessionPath == "" {
-		return ""
-	}
-	return strings.TrimSuffix(sessionPath, ".jsonl") + ".ckpt"
+	return store.SessionCheckpointDir(sessionPath)
 }
 
 // mcpSpecs converts ACP MCP server declarations to plugin.Spec.

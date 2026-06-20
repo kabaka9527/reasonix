@@ -13,6 +13,7 @@ import (
 
 	"reasonix/internal/fileutil"
 	"reasonix/internal/provider"
+	"reasonix/internal/store"
 )
 
 const cleanupPendingExt = ".cleanup-pending.json"
@@ -151,11 +152,7 @@ type CleanupPendingInfo struct {
 
 // CleanupPendingPath returns the durable marker path for a session transcript.
 func CleanupPendingPath(sessionPath string) string {
-	sessionPath = strings.TrimSpace(sessionPath)
-	if sessionPath == "" {
-		return ""
-	}
-	return strings.TrimSuffix(sessionPath, ".jsonl") + cleanupPendingExt
+	return store.SessionCleanupPending(sessionPath)
 }
 
 // MarkCleanupPending hides a logically removed session from resume/list surfaces
