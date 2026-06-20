@@ -474,6 +474,7 @@ export const en = {
   "heartbeat.freqEvery": "Every",
   "heartbeat.unitMin": "min",
   "heartbeat.unitHour": "hour",
+  "heartbeat.timeWindow": "Time window",
   "heartbeat.cycleDaily": "Daily",
   "heartbeat.cycleWeekly": "Weekly",
   "heartbeat.cycleBiweekly": "Bi-weekly",

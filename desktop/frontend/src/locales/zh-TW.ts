@@ -329,6 +329,7 @@ export const zhTW: Record<DictKey, string> = {
   "heartbeat.freqEvery": "每",
   "heartbeat.unitMin": "分鐘",
   "heartbeat.unitHour": "小時",
+  "heartbeat.timeWindow": "時間窗口",
   "heartbeat.cycleDaily": "每天",
   "heartbeat.cycleWeekly": "每週",
   "heartbeat.cycleBiweekly": "雙週",

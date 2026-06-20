@@ -37,7 +37,9 @@ type HeartbeatTask struct {
 	TopicID       string `json:"topicId,omitempty"`       // created topic, reused on re-run
 	LastRunAt     int64  `json:"lastRunAt,omitempty"`     // unix millis
 	CreatedAt     int64  `json:"createdAt,omitempty"`
-	ApprovalMode  string `json:"approvalMode"`            // "ask" | "auto" | "yolo"; empty defaults to "yolo"
+	ApprovalMode    string `json:"approvalMode"`            // "ask" | "auto" | "yolo"; empty defaults to "yolo"
+	TimeWindowStart string `json:"timeWindowStart,omitempty"` // "HH:MM" — interval tasks only run after this time (inclusive)
+	TimeWindowEnd   string `json:"timeWindowEnd,omitempty"`   // "HH:MM" — interval tasks only run before this time (exclusive)
 }
 
 // heartbeatConfig is the on-disk format.
@@ -375,7 +377,52 @@ func heartbeatTaskDueAt(t HeartbeatTask, now time.Time) bool {
 	if baseMillis == 0 {
 		return true
 	}
-	return now.Sub(time.UnixMilli(baseMillis)) >= d
+	if now.Sub(time.UnixMilli(baseMillis)) < d {
+		return false
+	}
+
+	// For interval-based tasks with a time window, check if current time
+	// falls within the configured window. If outside, defer until the next
+	// tick that falls within the window.
+	if t.TimeWindowStart != "" || t.TimeWindowEnd != "" {
+		return heartbeatWithinTimeWindow(t, now)
+	}
+
+	return true
+}
+
+// heartbeatWithinTimeWindow returns true when now falls within the task's
+// configured time window. If the window is empty it returns true.
+// Format: "HH:MM" in 24-hour clock; start inclusive, end exclusive.
+func heartbeatWithinTimeWindow(t HeartbeatTask, now time.Time) bool {
+	startH, startM, startOK := parseHeartbeatClock(t.TimeWindowStart)
+	endH, endM, endOK := parseHeartbeatClock(t.TimeWindowEnd)
+
+	if !startOK && !endOK {
+		return true // no window configured
+	}
+
+	minutes := now.Hour()*60 + now.Minute()
+
+	// If only start is set: allow from start to end of day
+	if startOK && !endOK {
+		return minutes >= startH*60+startM
+	}
+
+	// If only end is set: allow from midnight to end
+	if !startOK && endOK {
+		return minutes < endH*60+endM
+	}
+
+	startMin := startH*60 + startM
+	endMin := endH*60 + endM
+
+	if startMin < endMin {
+		// Normal window: 09:00-17:00
+		return minutes >= startMin && minutes < endMin
+	}
+	// Cross-midnight window: 22:00-06:00
+	return minutes >= startMin || minutes < endMin
 }
 
 type heartbeatSchedule struct {

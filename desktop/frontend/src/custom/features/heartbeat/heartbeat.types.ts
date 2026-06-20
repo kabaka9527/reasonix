@@ -12,4 +12,6 @@ export interface HeartbeatTask {
   lastRunAt?: number;  // unix millis
   createdAt?: number;
   approvalMode?: "ask" | "auto" | "yolo"; // empty defaults to "yolo"
+  timeWindowStart?: string; // "HH:MM" — interval tasks only run after this time
+  timeWindowEnd?: string;   // "HH:MM" — interval tasks only run before this time
 }
