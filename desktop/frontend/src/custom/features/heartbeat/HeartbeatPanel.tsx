@@ -648,22 +648,6 @@ function CycleEditor({
           <option value="yearly">{t("heartbeat.cycleYearly")}</option>
         </select>
 
-        {(cycleType === "daily" || cycleType === "weekly" || cycleType === "biweekly") && (
-          <div className="heartbeat-editor__weekdays">
-            {WEEKDAYS.map((wd) => (
-              <button
-                key={wd.key}
-                type="button"
-                className={`heartbeat-editor__weekday-btn${selectedDays.includes(wd.key) ? " heartbeat-editor__weekday-btn--on" : ""}`}
-                onClick={() => onDayToggle(wd.key)}
-                aria-pressed={selectedDays.includes(wd.key)}
-              >
-                {wd.label}
-              </button>
-            ))}
-          </div>
-        )}
-
         {cycleType === "monthly" && (
           <select
             className="heartbeat-editor__freq-select"
@@ -706,6 +690,22 @@ function CycleEditor({
           onChange={(e) => onTimeChange(e.target.value)}
         />
       </div>
+
+      {(cycleType === "daily" || cycleType === "weekly" || cycleType === "biweekly") && (
+        <div className="set-seg" style={{ alignSelf: "flex-start", marginTop: "6px" }}>
+          {WEEKDAYS.map((wd) => (
+            <button
+              key={wd.key}
+              type="button"
+              className={`set-seg__btn${selectedDays.includes(wd.key) ? " set-seg__btn--on" : ""}`}
+              onClick={() => onDayToggle(wd.key)}
+              aria-pressed={selectedDays.includes(wd.key)}
+            >
+              {wd.label}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
