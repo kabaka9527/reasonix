@@ -358,6 +358,32 @@ func TestCoordinatorAllowsGuidanceOnlyExecutorHandoff(t *testing.T) {
 	}
 }
 
+func TestCoordinatorAllowsGuidanceOnlyPlanWithExecutorToolContext(t *testing.T) {
+	planner := &mockProvider{name: "planner", chunks: []provider.Chunk{
+		{Type: provider.ChunkText, Text: "Tell the user to open the audio app, enable the checkbox, and listen to compare the difference."},
+		{Type: provider.ChunkDone},
+	}}
+	exec := &mockProvider{name: "executor", streams: [][]provider.Chunk{
+		{
+			{Type: provider.ChunkText, Text: "Open the app, enable the checkbox, then listen and compare."},
+			{Type: provider.ChunkDone},
+		},
+	}}
+
+	execReg := tool.NewRegistry()
+	execReg.Add(coordinatorTestTool{name: "read_file", readOnly: true, output: "file"})
+	execReg.Add(coordinatorTestTool{name: "write_file", readOnly: false, output: "wrote file"})
+	executor := New(exec, execReg, NewSession("exec-sys"), Options{}, event.Discard)
+	coord := NewCoordinator(planner, NewSession("planner-sys"), nil, nil, Options{}, executor, 0, event.Discard, nil)
+
+	if err := coord.Run(context.Background(), "Please advise on the manual audio check."); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := len(exec.requests); got != 1 {
+		t.Fatalf("executor requests = %d, want guidance final answer without nudge despite tool context", got)
+	}
+}
+
 func TestCoordinatorNudgesWorkTaskEvenIfPlannerMentionsUserGuidance(t *testing.T) {
 	planner := &mockProvider{name: "planner", chunks: []provider.Chunk{
 		{Type: provider.ChunkText, Text: "Tell the user to edit main.go and add the missing branch."},
@@ -394,6 +420,42 @@ func TestCoordinatorNudgesWorkTaskEvenIfPlannerMentionsUserGuidance(t *testing.T
 	}
 }
 
+func TestCoordinatorNudgesMixedGuidanceAndWorkTask(t *testing.T) {
+	planner := &mockProvider{name: "planner", chunks: []provider.Chunk{
+		{Type: provider.ChunkText, Text: "Tell the user to summarize the behavior and update README."},
+		{Type: provider.ChunkDone},
+	}}
+	exec := &mockProvider{name: "executor", streams: [][]provider.Chunk{
+		{
+			{Type: provider.ChunkText, Text: "Here is the current behavior summary."},
+			{Type: provider.ChunkDone},
+		},
+		{
+			{Type: provider.ChunkToolCall, ToolCall: &provider.ToolCall{ID: "call-1", Name: "write_file", Arguments: `{"path":"README.md"}`}},
+			{Type: provider.ChunkDone},
+		},
+		{
+			{Type: provider.ChunkText, Text: "Done."},
+			{Type: provider.ChunkDone},
+		},
+	}}
+
+	execReg := tool.NewRegistry()
+	execReg.Add(coordinatorTestTool{name: "write_file", readOnly: false, output: "wrote file"})
+	executor := New(exec, execReg, NewSession("exec-sys"), Options{}, event.Discard)
+	coord := NewCoordinator(planner, NewSession("planner-sys"), nil, nil, Options{}, executor, 0, event.Discard, nil)
+
+	if err := coord.Run(context.Background(), "summarize the current behavior and update the README"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := len(exec.requests); got != 3 {
+		t.Fatalf("executor requests = %d, want mixed guidance/work task to nudge before tool call", got)
+	}
+	if got := lastUser(exec.requests[1]); !strings.Contains(got, "Use your available tools now to carry out the task") {
+		t.Fatalf("second executor request missing handoff nudge message: %q", got)
+	}
+}
+
 func TestCoordinatorSkipsExecutorWhenPlannerConcludesNoChanges(t *testing.T) {
 	planner := &mockProvider{name: "planner", chunks: []provider.Chunk{
 		{Type: provider.ChunkText, Text: "No changes are needed; the current implementation already handles this."},
@@ -412,6 +474,16 @@ func TestCoordinatorSkipsExecutorWhenPlannerConcludesNoChanges(t *testing.T) {
 	}
 	if got := len(exec.requests); got != 0 {
 		t.Fatalf("executor requests = %d, want skip after no-op planner conclusion", got)
+	}
+	messages := executor.session.Messages
+	if got := len(messages); got != 3 {
+		t.Fatalf("executor session messages = %d, want system + user + no-op assistant", got)
+	}
+	if got := messages[1].Content; !strings.Contains(got, "check whether the fix is already present") {
+		t.Fatalf("persisted executor user message = %q, want original task", got)
+	}
+	if got := messages[2].Content; !strings.Contains(got, "No changes are needed") {
+		t.Fatalf("persisted executor assistant message = %q, want no-op planner conclusion", got)
 	}
 }
 
@@ -433,6 +505,35 @@ func TestCoordinatorDoesNotTreatGenericPositivePlanAsNoOp(t *testing.T) {
 	}
 	if got := len(exec.requests); got == 0 {
 		t.Fatal("executor should run for a plan that still contains work")
+	}
+}
+
+func TestCoordinatorDoesNotSkipExecutorForPartialNoOpPlanWithActions(t *testing.T) {
+	planner := &mockProvider{name: "planner", chunks: []provider.Chunk{
+		{Type: provider.ChunkText, Text: "No changes are needed in code, but run the test suite."},
+		{Type: provider.ChunkDone},
+	}}
+	exec := &mockProvider{name: "executor", streams: [][]provider.Chunk{
+		{
+			{Type: provider.ChunkToolCall, ToolCall: &provider.ToolCall{ID: "call-1", Name: "bash", Arguments: `{"cmd":"go test ./..."}`}},
+			{Type: provider.ChunkDone},
+		},
+		{
+			{Type: provider.ChunkText, Text: "Tests passed."},
+			{Type: provider.ChunkDone},
+		},
+	}}
+
+	execReg := tool.NewRegistry()
+	execReg.Add(coordinatorTestTool{name: "bash", readOnly: false, output: "ok"})
+	executor := New(exec, execReg, NewSession("exec-sys"), Options{}, event.Discard)
+	coord := NewCoordinator(planner, NewSession("planner-sys"), nil, nil, Options{}, executor, 0, event.Discard, nil)
+
+	if err := coord.Run(context.Background(), "check the implementation and test it"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := len(exec.requests); got != 2 {
+		t.Fatalf("executor requests = %d, want tool execution and final answer", got)
 	}
 }
 

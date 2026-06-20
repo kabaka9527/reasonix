@@ -153,7 +153,7 @@ func isLowRiskQuestion(lower string) bool {
 		strings.HasPrefix(lower, "有没有") || strings.HasPrefix(lower, "能不能") ||
 		strings.HasPrefix(lower, "可以吗") || strings.HasPrefix(lower, "对吗") ||
 		strings.HasPrefix(lower, "是不是") || strings.HasPrefix(lower, "请问") {
-		return !containsAny(lower, complexIntentTerms)
+		return !containsAny(lower, complexIntentTerms) && !containsAny(lower, lowRiskWorkRequestTerms)
 	}
 	return false
 }
@@ -189,6 +189,12 @@ var complexIntentTerms = []string{
 	"e2e", "wire up", "integration", "fix the issue", "build a",
 	"实现", "新增", "支持", "重构", "迁移", "改造", "端到端", "联调", "接入",
 	"修复这个问题", "修一下这个问题", "补齐", "设计",
+}
+
+var lowRiskWorkRequestTerms = []string{
+	"fix", "update", "remove", "delete", "edit", "write", "create", "add ",
+	"repair", "patch", "run ", "build", "修改", "修复", "更新", "删除", "移除",
+	"编辑", "写入", "创建", "新增", "运行", "构建",
 }
 
 var multiSurfaceTerms = []string{

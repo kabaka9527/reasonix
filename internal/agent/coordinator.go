@@ -170,6 +170,7 @@ func (c *Coordinator) Run(ctx context.Context, input string) error {
 	}
 	c.sink.Emit(event.Event{Kind: event.Phase, Text: c.executor.prov.Name() + " · executing"})
 	if isNoOpPlan(plan) {
+		c.persistExecutorNoOp(ctx, input, plan)
 		c.sink.Emit(event.Event{Kind: event.Text, Text: plan})
 		return nil
 	}
@@ -179,6 +180,9 @@ func (c *Coordinator) Run(ctx context.Context, input string) error {
 func isNoOpPlan(plan string) bool {
 	lower := strings.ToLower(strings.TrimSpace(plan))
 	if lower == "" {
+		return false
+	}
+	if containsNoOpActionTerm(lower) {
 		return false
 	}
 	noOp := []string{
@@ -213,6 +217,31 @@ func isNoOpPlan(plan string) bool {
 		}
 	}
 	return false
+}
+
+func containsNoOpActionTerm(lower string) bool {
+	terms := []string{
+		" add ", " add docs", " add tests", " update ", " edit ", " write ",
+		" create ", " delete ", " remove ", " patch ", " refactor ", " implement ",
+		" run ", " test ", " build ", " fix ",
+		"新增", "补充", "更新", "编辑", "写入", "创建", "删除", "移除",
+		"运行", "测试", "构建", "修复", "实现", "重构",
+	}
+	padded := " " + lower + " "
+	for _, term := range terms {
+		if strings.Contains(padded, term) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Coordinator) persistExecutorNoOp(ctx context.Context, input, plan string) {
+	if c == nil || c.executor == nil || c.executor.session == nil {
+		return
+	}
+	c.executor.session.Add(provider.Message{Role: provider.RoleUser, Content: c.executor.withReasoningLanguage(input), Images: userImages(ctx)})
+	c.executor.session.Add(provider.Message{Role: provider.RoleAssistant, Content: plan})
 }
 
 // plan streams a plan from the planner and appends it to the planner session, so

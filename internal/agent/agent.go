@@ -1139,6 +1139,9 @@ func parseExecutorHandoff(input string) (task, plan string, ok bool) {
 	if !ok {
 		return "", "", false
 	}
+	if beforeToolContext, _, found := strings.Cut(plan, "\n\nExecutor tool context:"); found {
+		plan = beforeToolContext
+	}
 	return strings.TrimSpace(task), strings.TrimSpace(plan), true
 }
 
@@ -1163,8 +1166,8 @@ func handoffTaskLooksTextOnly(task string) bool {
 	if lower == "" {
 		return false
 	}
-	if strings.HasPrefix(lower, "what ") || strings.HasPrefix(lower, "why ") || strings.HasPrefix(lower, "how ") {
-		return !containsAnySubstring(lower, executorHandoffWorkRequestTerms)
+	if containsAnySubstring(lower, executorHandoffWorkRequestTerms) {
+		return false
 	}
 	return containsAnySubstring(lower, executorHandoffTextOnlyTaskTerms)
 }
@@ -1201,7 +1204,8 @@ var executorHandoffDeferralPhrases = []string{
 
 var executorHandoffWorkRequestTerms = []string{
 	"implement", "fix", "refactor", "migrate", "edit", "write", "create", "delete",
-	"test", "build", "repair", "patch", "修改", "修复", "实现", "新增", "重构", "迁移", "补齐",
+	"update", "remove", "add ", "test", "build", "repair", "patch",
+	"修改", "修复", "实现", "新增", "重构", "迁移", "补齐", "更新", "删除", "移除",
 }
 
 var executorHandoffTextOnlyTaskTerms = []string{
@@ -1213,9 +1217,9 @@ var executorHandoffTextOnlyTaskTerms = []string{
 var executorHandoffLocalActionTerms = []string{
 	"write_file", "read_file", "apply_patch", "bash",
 	"workspace", "repo", "repository", "codebase", "file", "path",
-	"write ", "edit ", "modify ", "create ", "delete ", "patch ", "refactor ", "implement ",
+	"write ", "edit ", "modify ", "create ", "delete ", "remove ", "update ", "add ", "patch ", "refactor ", "implement ",
 	"run ", "command", "test", "build",
-	"文件", "路径", "仓库", "代码", "写入", "编辑", "修改", "创建", "删除", "运行", "命令", "测试", "构建",
+	"文件", "路径", "仓库", "代码", "写入", "编辑", "修改", "创建", "删除", "移除", "更新", "新增", "运行", "命令", "测试", "构建",
 }
 
 var executorHandoffTextOnlyPlanTerms = []string{
