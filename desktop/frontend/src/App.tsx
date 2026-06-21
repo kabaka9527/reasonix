@@ -2218,6 +2218,7 @@ export default function App() {
     if (activeTabId) void handleTabClose(activeTabId);
   }, [activeTabId, handleTabClose], Boolean(activeTabId));
   useGlobalShortcut("shortcuts.show", () => setShortcutsOpen(true));
+  useGlobalShortcut("sidebar.toggle", toggleSidebar, [toggleSidebar]);
 
   // --- Topic shortcut navigation (Cmd+1-10) ---
   const visibleTopicsRef = useRef<TopicShortcutEntry[]>([]);
