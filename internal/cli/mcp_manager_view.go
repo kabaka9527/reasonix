@@ -254,8 +254,6 @@ func mcpActionsFor(v mcpServerView, configPath string) []mcpActionItem {
 		out = append(out, mcpActionItem{mcpActionConnect, "Reconnect"})
 	case "disabled":
 		out = append(out, mcpActionItem{mcpActionConnect, "Enable and connect"})
-	default:
-		out = append(out, mcpActionItem{mcpActionConnect, "Connect now"})
 	}
 	out = appendMCPConfigActions(out, v, configPath)
 	if mcpCanClearAuth(v) {
@@ -309,7 +307,7 @@ func mcpStatusLabel(v mcpServerView) string {
 	case v.Status == "failed":
 		return red("✕ failed")
 	case v.Status == "deferred":
-		return "○ connect on use"
+		return "○ preparing in background"
 	case v.Status == "initializing":
 		return "◌ connecting..."
 	case v.Status == "disabled":

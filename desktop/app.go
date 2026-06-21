@@ -3824,13 +3824,15 @@ type SkillsSettingsView struct {
 }
 
 // ServerView is one MCP server for the drawer. Status is "connected" (with
-// tool/prompt/resource counts), "deferred" (lazy/on-demand startup enabled),
-// "failed" (with the connection error), "initializing" (background startup in
-// progress), or "disabled".
+// tool/prompt/resource counts), "deferred" (enabled but idle), "failed" (with
+// the connection error), "initializing" (background startup in progress), or
+// "disabled".
 type ServerView struct {
 	Name           string     `json:"name"`
 	Transport      string     `json:"transport"`
 	Status         string     `json:"status"`
+	StartIntent    string     `json:"startIntent,omitempty"`
+	RuntimeState   string     `json:"runtimeState,omitempty"`
 	BuiltIn        bool       `json:"builtIn,omitempty"`
 	Configured     bool       `json:"configured,omitempty"`
 	AutoStart      bool       `json:"autoStart"`
@@ -3968,6 +3970,8 @@ func (a *App) mcpServersView() []ServerView {
 		for _, s := range h.Servers() {
 			if disabledView, ok := disabled[s.Name]; ok {
 				disabledView.Status = "disabled"
+				disabledView.RuntimeState = "idle"
+				disabledView.StartIntent = "off"
 				disabledView.Error = ""
 				if p, ok := configured[s.Name]; ok {
 					disabledView = withPluginConfig(disabledView, p)
@@ -3981,7 +3985,7 @@ func (a *App) mcpServersView() []ServerView {
 			seen[s.Name] = true
 			connected[s.Name] = true
 			view := ServerView{
-				Name: s.Name, Transport: s.Transport, Status: "connected",
+				Name: s.Name, Transport: s.Transport, Status: "connected", RuntimeState: "ready",
 				Tools: s.Tools, Prompts: s.Prompts, Resources: s.Resources,
 				ToolList: pluginToolsToView(s.ToolList),
 			}
@@ -3993,16 +3997,27 @@ func (a *App) mcpServersView() []ServerView {
 		for _, f := range h.Failures() {
 			seen[f.Name] = true
 			view := ServerView{
-				Name: f.Name, Transport: f.Transport, Status: "failed", Error: f.Error,
+				Name: f.Name, Transport: f.Transport, Status: "failed", RuntimeState: "issue", Error: f.Error,
 			}
 			if p, ok := configured[f.Name]; ok {
 				view = withPluginConfig(view, p)
 			}
 			out = append(out, view)
 		}
+		for _, name := range h.ConnectingServers() {
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			view := ServerView{Name: name, Status: "initializing", RuntimeState: "connecting"}
+			if p, ok := configured[name]; ok {
+				view = withPluginConfig(view, p)
+			}
+			out = append(out, view)
+		}
 	}
-	// Configured servers that are neither connected nor failed are either lazy
-	// (deferred), background/eager (initializing), or toggled off this session.
+	// Configured servers that are neither connected, connecting, nor failed are
+	// idle: disabled/off or automatic background startup waiting for its next kick.
 	if len(configuredEntries) > 0 {
 		for _, p := range configuredEntries {
 			if seen[p.Name] {
@@ -4010,6 +4025,8 @@ func (a *App) mcpServersView() []ServerView {
 			}
 			if s, ok := disabled[p.Name]; ok {
 				s.Status = "disabled"
+				s.RuntimeState = "idle"
+				s.StartIntent = "off"
 				s = withPluginConfig(s, p)
 				s.Error = ""
 				out = append(out, s)
@@ -4019,15 +4036,12 @@ func (a *App) mcpServersView() []ServerView {
 				continue
 			}
 			status := "disabled"
+			startIntent := "off"
 			if p.ShouldAutoStart() {
-				switch p.ResolvedTier() {
-				case "background", "eager":
-					status = "initializing"
-				default:
-					status = "deferred"
-				}
+				status = "deferred"
+				startIntent = mcpStartIntent(p)
 			}
-			out = append(out, withPluginConfig(ServerView{Name: p.Name, Status: status}, p))
+			out = append(out, withPluginConfig(ServerView{Name: p.Name, Status: status, StartIntent: startIntent, RuntimeState: "idle"}, p))
 			seen[p.Name] = true
 		}
 	}
@@ -4045,6 +4059,26 @@ func (a *App) mcpServersView() []ServerView {
 	return out
 }
 
+func mcpStartIntent(p config.PluginEntry) string {
+	if !p.ShouldAutoStart() {
+		return "off"
+	}
+	return "automatic"
+}
+
+func mcpRuntimeState(status string) string {
+	switch status {
+	case "connected":
+		return "ready"
+	case "initializing":
+		return "connecting"
+	case "failed":
+		return "issue"
+	default:
+		return "idle"
+	}
+}
+
 func withPluginConfig(v ServerView, p config.PluginEntry) ServerView {
 	tt := p.Type
 	if tt == "" {
@@ -4054,6 +4088,15 @@ func withPluginConfig(v ServerView, p config.PluginEntry) ServerView {
 	v.Configured = true
 	v.AutoStart = p.ShouldAutoStart()
 	v.Tier = p.ResolvedTier()
+	if v.StartIntent == "" {
+		v.StartIntent = mcpStartIntent(p)
+	}
+	if v.Status == "disabled" {
+		v.StartIntent = "off"
+	}
+	if v.RuntimeState == "" {
+		v.RuntimeState = mcpRuntimeState(v.Status)
+	}
 	v.Command = p.Command
 	v.Args = append([]string(nil), p.Args...)
 	v.URL = p.URL
@@ -4465,11 +4508,10 @@ func (a *App) UpdateMCPServer(name string, in MCPServerInput) error {
 	}
 	a.mu.RUnlock()
 	wasConnected := mcpConnected(ctrl, name)
-	wasFailed := mcpFailed(ctrl, name)
 	if wasConnected {
 		ctrl.DisconnectMCPServer(name)
 	}
-	if !sessionDisabled && (wasConnected || wasFailed || updated.ResolvedTier() != "lazy") {
+	if !sessionDisabled {
 		if _, err := ctrl.ConnectMCPServer(updated); err != nil {
 			recordMCPFailure(ctrl, updated, err)
 			return nil
@@ -4650,7 +4692,7 @@ func (a *App) SetMCPServerTier(name, tier string) error {
 	if err := a.saveDesktopMCPServer(updated); err != nil {
 		return err
 	}
-	if tier != "lazy" && tab != nil && tab.Ctrl != nil && !mcpConnected(tab.Ctrl, name) {
+	if tab != nil && tab.Ctrl != nil && !mcpConnected(tab.Ctrl, name) {
 		if _, err := tab.Ctrl.ConnectMCPServer(updated); err != nil {
 			recordMCPFailure(tab.Ctrl, updated, err)
 			return nil
@@ -4784,12 +4826,12 @@ func normalizeMCPTier(tier string) string {
 	switch strings.ToLower(strings.TrimSpace(tier)) {
 	case "eager":
 		return "eager"
-	case "background":
+	case "background", "lazy":
 		return "background"
 	case "":
 		return "background"
 	default:
-		return "lazy"
+		return "background"
 	}
 }
 
