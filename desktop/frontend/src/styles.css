@@ -21148,7 +21148,7 @@ a[href] {
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
-  
+
 :root[data-theme-style] .sidebar-resizer::after {
   background: var(--border-soft);
 }
