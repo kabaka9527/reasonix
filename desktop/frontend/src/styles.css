@@ -24978,7 +24978,7 @@ a[href] {
   gap: 8px;
 }
 
-/* ── Topic shortcut badges (Cmd+1-10 overlay) ────────────────────────── */
+/* Topic shortcut badges (Cmd/Ctrl+1-9 overlay) */
 
 .project-tree__topic-shortcut {
   position: absolute;

@@ -1,9 +1,9 @@
-// useTopicShortcuts — Cmd hold detection + Cmd+1-10 navigation for sidebar topics.
+// useTopicShortcuts - Cmd/Ctrl hold detection plus 1-9 sidebar topic navigation.
 //
 // When the user holds Cmd (macOS) or Ctrl (Windows/Linux) for a brief moment
-// without pressing another key, shortcut badges (⌘1 … ⌘0) appear over the
+// without pressing another key, shortcut badges (⌘1 ... ⌘9) appear over the
 // sidebar topic list. Releasing the modifier hides them immediately. Pressing
-// Cmd+1-10 while the badges are visible navigates to the matching topic.
+// Cmd/Ctrl+1-9 navigates to the matching topic.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -16,6 +16,15 @@ type TopicShortcutEntry = {
   topicId: string;
   sessionPath?: string;
 };
+
+type TopicShortcutKeyboardEvent = Pick<globalThis.KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "defaultPrevented">;
+
+export function topicShortcutIndexFromEvent(event: TopicShortcutKeyboardEvent): number | null {
+  if (event.defaultPrevented) return null;
+  if (!event.metaKey && !event.ctrlKey) return null;
+  if (!/^[1-9]$/.test(event.key)) return null;
+  return Number(event.key) - 1;
+}
 
 export function useTopicShortcuts(
   enabled = true,

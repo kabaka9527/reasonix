@@ -115,7 +115,7 @@ import { applyTextSize, DEFAULT_TEXT_SIZE, getTextSize, nextTextSize } from "./l
 import { useViewportHeightVar, useWindowStatePersistence } from "./lib/windowState";
 import { availableWorkspacePanelWidth, resolveWorkspacePanelWidth, workspacePanelAriaMinWidth } from "./lib/workspaceLayout";
 import { useGlobalShortcut } from "./lib/keyboardShortcuts";
-import { useTopicShortcuts, type TopicShortcutEntry } from "./lib/topicShortcuts";
+import { topicShortcutIndexFromEvent, useTopicShortcuts, type TopicShortcutEntry } from "./lib/topicShortcuts";
 import logoWordmark from "./assets/logo-wordmark.svg";
 
 const HistoryPanel = lazy(() => import("./components/HistoryPanel").then((module) => ({ default: module.HistoryPanel })));
@@ -2220,7 +2220,7 @@ export default function App() {
   useGlobalShortcut("shortcuts.show", () => setShortcutsOpen(true));
   useGlobalShortcut("sidebar.toggle", toggleSidebar, [toggleSidebar]);
 
-  // --- Topic shortcut navigation (Cmd+1-10) ---
+  // --- Topic shortcut navigation (Cmd/Ctrl+1-9) ---
   const visibleTopicsRef = useRef<TopicShortcutEntry[]>([]);
   const handleVisibleTopicsChange = useCallback((topics: TopicShortcutEntry[]) => {
     visibleTopicsRef.current = topics;
@@ -2230,17 +2230,14 @@ export default function App() {
   }, [handleOpenTopic]);
   const { showBadges: showTopicBadges } = useTopicShortcuts(!sidebarCollapsed);
 
-  // Register Cmd+1-10 shortcuts for topic navigation
+  // Register Cmd/Ctrl+1-9 shortcuts for topic navigation
   useEffect(() => {
     if (sidebarCollapsed) return;
     const onKeydown = (event: globalThis.KeyboardEvent) => {
-      const isMod = event.metaKey || event.ctrlKey;
-      if (!isMod) return;
-      const num = parseInt(event.key, 10);
-      if (isNaN(num) || num < 1 || num > 9) return;
+      const idx = topicShortcutIndexFromEvent(event);
+      if (idx === null) return;
       event.preventDefault();
       const topics = visibleTopicsRef.current;
-      const idx = num === 10 ? 0 : num - 1;
       if (idx < topics.length) {
         handleNavigateTopic(topics[idx]);
       }
