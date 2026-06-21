@@ -1,4 +1,4 @@
-import { mcpServerLifecycleActions } from "../lib/mcpServerLifecycle";
+import { mcpServerLifecycleActions, mcpServerRetryableFromAvailableList } from "../lib/mcpServerLifecycle";
 import type { ServerView } from "../lib/types";
 
 function ok(value: unknown, message: string) {
@@ -35,5 +35,11 @@ ok(!automaticIdle.canReconnect, "automatic idle server should wait for backgroun
 
 const failed = mcpServerLifecycleActions({ ...server("failed"), runtimeState: "issue" });
 ok(failed.showRetryInRow, "failed server row should expose retry");
+
+ok(mcpServerRetryableFromAvailableList(server("initializing")), "connecting server should be included in available-list retry all");
+ok(mcpServerRetryableFromAvailableList({ ...server("deferred"), startIntent: "automatic" }), "automatic idle server should be included in available-list retry all");
+ok(!mcpServerRetryableFromAvailableList(server("connected")), "connected server should be excluded from available-list retry all");
+ok(!mcpServerRetryableFromAvailableList({ ...server("disabled"), startIntent: "off" }), "disabled server should be excluded from available-list retry all");
+ok(!mcpServerRetryableFromAvailableList({ ...server("failed"), runtimeState: "issue" }), "failed server is handled by the failure banner retry all");
 
 console.log("capabilities panel MCP actions");

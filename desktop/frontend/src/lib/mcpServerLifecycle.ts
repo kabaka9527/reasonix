@@ -29,3 +29,8 @@ export function mcpServerLifecycleActions(s: ServerView): {
     canReconnect: state === "ready" || state === "issue",
   };
 }
+
+export function mcpServerRetryableFromAvailableList(s: ServerView): boolean {
+  if (s.status === "connected" || s.status === "disabled" || s.status === "failed") return false;
+  return startIntent(s) !== "off";
+}
