@@ -6470,7 +6470,10 @@ a[href] {
   color: var(--fg-dim);
   font-size: 11.5px;
   line-height: 1.4;
+  overflow: visible;
+  text-overflow: clip;
   white-space: normal;
+  overflow-wrap: anywhere;
 }
 .prompt-shelf__header-actions,
 .prompt-shelf__quick-actions {
