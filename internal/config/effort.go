@@ -74,6 +74,13 @@ func EffortCapabilityForEntry(e *ProviderEntry) EffortCapability {
 		// runs with thinking on out of the box; "auto" means "don't override
 		// the model default" (== adaptive for M3).
 		return EffortCapability{Supported: true, Levels: []string{"auto", "adaptive", "disabled"}, Default: "adaptive"}
+	case isZhipuEntry(e):
+		// Zhipu GLM exposes a binary thinking knob (enabled|disabled) on its
+		// OpenAI-compatible endpoint and ignores reasoning_effort, so /effort
+		// mirrors that vocabulary. Default is "enabled" because GLM runs with
+		// thinking on out of the box; "auto" means "don't override the model
+		// default" (== enabled for GLM).
+		return EffortCapability{Supported: true, Levels: []string{"auto", "enabled", "disabled"}, Default: "enabled"}
 	case e != nil && e.Kind == "anthropic":
 		return EffortCapability{Supported: true, Levels: []string{"auto", "low", "medium", "high", "xhigh", "max"}, Default: "auto"}
 	default:
@@ -139,6 +146,21 @@ func NormalizeEffort(e *ProviderEntry, raw string) (string, error) {
 			return "disabled", nil
 		default:
 			return "", fmt.Errorf("usage: /effort auto|adaptive|disabled")
+		}
+	case isZhipuEntry(e):
+		// GLM's knob is binary (enabled|disabled); map Anthropic / OpenAI-style
+		// depth levels onto the nearest valid value so a stale /effort high|low
+		// still works. "off" is a retired DeepSeek level meaning "no thinking",
+		// which maps to "disabled".
+		switch level {
+		case "enabled", "disabled":
+			return level, nil
+		case "off":
+			return "disabled", nil
+		case "low", "medium", "high", "xhigh", "max":
+			return "enabled", nil
+		default:
+			return "", fmt.Errorf("usage: /effort auto|enabled|disabled")
 		}
 	case e != nil && e.Kind == "anthropic":
 		switch level {
@@ -260,6 +282,13 @@ func isDeepSeekEntry(e *ProviderEntry) bool {
 // just gates on the openai kind.
 func isMiniMaxEntry(e *ProviderEntry) bool {
 	return e != nil && e.Kind == "openai" && openai.IsMiniMax(e.BaseURL)
+}
+
+// isZhipuEntry reports whether the entry points at Zhipu's OpenAI-compatible
+// endpoint for GLM models. See openai.IsZhipu for the host-matching rule; the
+// entry-wrapper just gates on the openai kind.
+func isZhipuEntry(e *ProviderEntry) bool {
+	return e != nil && e.Kind == "openai" && openai.IsZhipu(e.BaseURL)
 }
 
 func resolvedModelReasoningCapability(e *ProviderEntry) (modelReasoningCapability, bool) {

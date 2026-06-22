@@ -6,6 +6,8 @@
 //     reasoning_effort as a depth hint.
 //   - api.minimaxi.com → emits thinking.type=adaptive|disabled (M3's binary
 //     knob) instead of reasoning_effort, since M3 has no level scale.
+//   - open.bigmodel.cn / api.z.ai (Zhipu GLM) → emits thinking.type=enabled|
+//     disabled instead of reasoning_effort, which Zhipu silently ignores.
 //   - everything else (MiMo and other OpenAI-compatible gateways) uses the
 //     vanilla reasoning_effort scale (low/medium/high).
 package openai
@@ -70,6 +72,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 	}
 	deepseek := protocol == "deepseek" || (protocol == "" && IsDeepSeek(cfg.BaseURL))
 	minimax := protocol == "" && IsMiniMax(cfg.BaseURL)
+	zhipu := protocol == "" && IsZhipu(cfg.BaseURL)
 	switch {
 	case protocol == "none":
 		effort = ""
@@ -93,6 +96,16 @@ func New(cfg provider.Config) (provider.Provider, error) {
 		case "adaptive", "disabled":
 		default:
 			return nil, fmt.Errorf("openai: provider %q uses MiniMax thinking; effort must be adaptive or disabled", name)
+		}
+	case zhipu:
+		// Zhipu GLM gates chain-of-thought through `thinking.type`
+		// (enabled|disabled) and silently ignores reasoning_effort, so /effort
+		// mirrors that binary knob. The config effort layer normalises depth
+		// levels onto one of these; "" means auto == the GLM default (thinking on).
+		switch effort {
+		case "", "enabled", "disabled":
+		default:
+			return nil, fmt.Errorf("openai: provider %q uses Zhipu thinking; effort must be enabled or disabled", name)
 		}
 	case effort != "":
 		// Non-DeepSeek backends use OpenAI's reasoning_effort scale (low/medium/
@@ -119,6 +132,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 		model:        cfg.Model,
 		deepseek:     deepseek,
 		minimax:      minimax,
+		zhipu:        zhipu,
 		vision:       vision,
 		visionDetail: visionDetail,
 		effort:       effort,
@@ -147,6 +161,7 @@ type client struct {
 	http         *http.Client
 	deepseek     bool
 	minimax      bool          // true for api.minimaxi.com — emits MiniMax-M3's thinking knob instead of reasoning_effort
+	zhipu        bool          // true for Zhipu GLM (bigmodel.cn / z.ai) — gates thinking via thinking.type, ignores reasoning_effort
 	vision       bool          // model accepts image input — embed attached images as image_url parts
 	visionDetail string        // image_url detail hint (low|high); "" = auto/omit
 	effort       string        // reasoning_effort for OpenAI; thinking.type for MiniMax; "" = auto/provider default
@@ -317,6 +332,16 @@ func (c *client) buildRequest(req provider.Request) chatRequest {
 		t := c.effort
 		if t == "" {
 			t = "adaptive" // /effort auto == the M3 model default
+		}
+		out.Thinking = &thinkingMode{Type: t}
+		out.ReasoningEffort = ""
+	case c.zhipu:
+		// Zhipu GLM's binary thinking knob: "enabled" (default, thinking on) or
+		// "disabled". reasoning_effort is silently ignored by the endpoint, so we
+		// omit it and drive chain-of-thought purely through thinking.type.
+		t := c.effort
+		if t == "" {
+			t = "enabled" // auto == the GLM default (thinking on)
 		}
 		out.Thinking = &thinkingMode{Type: t}
 		out.ReasoningEffort = ""

@@ -440,6 +440,65 @@ func TestNewMiniMaxSetsFlag(t *testing.T) {
 	}
 }
 
+// TestBuildRequestZhipuThinking covers the Zhipu GLM wire shape: thinking.type
+// is enabled|disabled and reasoning_effort is never sent (the endpoint ignores
+// it). Auto (empty effort) defaults to "enabled" — the GLM model default.
+func TestBuildRequestZhipuThinking(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		effort       string
+		wantThinking string
+	}{
+		{name: "auto-defaults-to-enabled", effort: "", wantThinking: "enabled"},
+		{name: "enabled", effort: "enabled", wantThinking: "enabled"},
+		{name: "disabled", effort: "disabled", wantThinking: "disabled"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := (&client{model: "glm-4.5-air", zhipu: true, effort: tc.effort}).buildRequest(provider.Request{})
+			if req.Thinking == nil || req.Thinking.Type != tc.wantThinking {
+				t.Fatalf("Thinking = %+v, want %q", req.Thinking, tc.wantThinking)
+			}
+			if req.ReasoningEffort != "" {
+				t.Fatalf("Zhipu must not send reasoning_effort, got %q", req.ReasoningEffort)
+			}
+		})
+	}
+}
+
+// TestNewZhipuEffortValidation locks in boot-time validation for the Zhipu path.
+// The config effort layer remaps depth levels, so by the time effort reaches the
+// factory it must be one of: "", "enabled", "disabled".
+func TestNewZhipuEffortValidation(t *testing.T) {
+	base := provider.Config{Name: "glm", BaseURL: "https://open.bigmodel.cn/api/paas/v4", Model: "glm-4.5-air", APIKey: "k"}
+	for _, ok := range []string{"", "enabled", "disabled"} {
+		if _, err := New(withEffort(base, ok)); err != nil {
+			t.Errorf("effort=%q should be accepted: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"high", "low", "max", "adaptive"} {
+		if _, err := New(withEffort(base, bad)); err == nil {
+			t.Errorf("effort=%q should be rejected", bad)
+		}
+	}
+}
+
+// TestNewZhipuSetsFlag is a smoke test for base-URL detection across both the
+// China (bigmodel.cn) and international (z.ai) GLM endpoints.
+func TestNewZhipuSetsFlag(t *testing.T) {
+	for _, baseURL := range []string{
+		"https://open.bigmodel.cn/api/paas/v4",
+		"https://api.z.ai/api/paas/v4",
+	} {
+		p, err := New(provider.Config{Name: "glm", BaseURL: baseURL, Model: "glm-4.5-air", APIKey: "k"})
+		if err != nil {
+			t.Fatalf("New(%q): %v", baseURL, err)
+		}
+		if c := p.(*client); !c.zhipu {
+			t.Errorf("zhipu flag not set for baseURL=%q", baseURL)
+		}
+	}
+}
+
 func withEffort(c provider.Config, effort string) provider.Config {
 	extra := c.Extra
 	if extra == nil {

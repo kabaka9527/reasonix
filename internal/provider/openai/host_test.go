@@ -70,3 +70,37 @@ func TestIsMiniMax(t *testing.T) {
 		}
 	}
 }
+
+// TestIsZhipu pins the host-matching rule for Zhipu GLM across both the China
+// (bigmodel.cn) and international (z.ai) endpoints.
+func TestIsZhipu(t *testing.T) {
+	for _, tc := range []struct {
+		baseURL string
+		want    bool
+	}{
+		// Canonical China endpoint
+		{"https://open.bigmodel.cn/api/paas/v4", true},
+		{"https://open.bigmodel.cn", true},
+		// Subdomains under the China apex
+		{"https://api.bigmodel.cn/v1", true},
+		// Canonical international endpoint
+		{"https://api.z.ai/api/paas/v4", true},
+		{"https://api.z.ai", true},
+		// Subdomain under the z.ai apex
+		{"https://open.z.ai/v1", true},
+		// Bare apexes rejected (misconfiguration)
+		{"https://bigmodel.cn/v1", false},
+		{"https://z.ai", false},
+		// Other vendors must not match
+		{"https://api.deepseek.com", false},
+		{"https://api.minimaxi.com/v1", false},
+		{"https://api.openai.com/v1", false},
+		// Garbage
+		{"", false},
+		{"not-a-url", false},
+	} {
+		if got := IsZhipu(tc.baseURL); got != tc.want {
+			t.Errorf("IsZhipu(%q) = %v, want %v", tc.baseURL, got, tc.want)
+		}
+	}
+}
