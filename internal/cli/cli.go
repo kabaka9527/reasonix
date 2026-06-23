@@ -484,6 +484,14 @@ func runServe(args []string) int {
 	} else if srv.AuthMode() == "password" {
 		fmt.Printf("  auth: password (login at http://%s/login)\n", *addr)
 	}
+	// Diagnostic: check whether balance endpoint is reachable
+	if b, err := ctrl.Balance(context.Background()); err != nil {
+		fmt.Fprintf(os.Stderr, "  balance: error — %v\n", err)
+	} else if b == nil {
+		fmt.Fprintf(os.Stderr, "  balance: not configured (no balance_url for this provider)\n")
+	} else {
+		fmt.Printf("  balance: %s\n", b.Display())
+	}
 
 	// Use graceful shutdown so SIGINT/SIGTERM drain active connections.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

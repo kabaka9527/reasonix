@@ -237,9 +237,18 @@ input,textarea{font:inherit;color:inherit}
 
 @media(max-width:768px){
   .app{grid-template-columns:1fr}
-  .sidebar{display:none}
+  .sidebar{position:fixed;inset:0 auto 0 0;width:260px;z-index:100;transform:translateX(-100%);transition:transform .25s ease;box-shadow:var(--shadow-lg)}
+  .sidebar--open{transform:translateX(0)}
+  .sidebar-overlay{position:fixed;inset:0;background:oklch(0% 0 0/.45);z-index:99;opacity:0;pointer-events:none;transition:opacity .25s ease}
+  .sidebar-overlay--visible{opacity:1;pointer-events:auto}
+  .menu-btn{display:flex;align-items:center;justify-content:center;position:fixed;top:8px;left:8px;z-index:98;width:34px;height:34px;border-radius:var(--radius);background:var(--panel);border:1px solid var(--border);color:var(--fg-2);transition:background .15s}
+  .menu-btn:hover{background:var(--card-hover);color:var(--fg)}
+  .menu-btn svg{width:16px;height:16px}
   .footer{padding:10px 16px 12px}
   .transcript{padding:16px}
+}
+@media(min-width:769px){
+  .menu-btn,.sidebar-overlay{display:none}
 }
 
 /* stats modal */
@@ -260,6 +269,10 @@ input,textarea{font:inherit;color:inherit}
 </style>
 </head>
 <body>
+<button class="menu-btn" id="menu-btn" aria-label="Toggle sidebar">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+</button>
+<div class="sidebar-overlay" id="sidebar-overlay"></div>
 <div class="app">
   <aside class="sidebar">
     <div class="sidebar__brand">
@@ -1024,8 +1037,8 @@ function fetchStatus(){
     $('#sm-cache').textContent=cacheTotal>0?Math.round((s.cacheHit||0)/cacheTotal*100)+'%':'—';
     const lastCost=s.lastUsage?.cost??s.lastUsage?.costUsd??s.lastUsage?.totalCost;
     if(typeof lastCost==='number')$('#sm-cost').textContent=fmtMoney(lastCost,s.lastUsage?.currency);
-    if(s.balance?.display)$('#sm-balance').textContent=s.balance.display;
-    if(s.balance?.display)balanceInfo.textContent='💰 '+s.balance.display;
+    if(s.balance){$('#sm-balance').textContent=s.balance.display||'--';}
+    if(s.balance)balanceInfo.textContent='💰 '+(s.balance.display||'--');
   }).catch(()=>{});
 }
 setInterval(fetchStatus,30000);
@@ -1143,6 +1156,14 @@ $('#btn-compact').onclick=()=>{if(!running)post('/compact');};
 $('#btn-rewind').onclick=()=>openRewindPicker();
 $('#btn-tree').onclick=()=>{post('/submit',{input:'/tree'});};
 $('#btn-stats').onclick=()=>openStats();
+
+// ── mobile sidebar toggle ──
+const sidebar=$('.sidebar'), overlay=$('#sidebar-overlay'), menuBtn=$('#menu-btn');
+function openSidebar(){sidebar.classList.add('sidebar--open');overlay.classList.add('sidebar-overlay--visible');menuBtn.style.opacity='0';}
+function closeSidebar(){sidebar.classList.remove('sidebar--open');overlay.classList.remove('sidebar-overlay--visible');menuBtn.style.opacity='';}
+menuBtn.onclick=()=>openSidebar();
+overlay.onclick=()=>closeSidebar();
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&sidebar.classList.contains('sidebar--open'))closeSidebar();});
 
 // ── cumulative stats ──
 let cumulativeTokens=0, cumulativeCost=0, cumulativeCacheHit=0, cumulativeCacheMiss=0;
