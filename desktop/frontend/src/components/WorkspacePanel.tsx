@@ -765,7 +765,7 @@ export function WorkspacePanel({
   const changeDetailActive = changedMode && expandedCommit !== null;
   const previewVisible = changedMode || filePreviewActive;
   const actualTreeVisible = changedMode ? false : treeVisible;
-  const showTreeRail = previewVisible && !actualTreeVisible && !changedMode;
+  const showTreeRail = previewVisible && !changedMode;
   const previewModeActive = open && (filePreviewActive || changeDetailActive);
   const embeddedDockMode = !showViewTabs;
   const showFileTools = showViewTabs || filePreviewActive;
@@ -815,6 +815,14 @@ export function WorkspacePanel({
     setTreeVisible(true);
     onRequestPanelWidth?.(WORKSPACE_DUAL_PANEL_TARGET_WIDTH);
   }, [onRequestPanelWidth, panelWidth]);
+
+  const toggleTreeRail = useCallback(() => {
+    if (actualTreeVisible) {
+      setTreeVisible(false);
+      return;
+    }
+    showTreeEvenSplit();
+  }, [actualTreeVisible, showTreeEvenSplit]);
 
   const closePreviewArea = useCallback(() => {
     if (lastRevealRequestIdRef.current === revealPathRequest?.id) {
@@ -1072,7 +1080,7 @@ export function WorkspacePanel({
   return (
     <aside
       ref={panelRef}
-      className={`workspace-panel${embeddedDockMode ? " workspace-panel--embedded" : ""}${changedMode ? " workspace-panel--detail-only" : ""}${previewVisible && actualTreeVisible ? " workspace-panel--split-preview" : ""}${actualTreeVisible ? "" : " workspace-panel--tree-hidden"}${previewVisible ? "" : " workspace-panel--preview-hidden"}${treeResizing ? " workspace-panel--tree-resizing" : ""}`}
+      className={`workspace-panel${embeddedDockMode ? " workspace-panel--embedded" : ""}${showTreeRail ? " workspace-panel--with-tree-rail" : ""}${changedMode ? " workspace-panel--detail-only" : ""}${previewVisible && actualTreeVisible ? " workspace-panel--split-preview" : ""}${actualTreeVisible ? "" : " workspace-panel--tree-hidden"}${previewVisible ? "" : " workspace-panel--preview-hidden"}${treeResizing ? " workspace-panel--tree-resizing" : ""}`}
       aria-label={t("workspace.title")}
       style={panelStyle}
     >
@@ -1407,13 +1415,14 @@ export function WorkspacePanel({
       </section>}
 
       {showTreeRail && (
-        <section className="workspace-tree-rail" aria-label={t("workspace.showTree")}>
-          <Tooltip label={t("workspace.showTree")} side="right">
+        <section className="workspace-tree-rail" aria-label={actualTreeVisible ? t("workspace.hideTree") : t("workspace.showTree")}>
+          <Tooltip label={actualTreeVisible ? t("workspace.hideTree") : t("workspace.showTree")} side="right">
             <button
-              className="workspace-tree-reveal workspace-iconbtn workspace-iconbtn--on"
+              className={`workspace-tree-reveal workspace-iconbtn${actualTreeVisible ? " workspace-iconbtn--on" : ""}`}
               type="button"
-              aria-label={t("workspace.showTree")}
-              onClick={showTreeEvenSplit}
+              aria-label={actualTreeVisible ? t("workspace.hideTree") : t("workspace.showTree")}
+              aria-pressed={actualTreeVisible}
+              onClick={toggleTreeRail}
             >
               <FolderTree size={15} />
             </button>
@@ -1440,16 +1449,18 @@ export function WorkspacePanel({
       <section className="workspace-files">
         {showFileTools && (
           <div className={`workspace-files__tools${embeddedDockMode ? " workspace-files__tools--embedded" : ""}`}>
-            <Tooltip label={previewVisible ? t("workspace.hideTree") : t("workspace.close")}>
-              <button
-                className="workspace-iconbtn workspace-iconbtn--on"
-                type="button"
-                aria-label={previewVisible ? t("workspace.hideTree") : t("workspace.close")}
-                onClick={hideTreeOrClosePanel}
-              >
-                {previewVisible ? <FolderX size={15} /> : <X size={15} />}
-              </button>
-            </Tooltip>
+            {showViewTabs && (
+              <Tooltip label={previewVisible ? t("workspace.hideTree") : t("workspace.close")}>
+                <button
+                  className="workspace-iconbtn workspace-iconbtn--on"
+                  type="button"
+                  aria-label={previewVisible ? t("workspace.hideTree") : t("workspace.close")}
+                  onClick={hideTreeOrClosePanel}
+                >
+                  {previewVisible ? <FolderX size={15} /> : <X size={15} />}
+                </button>
+              </Tooltip>
+            )}
             {showViewTabs && (
               <div className="workspace-files__tabs" role="tablist" aria-label={t("workspace.viewMode")}>
                 <button

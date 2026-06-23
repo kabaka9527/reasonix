@@ -52,6 +52,18 @@ eq(finalDeclaration(".workspace-preview__body--code .code", "overflow"), "auto",
 eq(finalDeclaration(".workspace-preview__body--code .code", "min-height"), "0", "code viewport can shrink inside the preview pane");
 eq(finalDeclaration(".workspace-preview__body--code .code", "margin"), "0", "code viewport scrollbar sits at the visible pane bottom");
 eq(
+  finalDeclaration(".workspace-panel--with-tree-rail:not(.workspace-panel--tree-hidden)", "grid-template-columns"),
+  "var(--workspace-tree-rail-width) var(--workspace-tree-width) minmax(var(--workspace-preview-min-width), 1fr)",
+  "split mode keeps a narrow tree toggle rail beside the file tree",
+);
+eq(finalDeclaration(".workspace-panel--with-tree-rail:not(.workspace-panel--tree-hidden) .workspace-files", "grid-column"), "2", "file tree sits beside the rail");
+eq(finalDeclaration(".workspace-panel--with-tree-rail:not(.workspace-panel--tree-hidden) .workspace-preview", "grid-column"), "3", "preview sits after rail and tree");
+eq(
+  finalDeclaration(".workspace-panel--with-tree-rail .workspace-tree-resizer", "left"),
+  "calc(var(--workspace-tree-rail-width) + var(--workspace-tree-width) - 4px)",
+  "tree resizer accounts for the persistent rail",
+);
+eq(
   finalDeclaration(".workspace-panel--tree-hidden", "grid-template-columns"),
   "var(--workspace-tree-rail-width) minmax(0, 1fr)",
   "preview-only mode keeps a narrow tree toggle rail",
