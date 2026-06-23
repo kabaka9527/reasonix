@@ -1,0 +1,50 @@
+interface StyleTarget {
+  style: {
+    setProperty(name: string, value: string): void;
+  };
+}
+
+interface AriaTarget {
+  setAttribute(name: string, value: string): void;
+}
+
+interface RafResizeUpdaterOptions {
+  target: StyleTarget;
+  separator?: AriaTarget | null;
+  cssVar: string;
+}
+
+export interface RafResizeUpdater {
+  schedule(value: number): void;
+  cancel(): void;
+}
+
+function roundedPixel(value: number): number {
+  return Math.round(value);
+}
+
+export function createRafResizeUpdater({ target, separator, cssVar }: RafResizeUpdaterOptions): RafResizeUpdater {
+  let frame: number | null = null;
+  let latest = 0;
+
+  const apply = () => {
+    frame = null;
+    const rounded = roundedPixel(latest);
+    target.style.setProperty(cssVar, `${rounded}px`);
+    separator?.setAttribute("aria-valuenow", String(rounded));
+  };
+
+  return {
+    schedule(value: number) {
+      latest = value;
+      if (frame !== null) return;
+      frame = requestAnimationFrame(apply);
+    },
+    cancel() {
+      if (frame === null) return;
+      cancelAnimationFrame(frame);
+      frame = null;
+    },
+  };
+}
+
