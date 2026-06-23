@@ -283,6 +283,20 @@ func TestServeIndexDefinesQueryHelpers(t *testing.T) {
 	}
 }
 
+func TestServeIndexHandlesRetryingEvents(t *testing.T) {
+	html := string(indexHTML)
+	for _, want := range []string{
+		"case 'retrying': setRetrying(e.retryAttempt,e.retryMax); break;",
+		"if(e.kind!=='retrying')clearRetrying();",
+		"'retrying_status': 'Retrying ({attempt}/{max})...'",
+		"'retrying_status': '正在重试 ({attempt}/{max})...'",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("serve index missing retrying support %q", want)
+		}
+	}
+}
+
 func TestServeIndexPagePassesLanguagePreferenceToClient(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

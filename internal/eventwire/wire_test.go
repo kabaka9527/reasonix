@@ -3,6 +3,9 @@ package eventwire
 import (
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -30,6 +33,48 @@ func TestKindNamesComplete(t *testing.T) {
 			t.Fatalf("kind %d has no wire name", k)
 		}
 	}
+}
+
+func TestDesktopWireEventKindTypeCoversSharedKinds(t *testing.T) {
+	ts := readDesktopTypes(t)
+	for k := event.Kind(0); k < event.KindCount; k++ {
+		kind := ToWire(event.Event{Kind: k}).Kind
+		if !strings.Contains(ts, `"`+kind+`"`) {
+			t.Fatalf("desktop WireEvent EventKind is missing %q", kind)
+		}
+	}
+}
+
+func TestDesktopWireEventTypeCoversSharedPayloadFields(t *testing.T) {
+	ts := readDesktopTypes(t)
+	for _, want := range []string{
+		"retryAttempt?: number;",
+		"retryMax?: number;",
+		"cacheDiagnostics?: WireCacheDiagnostics;",
+		"export interface WireCacheDiagnostics",
+		"prefixHash: string;",
+		"prefixChanged: boolean;",
+		"prefixChangeReasons?: string[];",
+		"toolSchemaTokens: number;",
+	} {
+		if !strings.Contains(ts, want) {
+			t.Fatalf("desktop WireEvent types are missing %q", want)
+		}
+	}
+}
+
+func readDesktopTypes(t *testing.T) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime caller unavailable")
+	}
+	path := filepath.Join(filepath.Dir(file), "..", "..", "desktop", "frontend", "src", "lib", "types.ts")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read desktop types: %v", err)
+	}
+	return string(b)
 }
 
 func TestToWireToolPayloadJSON(t *testing.T) {
