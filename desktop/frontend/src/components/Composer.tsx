@@ -1265,7 +1265,7 @@ export function Composer({
       liveResize.schedule(nextHeight);
     };
     const onUp = () => {
-      liveResize.cancel();
+      liveResize.flush();
       setComposerResizing(false);
       document.body.classList.remove("composer-resizing");
       if (moved) {

@@ -96,7 +96,7 @@ export function ResizableDrawer({
         liveResize.schedule(nextWidth);
       };
       const onDone = () => {
-        liveResize.cancel();
+        liveResize.flush();
         setWidth(nextWidth);
         saveLayoutSize(config.key, nextWidth);
         setResizing(false);

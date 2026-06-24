@@ -1704,7 +1704,7 @@ export default function App() {
         liveResize.schedule(nextWidth);
       };
       const onDone = () => {
-        liveResize.cancel();
+        liveResize.flush();
         setSidebarWidth(nextWidth);
         saveSidebarWidth(nextWidth);
         setSidebarResizing(false);
@@ -1794,7 +1794,7 @@ export default function App() {
         liveResize.schedule(nextDockWidth);
       };
       const onDone = () => {
-        liveResize.cancel();
+        liveResize.flush();
         setSavedWorkspacePanelWidth(nextDockWidth);
         setWorkspacePanelResizing(false);
         window.removeEventListener("pointermove", onMove);

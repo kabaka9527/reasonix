@@ -16,6 +16,7 @@ interface RafResizeUpdaterOptions {
 
 export interface RafResizeUpdater {
   schedule(value: number): void;
+  flush(): void;
   cancel(): void;
 }
 
@@ -25,10 +26,11 @@ function roundedPixel(value: number): number {
 
 export function createRafResizeUpdater({ target, separator, cssVar }: RafResizeUpdaterOptions): RafResizeUpdater {
   let frame: number | null = null;
-  let latest = 0;
+  let latest: number | null = null;
 
   const apply = () => {
     frame = null;
+    if (latest === null) return;
     const rounded = roundedPixel(latest);
     target.style.setProperty(cssVar, `${rounded}px`);
     separator?.setAttribute("aria-valuenow", String(rounded));
@@ -39,6 +41,13 @@ export function createRafResizeUpdater({ target, separator, cssVar }: RafResizeU
       latest = value;
       if (frame !== null) return;
       frame = requestAnimationFrame(apply);
+    },
+    flush() {
+      if (frame !== null) {
+        cancelAnimationFrame(frame);
+        frame = null;
+      }
+      apply();
     },
     cancel() {
       if (frame === null) return;

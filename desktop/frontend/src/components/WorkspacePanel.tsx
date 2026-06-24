@@ -861,7 +861,7 @@ export function WorkspacePanel({
         liveResize.schedule(nextWidth);
       };
       const onDone = () => {
-        liveResize.cancel();
+        liveResize.flush();
         setTreeWidth(nextWidth);
         saveWorkspaceTreeWidth(nextWidth);
         setTreeResizing(false);

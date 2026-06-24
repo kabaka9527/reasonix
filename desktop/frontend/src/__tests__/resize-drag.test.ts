@@ -56,6 +56,25 @@ try {
   eq(applied[0]?.[0], "--pane-width", "live resize writes the configured CSS variable");
   eq(applied[0]?.[1], "149px", "live resize applies the latest rounded pixel value");
   eq(attrs["aria-valuenow"], "149", "live resize keeps separator ARIA in sync");
+
+  frames.length = 0;
+  const flushed: Array<[string, string]> = [];
+  const flushUpdater = createRafResizeUpdater({
+    target: {
+      style: {
+        setProperty(name: string, value: string) {
+          flushed.push([name, value]);
+        },
+      },
+    },
+    cssVar: "--pane-width",
+  });
+  flushUpdater.schedule(600);
+  frames[0](0);
+  flushUpdater.schedule(420);
+  eq(flushed[flushed.length - 1]?.[1], "600px", "pending final resize waits for animation frame before flush");
+  flushUpdater.flush();
+  eq(flushed[flushed.length - 1]?.[1], "420px", "flush applies the final resize before React state commits");
 } finally {
   globalThis.requestAnimationFrame = originalRequestAnimationFrame;
   globalThis.cancelAnimationFrame = originalCancelAnimationFrame;
