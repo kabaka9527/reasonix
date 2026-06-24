@@ -1086,6 +1086,11 @@ export function ProjectTree({
                 openTopicMenu(event);
               }
             }}
+            onDoubleClick={(event) => {
+              if (isSessionNode) return;
+              event.stopPropagation();
+              startRenameTopic(node, label);
+            }}
           >
             <span className="project-tree__topic-copy">
               <span className="project-tree__topic-heading">
