@@ -2390,6 +2390,57 @@ func TestDeleteSessionCancelsActiveRuntime(t *testing.T) {
 	}
 }
 
+func TestDeleteSessionCancelsPreReadyBlankBuild(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	globalRoot := globalTabWorkspaceRoot()
+	dir := desktopSessionDir(globalRoot)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	path := filepath.Join(dir, "pre-ready-blank.jsonl")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatalf("write blank session: %v", err)
+	}
+	cancelled := false
+	blank := &WorkspaceTab{
+		ID:            "blank",
+		Scope:         "global",
+		WorkspaceRoot: globalRoot,
+		SessionPath:   path,
+		buildCancel:   func() { cancelled = true },
+		disabledMCP:   map[string]ServerView{},
+	}
+	keep := &WorkspaceTab{
+		ID:            "keep",
+		Scope:         "global",
+		WorkspaceRoot: globalRoot,
+		Ready:         true,
+		disabledMCP:   map[string]ServerView{},
+	}
+	app := &App{
+		tabs:        map[string]*WorkspaceTab{"blank": blank, "keep": keep},
+		tabOrder:    []string{"blank", "keep"},
+		activeTabID: "blank",
+	}
+
+	if err := app.DeleteSession(filepath.Base(path)); err != nil {
+		t.Fatalf("DeleteSession(pre-ready blank): %v", err)
+	}
+	if !cancelled {
+		t.Fatal("pre-ready blank build was not cancelled")
+	}
+	if !blank.removed {
+		t.Fatal("pre-ready blank tab was not marked removed")
+	}
+	if _, ok := app.tabs["blank"]; ok {
+		t.Fatal("pre-ready blank tab should be removed")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("blank session should be moved out of active history, stat err = %v", err)
+	}
+}
+
 func TestDeleteLastTopicSessionFallbackDoesNotReuseDeletedTopic(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
@@ -2627,6 +2678,44 @@ func TestDeleteSessionValidTrashRemovesEmptyLiveStub(t *testing.T) {
 	}
 	if _, err := os.Stat(trashPath); err != nil {
 		t.Fatalf("existing trash should remain authoritative: %v", err)
+	}
+}
+
+func TestRestoreSessionRejectsOpenEmptyLiveStub(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	path := filepath.Join(dir, "restore-open.jsonl")
+	if err := os.WriteFile(path, []byte(`{"role":"user","content":"trashed"}`+"\n"), 0o644); err != nil {
+		t.Fatalf("write trash source: %v", err)
+	}
+	if err := deleteSessionFile(dir, path); err != nil {
+		t.Fatalf("trash source: %v", err)
+	}
+	trashPath := filepath.Join(dir, sessionTrashDir, filepath.Base(path), filepath.Base(path))
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatalf("write live stub: %v", err)
+	}
+	ctrl := control.New(control.Options{SessionDir: dir, SessionPath: path, Label: "open"})
+	defer ctrl.Close()
+	app := &App{
+		tabs:        map[string]*WorkspaceTab{"open": {ID: "open", Scope: "global", Ctrl: ctrl, Ready: true}},
+		tabOrder:    []string{"open"},
+		activeTabID: "open",
+	}
+
+	err := app.RestoreSession(trashPath)
+	if err == nil || !strings.Contains(err.Error(), "session is open") {
+		t.Fatalf("RestoreSession error = %v, want open-session rejection", err)
+	}
+	if info, statErr := os.Stat(path); statErr != nil || info.Size() != 0 {
+		t.Fatalf("open live stub should remain empty, info=%v err=%v", info, statErr)
+	}
+	if _, err := os.Stat(trashPath); err != nil {
+		t.Fatalf("trash session should remain after rejected restore: %v", err)
 	}
 }
 

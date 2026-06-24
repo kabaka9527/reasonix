@@ -523,6 +523,31 @@ func TestRestoreTrashedSessionFileWithEmptyLiveStub(t *testing.T) {
 	}
 }
 
+func TestValidateSessionTrashTargetKeepsDiscardableLiveStub(t *testing.T) {
+	dir := t.TempDir()
+	sessionPath := filepath.Join(dir, "discardable-live.jsonl")
+	if err := os.WriteFile(sessionPath, nil, 0o644); err != nil {
+		t.Fatalf("write live stub: %v", err)
+	}
+	trashPath := filepath.Join(dir, sessionTrashDir, filepath.Base(sessionPath), filepath.Base(sessionPath))
+	if err := os.MkdirAll(filepath.Dir(trashPath), 0o755); err != nil {
+		t.Fatalf("create trash dir: %v", err)
+	}
+	if err := os.WriteFile(trashPath, []byte(`{"role":"user","content":"trashed"}`+"\n"), 0o644); err != nil {
+		t.Fatalf("write trash session: %v", err)
+	}
+
+	if err := validateSessionTrashTarget(dir, sessionPath, filepath.Base(sessionPath)); err != nil {
+		t.Fatalf("validateSessionTrashTarget: %v", err)
+	}
+	if _, err := os.Stat(sessionPath); err != nil {
+		t.Fatalf("validation should not remove live stub: %v", err)
+	}
+	if _, err := os.Stat(trashPath); err != nil {
+		t.Fatalf("validation should keep existing trash: %v", err)
+	}
+}
+
 func TestRestoreTrashedSessionFileRejectsNonEmptyLiveConflict(t *testing.T) {
 	dir := t.TempDir()
 	sessionPath := filepath.Join(dir, "restore-conflict.jsonl")

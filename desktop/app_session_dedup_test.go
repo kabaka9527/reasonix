@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"reasonix/internal/agent"
 	"reasonix/internal/control"
@@ -123,6 +124,44 @@ func TestEnsureBlankTabReusesPrecreatedBlankBeforeControllerReady(t *testing.T) 
 	}
 	if meta.ID != "blank" {
 		t.Fatalf("EnsureBlankTab created duplicate blank tab %q, want existing pre-created blank", meta.ID)
+	}
+}
+
+func TestEnsureBlankTabReusesIndexedTopicWithEmptyStub(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	app := NewApp()
+	topic, err := app.CreateTopic("global", "", "")
+	if err != nil {
+		t.Fatalf("create topic: %v", err)
+	}
+	globalRoot := globalWorkspaceRoot()
+	dir := desktopSessionDir(globalRoot)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	stubPath := filepath.Join(dir, "empty-stub.jsonl")
+	if err := os.WriteFile(stubPath, nil, 0o644); err != nil {
+		t.Fatalf("write empty stub: %v", err)
+	}
+	now := time.Now()
+	if err := agent.SaveBranchMetaPreserveUpdated(stubPath, agent.BranchMeta{
+		CreatedAt:     now.Add(-time.Minute),
+		UpdatedAt:     now,
+		Scope:         "global",
+		WorkspaceRoot: globalRoot,
+		TopicID:       topic.ID,
+		TopicTitle:    defaultTopicTitle,
+	}); err != nil {
+		t.Fatalf("save branch meta: %v", err)
+	}
+
+	meta, err := app.EnsureBlankTab("global", "")
+	if err != nil {
+		t.Fatalf("EnsureBlankTab: %v", err)
+	}
+	if meta.TopicID != topic.ID {
+		t.Fatalf("EnsureBlankTab topic = %q, want reused empty topic %q", meta.TopicID, topic.ID)
 	}
 }
 

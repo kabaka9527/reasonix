@@ -1488,7 +1488,7 @@ func (a *App) indexedBlankTopicIDLocked(scope, workspaceRoot string) string {
 		}
 		hasSession := false
 		for _, index := range sessionIndexes {
-			if topicSessionIndexHasTopic(index, topicID) {
+			if topicSessionIndexHasContentTopic(index, topicID) {
 				hasSession = true
 				break
 			}
@@ -5092,6 +5092,14 @@ func topicSessionMatchMatchesTarget(match topicSessionMatch, scope, workspaceRoo
 }
 
 func (a *App) findTopicSessionForTarget(scope, workspaceRoot, topicID string) (string, string) {
+	return a.findTopicSessionForTargetByContent(scope, workspaceRoot, topicID, false)
+}
+
+func (a *App) findTopicContentSessionForTarget(scope, workspaceRoot, topicID string) (string, string) {
+	return a.findTopicSessionForTargetByContent(scope, workspaceRoot, topicID, true)
+}
+
+func (a *App) findTopicSessionForTargetByContent(scope, workspaceRoot, topicID string, requireContent bool) (string, string) {
 	topicID = strings.TrimSpace(topicID)
 	if topicID == "" {
 		return "", ""
@@ -5101,6 +5109,9 @@ func (a *App) findTopicSessionForTarget(scope, workspaceRoot, topicID string) (s
 	var bestTime time.Time
 	for _, dir := range a.knownSessionDirs() {
 		for _, match := range topicSessionMatches(dir, topicID) {
+			if requireContent && !sessionFileHasConversationContent(match.path) {
+				continue
+			}
 			if !topicSessionMatchMatchesTarget(match, scope, workspaceRoot) {
 				continue
 			}
@@ -5323,6 +5334,16 @@ func topicSessionIndexHasTopic(index topicSessionDirIndex, topicID string) bool 
 	matches := index.byTopic[strings.TrimSpace(topicID)]
 	for _, match := range matches {
 		if !agent.IsCleanupPending(match.path) {
+			return true
+		}
+	}
+	return false
+}
+
+func topicSessionIndexHasContentTopic(index topicSessionDirIndex, topicID string) bool {
+	matches := index.byTopic[strings.TrimSpace(topicID)]
+	for _, match := range matches {
+		if sessionFileHasConversationContent(match.path) {
 			return true
 		}
 	}
