@@ -1661,7 +1661,17 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 		}
 	}
 	if a.planMode.Load() {
-		if blocked, msg := a.planModeBlocked(call.Name, t.ReadOnly(), json.RawMessage(call.Arguments)); blocked {
+		// Translate the tool's optional plan-mode self-report into the policy's
+		// tri-state. Mirrors the t.(tool.Previewer) assertion precedent below.
+		safety := planmode.PlanSafetyUnknown
+		if c, ok := t.(tool.PlanModeClassifier); ok {
+			if c.PlanModeSafe() {
+				safety = planmode.PlanSafetySafe
+			} else {
+				safety = planmode.PlanSafetyUnsafe
+			}
+		}
+		if blocked, msg := a.planModeBlocked(call.Name, t.ReadOnly(), safety, json.RawMessage(call.Arguments)); blocked {
 			return toolOutcome{
 				output:  msg,
 				blocked: true,
@@ -1778,10 +1788,11 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 	return toolOutcome{output: body, truncated: truncMsg != "", truncMsg: truncMsg}
 }
 
-func (a *Agent) planModeBlocked(toolName string, readOnly bool, args json.RawMessage) (blocked bool, message string) {
+func (a *Agent) planModeBlocked(toolName string, readOnly bool, safety planmode.PlanSafety, args json.RawMessage) (blocked bool, message string) {
 	decision := planmode.Policy{AllowedTools: a.planModeAllowedTools}.Decide(planmode.Call{
 		Name:     toolName,
 		ReadOnly: readOnly,
+		Safety:   safety,
 		Args:     args,
 	})
 	return decision.Blocked, decision.Message

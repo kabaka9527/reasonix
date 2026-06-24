@@ -60,6 +60,20 @@ func PreviewChange(t Tool, args json.RawMessage) (diff.Change, bool) {
 	return ch, true
 }
 
+// PlanModeClassifier is an optional capability a Tool may implement to declare
+// its stance on running during the planning phase. It is deliberately distinct
+// from ReadOnly(): a tool can be side-effect-free yet belong only to the
+// post-approval execution phase (complete_step reports ReadOnly()==true but must
+// not run while planning), or be a delegation that is safe only in a read-only
+// variant (read_only_task). Plan mode is fail-closed — a tool that does not
+// implement this and is not on the audited read-only whitelist is refused — so
+// implement it to opt a non-obvious tool explicitly in (PlanModeSafe()==true) or
+// out (false). Type-assert a Tool to PlanModeClassifier to discover support;
+// most tools do not implement it.
+type PlanModeClassifier interface {
+	PlanModeSafe() bool
+}
+
 // --- process-global built-in set (populated by builtin subpackage init) ---
 
 var builtins = map[string]Tool{}

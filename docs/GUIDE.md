@@ -102,10 +102,12 @@ command = "reasonix-plugin-example"
 
 For the full schema and every field's contract, see [`SPEC.md` §5](./SPEC.md#5-configuration-toml).
 
-`[agent].plan_mode_allowed_tools` is only an extra read-only declaration for
-custom or external tools Reasonix cannot classify itself. It no longer unlocks
-known blocked plan-mode tools such as `bash`, `task`, writers, installers, or
-memory mutation tools, and it never bypasses bash's plan-mode safety checks.
+`[agent].plan_mode_allowed_tools` is an extra read-only declaration for custom or
+external tools Reasonix cannot classify itself — it is also the escape valve for
+read-only MCP/plugin tools, which are contractually non-read-only and so fail
+closed in plan mode until declared here. It never unlocks known blocked plan-mode
+tools such as `bash`, `task`, writers, installers, or memory mutation tools, and
+it never bypasses bash's plan-mode safety checks.
 
 ## Serve web frontend
 

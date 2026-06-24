@@ -96,10 +96,13 @@ and DeepSeek prefix-cache–oriented design.
   search + tree-sitter symbol index is not bundled in v2 yet, and CodeGraph is no
   longer shipped as an internal MCP server.
 - **Plan mode** + `complete_step` (evidence-backed step sign-off).
-- **Plan-mode tool overrides are narrower**: `[agent].plan_mode_allowed_tools`
-  now only declares extra read-only custom/external tools. It no longer unlocks
-  known blocked plan-mode tools such as `bash`, `task`, writers, installers, or
-  memory mutation tools, and unsafe bash commands still remain blocked.
+- **Plan-mode tool overrides are narrower, and plan mode is fail-closed for
+  external tools**: `[agent].plan_mode_allowed_tools` now only declares extra
+  read-only custom/external tools. It no longer unlocks known blocked plan-mode
+  tools such as `bash`, `task`, writers, installers, or memory mutation tools, and
+  unsafe bash commands still remain blocked. Because plugin/MCP tools are
+  contractually non-read-only, a read-only MCP/plugin tool you want available
+  while planning must be declared here — otherwise plan mode fails closed on it.
 - **Read-only subagent research**: use `read_only_task` for generic isolated
   research in plan mode, or `read_only_skill` when the work should follow an
   existing skill. Both expose only read-only tools and safe foreground bash, do

@@ -94,9 +94,10 @@ command = "reasonix-plugin-example"
 
 完整 schema 与每个字段的契约见 [`SPEC.md` §5](./SPEC.md#5-configuration-toml)。
 
-`[agent].plan_mode_allowed_tools` 只用于把 Reasonix 无法自动分类的自定义/外部工具声明为额外只读工具。
-它不再解锁 `bash`、`task`、写文件工具、安装器、记忆变更工具等计划模式已知阻断项，也不会绕过
-bash 在计划模式下的安全检查。
+`[agent].plan_mode_allowed_tools` 用于把 Reasonix 无法自动分类的自定义/外部工具声明为额外只读工具，
+它也是只读 MCP/plugin 工具的逃生阀——这类工具按约定为非只读，因此在计划模式下会 fail-closed 被阻断，
+需在此显式声明才能使用。它不再解锁 `bash`、`task`、写文件工具、安装器、记忆变更工具等计划模式已知阻断项，
+也不会绕过 bash 在计划模式下的安全检查。
 
 ## Serve Web 前端
 

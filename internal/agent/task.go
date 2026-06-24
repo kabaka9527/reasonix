@@ -307,6 +307,11 @@ func (*ReadOnlyTaskTool) Schema() json.RawMessage {
 
 func (*ReadOnlyTaskTool) ReadOnly() bool { return true }
 
+// PlanModeSafe reports true: read_only_task spawns a strictly read-only research
+// sub-agent (no writers, installers, memory mutation, background jobs, or
+// delegation), so it is safe to run while planning.
+func (*ReadOnlyTaskTool) PlanModeSafe() bool { return true }
+
 func (r *ReadOnlyTaskTool) ResolveProfile(args json.RawMessage) *event.Profile {
 	if r == nil || r.task == nil {
 		return nil

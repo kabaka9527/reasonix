@@ -50,16 +50,60 @@ func TestDecideBlocksSubagentStyleToolsWithCategoryMessage(t *testing.T) {
 }
 
 func TestDecideAllowsReadOnlyTaskDelegation(t *testing.T) {
-	decision := (Policy{}).Decide(Call{Name: "read_only_task", ReadOnly: true})
+	// read_only_task is not a built-in, so under fail-closed it is allowed only
+	// because it self-reports plan-safe via PlanModeClassifier (Safety: Safe).
+	decision := (Policy{}).Decide(Call{Name: "read_only_task", ReadOnly: true, Safety: PlanSafetySafe})
 	if decision.Blocked {
 		t.Fatalf("read_only_task should be allowed in plan mode: %s", decision.Message)
 	}
 }
 
 func TestDecideAllowsReadOnlySkillDelegation(t *testing.T) {
-	decision := (Policy{}).Decide(Call{Name: "read_only_skill", ReadOnly: true})
+	decision := (Policy{}).Decide(Call{Name: "read_only_skill", ReadOnly: true, Safety: PlanSafetySafe})
 	if decision.Blocked {
 		t.Fatalf("read_only_skill should be allowed in plan mode: %s", decision.Message)
+	}
+}
+
+func TestDecideTrustsReadOnlyButFailsClosedOnNonReadOnly(t *testing.T) {
+	// Moderate fail-closed boundary: a ReadOnly()==true tool is trusted (only
+	// in-process tools can assert that flag; plugin/MCP are contractually
+	// ReadOnly()==false). connect_tool_source / history / recall rely on this.
+	if d := (Policy{}).Decide(Call{Name: "connect_tool_source", ReadOnly: true}); d.Blocked {
+		t.Fatalf("a ReadOnly internal tool should be trusted in plan mode: %s", d.Message)
+	}
+	// A non-read-only, unclassified tool (the plugin/MCP shape) fails closed.
+	if d := (Policy{}).Decide(Call{Name: "mcp__x__mutate", ReadOnly: false}); !d.Blocked {
+		t.Fatal("a non-read-only unclassified tool must fail closed in plan mode")
+	}
+}
+
+func TestDecidePlanSafeReportMustBeReadOnly(t *testing.T) {
+	// PlanSafe ⇒ ReadOnly: a tool that claims plan-safe but is not read-only is a
+	// wiring bug and must still be refused.
+	decision := (Policy{}).Decide(Call{Name: "lying_writer", ReadOnly: false, Safety: PlanSafetySafe})
+	if !decision.Blocked {
+		t.Fatal("a non-read-only tool claiming plan-safe must be blocked (invariant)")
+	}
+	if !strings.Contains(decision.Message, "invariant") {
+		t.Fatalf("blocked message = %q, want invariant explanation", decision.Message)
+	}
+}
+
+func TestUnclassifiedExternalToolFailsClosedThenOverride(t *testing.T) {
+	// Plan mode is fail-closed for tools it cannot classify (MCP/plugin tools,
+	// whose ReadOnly() defaults to false); plan_mode_allowed_tools is the escape
+	// valve, and it still never reopens a known blocked writer.
+	const ext = "mcp__server__query"
+
+	if d := (Policy{}).Decide(Call{Name: ext}); !d.Blocked {
+		t.Fatal("unclassified external tool must fail closed in plan mode")
+	}
+	if d := (Policy{AllowedTools: []string{ext}}).Decide(Call{Name: ext}); d.Blocked {
+		t.Fatalf("plan_mode_allowed_tools must re-enable a declared external tool: %s", d.Message)
+	}
+	if d := (Policy{AllowedTools: []string{"write_file"}}).Decide(Call{Name: "write_file"}); !d.Blocked {
+		t.Fatal("override must not reopen a known blocked writer")
 	}
 }
 

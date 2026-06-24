@@ -155,6 +155,11 @@ func (*readOnlySkillTool) Name() string { return "read_only_skill" }
 
 func (*readOnlySkillTool) ReadOnly() bool { return true }
 
+// PlanModeSafe reports true: read_only_skill delegates to a skill sub-agent
+// restricted to read-only research tools and plan-mode-safe foreground bash, so
+// it is safe to run while planning.
+func (*readOnlySkillTool) PlanModeSafe() bool { return true }
+
 func (*readOnlySkillTool) Description() string {
 	return "Invoke a skill in read-only mode. Inline skills are loaded into context like read_skill. `[🧬 subagent]` skills run in an isolated ephemeral read-only subagent with only read-only research tools and safe foreground bash; no writes, installers, memory mutation, continuation/fork, background jobs, or further delegation are available. Pass `name` as the bare skill identifier and `arguments` as the concrete task."
 }

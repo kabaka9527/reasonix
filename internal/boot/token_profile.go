@@ -159,6 +159,9 @@ func planModeSourceBlocked(ctx context.Context, source string) (bool, string) {
 	if !agent.PlanModeFromContext(ctx) {
 		return false, ""
 	}
+	// Sources are read-only iff they expose only read-only research surfaces; the
+	// moderate plan-mode gate then trusts that ReadOnly flag (step 6), while any
+	// other source stays non-read-only and is fail-closed by the policy.
 	readOnlySource := source == "web_fetch" || source == "lsp" || source == "read_only_task" || source == "read_only_skill"
 	decision := planmode.Policy{}.Decide(planmode.Call{Name: source, ReadOnly: readOnlySource})
 	return decision.Blocked, decision.Message

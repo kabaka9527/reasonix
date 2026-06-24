@@ -284,10 +284,16 @@ func (p Policy) Decide(toolName string, readOnly bool, args json.RawMessage) Dec
   hard block in *every* mode: the tool never executes and the model receives a
   "blocked" result it can adapt to (the same shape as a plan-mode refusal).
 - **Relationship to plan mode.** Plan mode (§3.4) is an orthogonal, coarser gate
-  that refuses *all* writers regardless of policy; it is checked first. The
-  permission layer is the fine-grained, always-on gate underneath it. Plan mode
-  still allows `read_only_task` and `read_only_skill`, whose sub-agents receive
-  only read-only research tools and safe foreground bash; writer-capable `task`
+  checked before the permission layer. Its boundary is fail-closed for untrusted
+  tools: while planning, a tool runs only if it reports `ReadOnly()==true` — which
+  only in-process tools can assert, since plugin/MCP tools are contractually
+  non-read-only — or self-reports plan-safe via `tool.PlanModeClassifier`. Writers,
+  installers, memory mutation, process control, and `complete_step` (read-only yet
+  post-approval only, so it self-reports plan-unsafe) are refused; the enforced
+  invariant is PlanSafe ⇒ ReadOnly. A read-only MCP/plugin tool is therefore
+  blocked until declared in `[agent].plan_mode_allowed_tools`. Plan mode still
+  allows `read_only_task` and `read_only_skill`, whose sub-agents receive only
+  read-only research tools and safe foreground bash; writer-capable `task`
   delegation and full skill execution remain blocked.
 - **User decisions are separate from tool approvals.** Runtime tool approval has
   three user-facing postures: `ask` ("需要批准"), `auto` ("自动批准"), and

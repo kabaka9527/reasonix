@@ -7,16 +7,28 @@ import (
 	"strings"
 	"testing"
 
+	"reasonix/internal/planmode"
 	"reasonix/internal/provider"
 	"reasonix/internal/tool"
 )
 
-// TestPlanModeBlocksWriters proves the read-only gate refuses non-ReadOnly
-// tools while leaving the read-only ones to run normally. The returned tool
+// planSafeTool wraps fakeTool to self-report a plan-mode stance, mimicking a
+// real tool that implements tool.PlanModeClassifier. Plain fakeTool deliberately
+// does NOT implement the interface, so it models an unclassified/external tool
+// (PlanSafetyUnknown) — relied on by the fail-closed and escape-valve cases below.
+type planSafeTool struct {
+	fakeTool
+	planSafe bool
+}
+
+func (p planSafeTool) PlanModeSafe() bool { return p.planSafe }
+
+// TestPlanModeBlocksWriters proves the gate refuses tools that aren't classified
+// plan-safe while letting a self-reported plan-safe tool run. The returned tool
 // result starts with "blocked:" so the model can adapt mid-turn.
 func TestPlanModeBlocksWriters(t *testing.T) {
 	reg := tool.NewRegistry()
-	reg.Add(fakeTool{name: "read_only_tool", readOnly: true})
+	reg.Add(planSafeTool{fakeTool: fakeTool{name: "read_only_tool", readOnly: true}, planSafe: true})
 	reg.Add(fakeTool{name: "writer_tool", readOnly: false})
 
 	a := New(nil, reg, NewSession(""), Options{}, event.Discard)
@@ -24,7 +36,7 @@ func TestPlanModeBlocksWriters(t *testing.T) {
 
 	ro := a.executeOne(context.Background(), provider.ToolCall{Name: "read_only_tool"})
 	if !strings.Contains(ro.output, "done") {
-		t.Errorf("read-only tool in plan mode should still run: %q", ro.output)
+		t.Errorf("plan-safe read-only tool in plan mode should still run: %q", ro.output)
 	}
 
 	wr := a.executeOne(context.Background(), provider.ToolCall{Name: "writer_tool"})
@@ -107,7 +119,7 @@ func TestPlanModeDeniedToolsBlocked(t *testing.T) {
 	}
 	for _, name := range denied {
 		t.Run(name, func(t *testing.T) {
-			blocked, msg := (&Agent{}).planModeBlocked(name, false, nil)
+			blocked, msg := (&Agent{}).planModeBlocked(name, false, planmode.PlanSafetyUnknown, nil)
 			if !blocked {
 				t.Errorf("planModeBlocked(%q) = false, want true", name)
 			}
@@ -122,29 +134,52 @@ func TestPlanModeDeniedToolsBlocked(t *testing.T) {
 }
 
 func TestPlanModeReadOnlyToolsAllowed(t *testing.T) {
-	for _, name := range []string{"read_file", "read_only_skill"} {
-		blocked, _ := (&Agent{}).planModeBlocked(name, true, nil)
-		if blocked {
-			t.Errorf("ReadOnly tool %q should not be blocked in plan mode", name)
-		}
+	// read_file is on the audited read-only whitelist — Unknown safety suffices.
+	if blocked, _ := (&Agent{}).planModeBlocked("read_file", true, planmode.PlanSafetyUnknown, nil); blocked {
+		t.Error("audited read-only tool read_file should not be blocked in plan mode")
+	}
+	// read_only_skill is not a built-in; it runs only via its plan-safe self-report.
+	if blocked, _ := (&Agent{}).planModeBlocked("read_only_skill", true, planmode.PlanSafetySafe, nil); blocked {
+		t.Error("self-reported plan-safe read_only_skill should not be blocked in plan mode")
 	}
 }
 
 func TestPlanModeAllowedToolsOverride(t *testing.T) {
 	a := &Agent{planModeAllowedTools: []string{"custom_tool"}}
-	blocked, _ := a.planModeBlocked("custom_tool", false, nil)
+	blocked, _ := a.planModeBlocked("custom_tool", false, planmode.PlanSafetyUnknown, nil)
 	if blocked {
 		t.Error("tool in planModeAllowedTools should not be blocked")
 	}
 }
 
 func TestPlanModeGenericWriterBlocked(t *testing.T) {
-	blocked, msg := (&Agent{}).planModeBlocked("some_writer_tool", false, nil)
+	blocked, msg := (&Agent{}).planModeBlocked("some_writer_tool", false, planmode.PlanSafetyUnknown, nil)
 	if !blocked {
 		t.Error("generic writer tool should be blocked in plan mode")
 	}
 	if !strings.Contains(msg, "writer tool") {
 		t.Errorf("unexpected message: %s", msg)
+	}
+}
+
+// TestPlanModeExternalToolEscapeValve proves an unclassified external tool (an
+// MCP/plugin tool that does not implement PlanModeClassifier, so its safety is
+// Unknown) is fail-closed in plan mode, but can be re-enabled end to end via
+// plan_mode_allowed_tools.
+func TestPlanModeExternalToolEscapeValve(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Add(fakeTool{name: "mcp__server__query", readOnly: false})
+
+	failClosed := New(nil, reg, NewSession(""), Options{}, event.Discard)
+	failClosed.SetPlanMode(true)
+	if out := failClosed.executeOne(context.Background(), provider.ToolCall{Name: "mcp__server__query"}); !strings.HasPrefix(out.output, "blocked:") {
+		t.Errorf("unclassified external tool should fail closed in plan mode, got: %q", out.output)
+	}
+
+	a := New(nil, reg, NewSession(""), Options{PlanModeAllowedTools: []string{"mcp__server__query"}}, event.Discard)
+	a.SetPlanMode(true)
+	if out := a.executeOne(context.Background(), provider.ToolCall{Name: "mcp__server__query"}); strings.HasPrefix(out.output, "blocked:") {
+		t.Errorf("plan_mode_allowed_tools should let the declared external tool run, got: %q", out.output)
 	}
 }
 
