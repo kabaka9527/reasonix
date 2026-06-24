@@ -102,6 +102,7 @@ func TestPlanModeDeniedToolsBlocked(t *testing.T) {
 		"write_file", "edit_file", "multi_edit", "move_file", "apply_patch",
 		"edit_notebook", "notebook_edit", "range_delete", "symbol_delete", "delete_range", "delete_symbol",
 		"complete_step", "task", "parallel_tasks", "run_skill",
+		"explore", "research", "review", "security_review", "security-review",
 		"install_source", "install_skill", "remember", "forget", "kill_shell",
 	}
 	for _, name := range denied {

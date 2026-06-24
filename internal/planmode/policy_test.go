@@ -35,6 +35,20 @@ func TestDecideDoesNotLetOverridesReopenKnownBlockedTools(t *testing.T) {
 	}
 }
 
+func TestDecideBlocksSubagentStyleToolsWithCategoryMessage(t *testing.T) {
+	for _, name := range []string{"explore", "research", "review", "security_review", "security-review"} {
+		t.Run(name, func(t *testing.T) {
+			decision := (Policy{}).Decide(Call{Name: name, ReadOnly: false})
+			if !decision.Blocked {
+				t.Fatalf("%s should be blocked in plan mode", name)
+			}
+			if !strings.Contains(decision.Message, "not available in plan mode") {
+				t.Fatalf("blocked message = %q, want category message", decision.Message)
+			}
+		})
+	}
+}
+
 func TestDecideStillValidatesBashArgumentsWhenOverridden(t *testing.T) {
 	p := Policy{AllowedTools: []string{"bash"}}
 	args, err := json.Marshal(map[string]any{"command": "rm -rf /"})
