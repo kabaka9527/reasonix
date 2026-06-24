@@ -1551,7 +1551,7 @@ export const en = {
   "settings.telemetryLabel": "Anonymous usage ping",
   "settings.telemetryHint": "On launch, send a random install id plus version and OS to count active installs, and — if the app crashed on a previous run — resend that crash report. Never includes conversations, keys, or file contents.",
   "settings.metricsLabel": "Share aggregate quality metrics",
-  "settings.metricsHint": "On by default. Sends anonymous turn-end counts and settings preference snapshots (such as desktop style, theme, provider/model identifiers, client version, and bot toggles) plus the random install id used to de-duplicate DAU. Buckets may include normalized custom provider and model names — never conversations, prompts, keys, paths, base URLs, or file contents.",
+  "settings.metricsHint": "On by default. Sends anonymous turn-end counts, settings preference snapshots, and Memory v5 aggregate buckets such as injection on/off, size buckets, IR count buckets, and memory graph size buckets. Includes the random install id used to de-duplicate DAU. Buckets may include normalized custom provider and model names — never conversations, prompts, keys, paths, base URLs, memory text, tool outputs, or file contents.",
   "updater.currentVersion": "Current version: {v}",
   "updater.channelLabel": "Update channel: {channel}",
   "updater.checkButton": "Check for updates",

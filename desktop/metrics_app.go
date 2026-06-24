@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"reasonix/internal/config"
 	"reasonix/internal/event"
@@ -26,6 +27,7 @@ import (
 var metricsEndpoint = "https://crash.reasonix.io/v1/metrics"
 
 const metricsPendingFile = "metrics-pending.json"
+const metricsPostTimeout = 8 * time.Second
 
 var statusCodePattern = regexp.MustCompile(`status (\d{3})`)
 
@@ -530,6 +532,7 @@ func (a *App) postMetrics(p metricsPayload) bool {
 	if err != nil {
 		return false
 	}
+	c.Timeout = metricsPostTimeout
 	req, err := http.NewRequestWithContext(a.bootContext(), http.MethodPost, metricsEndpoint, bytes.NewReader(body))
 	if err != nil {
 		return false

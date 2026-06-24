@@ -1553,7 +1553,7 @@ export const zh: Record<DictKey, string> = {
   "settings.telemetryLabel": "匿名启动统计",
   "settings.telemetryHint": "启动时发送随机安装 ID、版本号和操作系统用于统计活跃安装量；若上次运行发生崩溃，则在本次启动补发该崩溃报告。绝不包含对话、密钥或文件内容。",
   "settings.metricsLabel": "共享聚合质量指标",
-  "settings.metricsHint": "默认开启。发送匿名的轮次结束统计和设置偏好快照（如桌面风格、主题、Provider/模型标识、客户端版本与机器人开关），以及用于 DAU 去重的随机安装 ID。Bucket 可能包含归一化后的自定义 Provider 名和模型名——绝不包含对话、提示词、密钥、路径、base URL 或文件内容。",
+  "settings.metricsHint": "默认开启。发送匿名的轮次结束统计、设置偏好快照，以及 Memory v5 聚合桶，例如是否注入、大小桶、IR 数量桶和记忆图规模桶。包含用于 DAU 去重的随机安装 ID。Bucket 可能包含归一化后的自定义 Provider 名和模型名——绝不包含对话、提示词、密钥、路径、base URL、记忆正文、工具输出或文件内容。",
   "updater.currentVersion": "当前版本：{v}",
   "updater.channelLabel": "更新渠道：{channel}",
   "updater.checkButton": "检查更新",
