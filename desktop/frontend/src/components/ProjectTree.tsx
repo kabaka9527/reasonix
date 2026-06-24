@@ -1039,7 +1039,7 @@ export function ProjectTree({
         return (
           <div
             key={key}
-            className={`project-tree__topic project-tree__topic--editing${active ? " project-tree__topic--active" : ""}${imSource ? " project-tree__topic--im-source" : ""}`}
+            className={`project-tree__topic project-tree__topic--editing${active ? " project-tree__topic--active" : ""}${imSource ? " project-tree__topic--im-source" : ""}${meta ? " project-tree__topic--has-meta" : ""}`}
             style={{ paddingLeft: 14 + depth * 16 }}
           >
             <input
@@ -1079,7 +1079,8 @@ export function ProjectTree({
             className="project-tree__topic-main"
             title={title}
             style={{ paddingLeft: 14 + depth * 16 }}
-            onClick={() => {
+            onClick={(event) => {
+              if (creationTopics && event.detail > 1) return;
               if (openRequest) onOpenTopic(openRequest.scope, openRequest.workspaceRoot, openRequest.topicId, openRequest.sessionPath);
             }}
             onKeyDown={(event) => {
