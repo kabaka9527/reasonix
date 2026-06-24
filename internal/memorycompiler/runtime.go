@@ -453,6 +453,28 @@ type Turn struct {
 	trace     ExecutionTrace
 	strategy  string
 	citations []provider.MemoryCitation
+	metrics   TurnMetrics
+}
+
+// TurnMetrics is a content-free snapshot of Memory v5 participation for one
+// turn. It intentionally contains only counts and estimated token sizes so
+// desktop aggregate metrics can quantify memory usage without uploading memory
+// text, tool output, file paths, or prompts.
+type TurnMetrics struct {
+	Injected         bool
+	UsefulIR         bool
+	CompiledTokens   int
+	IROverheadTokens int
+	MemoryReferences int
+	Constraints      int
+	RiskNotes        int
+	ExecutionSteps   int
+	TotalNodes       int
+	HighSignalNodes  int
+	ToolResultNodes  int
+	DecisionNodes    int
+	StrategyCount    int
+	LearningCount    int
 }
 
 // StartTurn builds a cache-safe execution contract from prior learned state. It
@@ -479,6 +501,7 @@ func (r *Runtime) StartTurn(ctx context.Context, input string, _ []provider.Mess
 		rt:        r,
 		ir:        ir,
 		citations: memoryCitationsForIR(ir),
+		metrics:   turnMetricsForIR(ir, st),
 		trace: ExecutionTrace{
 			ID:                  id,
 			IRVersion:           version,
@@ -522,6 +545,9 @@ func (r *Runtime) StartTurn(ctx context.Context, input string, _ []provider.Mess
 	if t.trace.Cost.EstimatedCompiledTokens > t.trace.Cost.EstimatedInputTokens {
 		t.trace.Cost.EstimatedIROverheadTokens = t.trace.Cost.EstimatedCompiledTokens - t.trace.Cost.EstimatedInputTokens
 	}
+	t.metrics.Injected = true
+	t.metrics.CompiledTokens = t.trace.Cost.EstimatedCompiledTokens
+	t.metrics.IROverheadTokens = t.trace.Cost.EstimatedIROverheadTokens
 	return compiled, t
 }
 
@@ -532,6 +558,37 @@ func (t *Turn) MemoryCitations() []provider.MemoryCitation {
 		return nil
 	}
 	return append([]provider.MemoryCitation(nil), t.citations...)
+}
+
+// Metrics returns a content-free Memory v5 usage snapshot for this turn.
+func (t *Turn) Metrics() TurnMetrics {
+	if t == nil {
+		return TurnMetrics{}
+	}
+	return t.metrics
+}
+
+func turnMetricsForIR(ir PlannerIR, st state) TurnMetrics {
+	m := TurnMetrics{
+		UsefulIR:         hasUsefulIR(ir),
+		MemoryReferences: len(ir.MemoryReferences),
+		Constraints:      len(ir.Constraints),
+		RiskNotes:        len(ir.RiskNotes),
+		ExecutionSteps:   len(ir.ExecutionSteps),
+		TotalNodes:       len(st.Nodes),
+		DecisionNodes:    len(st.Decisions),
+		StrategyCount:    len(st.Strategies),
+		LearningCount:    len(st.Learnings),
+	}
+	for _, node := range st.Nodes {
+		if node.Quality == QualityHighSignal {
+			m.HighSignalNodes++
+		}
+		if node.Type == "tool_result" {
+			m.ToolResultNodes++
+		}
+	}
+	return m
 }
 
 func buildIR(goal, sourceEvent string, st state) PlannerIR {

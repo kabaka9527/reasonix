@@ -132,7 +132,13 @@ func TestRunCompilesMemorySourceFromUnexpandedContext(t *testing.T) {
 	expanded := "Referenced context:\n\n<file path=\"auth.go\">\npackage main\nconst secret = true\n</file>\n\nfix @auth.go"
 	raw := "fix @auth.go"
 	mp := testutil.NewMock("m", testutil.Turn{Text: "done"})
-	a := New(mp, echoRegistry(), NewSession(""), Options{MemoryCompiler: rt}, event.Discard)
+	var stats []event.MemoryCompilerStats
+	sink := event.FuncSink(func(e event.Event) {
+		if e.Kind == event.MemoryCompilerStatsEvent && e.MemoryCompiler != nil {
+			stats = append(stats, *e.MemoryCompiler)
+		}
+	})
+	a := New(mp, echoRegistry(), NewSession(""), Options{MemoryCompiler: rt}, sink)
 	ctx := WithMemoryCompilerSourceInput(context.Background(), raw)
 	if err := a.Run(ctx, expanded); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -145,6 +151,12 @@ func TestRunCompilesMemorySourceFromUnexpandedContext(t *testing.T) {
 	}
 	if strings.Contains(user.Content, "Referenced context:") || strings.Contains(user.Content, "const secret") {
 		t.Fatalf("expanded reference context leaked into Memory v5 contract:\n%s", user.Content)
+	}
+	if len(stats) != 1 {
+		t.Fatalf("memory compiler stats events = %d, want 1", len(stats))
+	}
+	if !stats[0].Injected || stats[0].CompiledTokens == 0 || stats[0].MemoryReferences == 0 {
+		t.Fatalf("memory compiler stats did not quantify injected memory: %+v", stats[0])
 	}
 }
 

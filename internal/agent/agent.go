@@ -725,6 +725,7 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 	if memCompiler := a.memoryCompilerRuntime(); memCompiler != nil {
 		if compiledInput, turn := memCompiler.StartTurn(ctx, memoryCompilerInput, a.session.Snapshot()); turn != nil {
 			a.compilerTurn = turn
+			a.emitMemoryCompilerStats(turn)
 			defer func() {
 				turn.Finish(runErr)
 				if a.compilerTurn == turn {
@@ -898,6 +899,29 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 	// is already in the session, so the user can just send another message to pick
 	// up where it left off.
 	return fmt.Errorf("paused after %d tool-call rounds (%s) — the work so far is saved; send another message to continue, or set %s higher or to 0 for no limit", a.maxSteps, a.maxStepsKey, a.maxStepsKey)
+}
+
+func (a *Agent) emitMemoryCompilerStats(turn *memorycompiler.Turn) {
+	if a == nil || turn == nil {
+		return
+	}
+	m := turn.Metrics()
+	a.sink.Emit(event.Event{Kind: event.MemoryCompilerStatsEvent, MemoryCompiler: &event.MemoryCompilerStats{
+		Injected:         m.Injected,
+		UsefulIR:         m.UsefulIR,
+		CompiledTokens:   m.CompiledTokens,
+		IROverheadTokens: m.IROverheadTokens,
+		MemoryReferences: m.MemoryReferences,
+		Constraints:      m.Constraints,
+		RiskNotes:        m.RiskNotes,
+		ExecutionSteps:   m.ExecutionSteps,
+		TotalNodes:       m.TotalNodes,
+		HighSignalNodes:  m.HighSignalNodes,
+		ToolResultNodes:  m.ToolResultNodes,
+		DecisionNodes:    m.DecisionNodes,
+		StrategyCount:    m.StrategyCount,
+		LearningCount:    m.LearningCount,
+	}})
 }
 
 func (a *Agent) finalReadinessFailure() string {

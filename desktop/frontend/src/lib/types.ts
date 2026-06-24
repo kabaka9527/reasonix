@@ -19,7 +19,8 @@ export type EventKind =
   | "compaction_done"
   | "mcp_surface_ready"
   | "retrying"
-  | "steer";
+  | "steer"
+  | "memory_compiler_stats";
 
 export interface WireCompaction {
   trigger?: string; // "auto" | "manual"
@@ -120,11 +121,29 @@ export interface MemoryCitation {
   kind?: string;
 }
 
+export interface MemoryCompilerStats {
+  injected: boolean;
+  usefulIR: boolean;
+  compiledTokens: number;
+  irOverheadTokens: number;
+  memoryReferences: number;
+  constraints: number;
+  riskNotes: number;
+  executionSteps: number;
+  totalNodes: number;
+  highSignalNodes: number;
+  toolResultNodes: number;
+  decisionNodes: number;
+  strategyCount: number;
+  learningCount: number;
+}
+
 export interface WireEvent {
   kind: EventKind;
   text?: string;
   reasoning?: string;
   memoryCitations?: MemoryCitation[];
+  memoryCompiler?: MemoryCompilerStats;
   level?: "info" | "warn";
   tool?: WireTool;
   usage?: WireUsage;
