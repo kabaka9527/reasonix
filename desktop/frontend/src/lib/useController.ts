@@ -916,29 +916,20 @@ export function useController() {
 
     const historyStartedAt = Date.now();
 
-    // Collect all backend results first, then batch-dispatched atomically.
-    // This avoids 7+ independent bump() re-renders as each IPC resolves.
-    const [meta, effort, jobs, history, checkpoints, context, balance] = await Promise.all([
+    // Phase 1: dispatch fast metadata immediately so the transcript can render
+    // without waiting for slower ancillary calls (e.g. BalanceForTab network).
+    const [meta, history] = await Promise.all([
       app.MetaForTab(tabId).catch((err) => { noteFailure("meta", err); return undefined; }),
-      app.EffortForTab(tabId).catch((err) => { noteFailure("effort", err); return undefined; }),
-      app.JobsForTab(tabId).catch((err) => { noteFailure("jobs", err); return undefined; }),
       options.skipHistory
         ? Promise.resolve(undefined)
         : app.HistoryForTab(tabId).catch((err) => { noteFailure("history", err); return undefined; }),
-      app.CheckpointsForTab(tabId).catch((err) => { noteFailure("checkpoints", err); return undefined; }),
-      app.ContextUsageForTab(tabId).catch((err) => { noteFailure("context", err); return undefined; }),
-      app.BalanceForTab(tabId).catch((err) => { noteFailure("balance", err); return undefined; }),
     ]);
-    if (!stillCurrent()) return;
 
-    // Batch all dispatches — React 18 merges synchronous setState calls
-    // within the same microtask into a single re-render.
+    if (!stillCurrent()) return;
     if (meta !== undefined) dispatchTo(tabId, { type: "meta", meta });
-    if (effort !== undefined) dispatchTo(tabId, { type: "effort", effort });
-    if (jobs !== undefined) dispatchTo(tabId, { type: "jobs", jobs: asArray(jobs) });
     if (!options.skipHistory && history !== undefined) {
       const messages = asArray(history);
-      if (messages.length) dispatchTo(tabId, { type: "history", messages });
+      dispatchTo(tabId, { type: "history", messages });
       addBreadcrumb(
         "tab.hydrate",
         `history done ${tabId} count=${messages.length} ms=${Date.now() - historyStartedAt}`,
@@ -955,6 +946,19 @@ export function useController() {
         addBreadcrumb("tab.switch", `history-done ${tabId} skipped ms=${Date.now() - historyStartedAt}`);
       }
     }
+
+    // Phase 2: ancillary data (checkpoints, context, balance, effort, jobs).
+    // These don't block the transcript, so they're batched into one render.
+    const [effort, jobs, checkpoints, context, balance] = await Promise.all([
+      app.EffortForTab(tabId).catch((err) => { noteFailure("effort", err); return undefined; }),
+      app.JobsForTab(tabId).catch((err) => { noteFailure("jobs", err); return undefined; }),
+      app.CheckpointsForTab(tabId).catch((err) => { noteFailure("checkpoints", err); return undefined; }),
+      app.ContextUsageForTab(tabId).catch((err) => { noteFailure("context", err); return undefined; }),
+      app.BalanceForTab(tabId).catch((err) => { noteFailure("balance", err); return undefined; }),
+    ]);
+    if (!stillCurrent()) return;
+    if (effort !== undefined) dispatchTo(tabId, { type: "effort", effort });
+    if (jobs !== undefined) dispatchTo(tabId, { type: "jobs", jobs: asArray(jobs) });
     if (checkpoints !== undefined) dispatchTo(tabId, { type: "checkpoints", checkpoints: asArray(checkpoints) });
     if (context !== undefined) dispatchTo(tabId, { type: "context", context });
     if (balance !== undefined) dispatchTo(tabId, { type: "balance", balance });
@@ -1272,7 +1276,11 @@ export function useController() {
     }
     if (tabId) bumpSessionLoadSeq(tabId);
     invalidateCache();
-    if (tabId) dispatchTo(tabId, { type: "reset" });
+    if (tabId) {
+      dispatchTo(tabId, { type: "reset" });
+      // Clear placeholder items since no history action follows.
+      dispatchTo(tabId, { type: "history", messages: [] });
+    }
   }, [activeTabId, bumpCheckpointRefreshSeq, bumpSessionLoadSeq, dispatchTo, loadSessionDataForTab, waitForBackendActiveTab]);
 
   const listSessions = useCallback(async (): Promise<SessionMeta[]> => asArray<SessionMeta>(await app.ListSessions().catch(() => [])), []);
