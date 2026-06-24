@@ -472,6 +472,47 @@ func TestEquilibriumExplorationRateAdaptsToLearningState(t *testing.T) {
 	}
 }
 
+func TestControlPolicyHierarchyPrioritizesSemanticShift(t *testing.T) {
+	st := state{Learnings: []SystemLearning{
+		{TraceID: "1", GoodPatterns: []string{"general"}, CausalFindings: []string{"IR execution semantic variation: execution steps varied from planner IR"}},
+		{TraceID: "2", GoodPatterns: []string{"general"}, CausalFindings: []string{"IR execution semantic variation: tool calls exceeded IR step budget"}},
+		{TraceID: "3", GoodPatterns: []string{"general"}, CausalFindings: []string{"IR execution semantic variation: execution steps varied from planner IR"}},
+	}}
+	policy := controlPolicyForState(st, DriftReport{})
+	if policy.Mode != "stabilize" {
+		t.Fatalf("policy mode = %q, want stabilize: %+v", policy.Mode, policy)
+	}
+	if policy.ExplorationRatePercent != minExplorationRatePercent {
+		t.Fatalf("semantic shift exploration rate = %d, want %d", policy.ExplorationRatePercent, minExplorationRatePercent)
+	}
+	if policy.Gain >= 1 {
+		t.Fatalf("semantic shift should lower control gain, got %+v", policy)
+	}
+	if len(policy.SemanticShift) == 0 {
+		t.Fatalf("semantic shift monitor did not emit signals: %+v", policy)
+	}
+}
+
+func TestControlPolicyAdaptiveGainChangesMutationCooldown(t *testing.T) {
+	stable := controlPolicyForState(state{Learnings: []SystemLearning{
+		{TraceID: "1", GoodPatterns: []string{"general"}},
+		{TraceID: "2", GoodPatterns: []string{"general"}},
+		{TraceID: "3", GoodPatterns: []string{"general"}},
+	}}, DriftReport{})
+	unstable := controlPolicyForState(state{Learnings: []SystemLearning{
+		{TraceID: "1", BadStrategies: []string{"general"}},
+	}}, DriftReport{})
+	if stable.Gain <= unstable.Gain {
+		t.Fatalf("stable gain should exceed unstable gain: stable=%+v unstable=%+v", stable, unstable)
+	}
+	if stable.MutationCooldown >= mutationFeedbackCooldown {
+		t.Fatalf("stable policy should shorten cooldown for plasticity: %+v", stable)
+	}
+	if unstable.MutationCooldown <= mutationFeedbackCooldown {
+		t.Fatalf("unstable policy should lengthen cooldown for damping: %+v", unstable)
+	}
+}
+
 func TestStrategyDebiasRewardsNovelContextFit(t *testing.T) {
 	oldDominant := Strategy{ID: "old-dominant", Successes: 30, Preconditions: []string{"unrelated"}}
 	freshFit := Strategy{ID: "fresh-fit", Preconditions: []string{"latency"}}
@@ -624,6 +665,18 @@ func TestMutationFeedbackDampingSkipsCooldownResonance(t *testing.T) {
 	got = mergeMutations(existing, later)
 	if len(got) != 2 {
 		t.Fatalf("cooldown should allow later mutation signal, got %+v", got)
+	}
+	lowGainPolicy := defaultControlPolicy()
+	lowGainPolicy.Gain = 0.5
+	lowGainPolicy.MutationCooldown = controlMutationCooldown(lowGainPolicy.Gain)
+	lowGainPolicy.MutationCooldownMs = lowGainPolicy.MutationCooldown.Milliseconds()
+	damped := next
+	damped.Reason = "low gain damped signal"
+	damped.CreatedAt = now.Add(45 * time.Minute)
+	damped.UpdatedAt = damped.CreatedAt
+	got = mergeMutationsWithPolicy(lowGainPolicy, existing, damped)
+	if len(got) != 1 {
+		t.Fatalf("low gain policy should extend cooldown and damp feedback, got %+v", got)
 	}
 }
 

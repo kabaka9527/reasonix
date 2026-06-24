@@ -27,7 +27,7 @@ const (
 	learningTracesFile = "learning_traces.jsonl"
 	debugTracesFile    = "debug_traces.jsonl"
 	debugTraceEnv      = "REASONIX_MEMORY_COMPILER_DEBUG_TRACE"
-	version            = "v5.4"
+	version            = "v5.5"
 
 	explorationRatePercent    = 10
 	minExplorationRatePercent = 3
@@ -145,6 +145,10 @@ type ExecutionTrace struct {
 	SemanticDrift       []string             `json:"semantic_drift,omitempty"`
 	SemanticDriftHard   []string             `json:"semantic_drift_hard,omitempty"`
 	SemanticDriftSoft   []string             `json:"semantic_drift_soft,omitempty"`
+	SemanticShift       []string             `json:"semantic_shift,omitempty"`
+	ControlMode         string               `json:"control_mode,omitempty"`
+	ControlGain         float64              `json:"control_gain,omitempty"`
+	ControlSignals      []string             `json:"control_signals,omitempty"`
 	Cost                CostMetrics          `json:"cost,omitempty"`
 	MutationEvaluations []MutationEvaluation `json:"mutation_evaluations,omitempty"`
 	FailureReason       string               `json:"failure_reason,omitempty"`
@@ -215,6 +219,30 @@ type IRValidationResult struct {
 	Reject       bool
 }
 
+type ControlPolicy struct {
+	Version                string        `json:"version"`
+	Mode                   string        `json:"mode"`
+	Controller             string        `json:"controller"`
+	ExplorationRatePercent int           `json:"exploration_rate_percent"`
+	Gain                   float64       `json:"gain"`
+	MutationCooldown       time.Duration `json:"-"`
+	MutationCooldownMs     int64         `json:"mutation_cooldown_ms"`
+	SemanticShift          []string      `json:"semantic_shift,omitempty"`
+	Reasons                []string      `json:"reasons,omitempty"`
+}
+
+type ControlReport struct {
+	TraceID                string    `json:"trace_id,omitempty"`
+	Mode                   string    `json:"mode"`
+	Controller             string    `json:"controller"`
+	ExplorationRatePercent int       `json:"exploration_rate_percent"`
+	Gain                   float64   `json:"gain"`
+	MutationCooldownMs     int64     `json:"mutation_cooldown_ms"`
+	SemanticShift          []string  `json:"semantic_shift,omitempty"`
+	Reasons                []string  `json:"reasons,omitempty"`
+	CreatedAt              time.Time `json:"created_at"`
+}
+
 type TraceBundle struct {
 	RuntimeTrace  ExecutionTrace  `json:"runtime_trace"`
 	LearningTrace *LearningTrace  `json:"learning_trace,omitempty"`
@@ -233,6 +261,10 @@ type LearningTrace struct {
 	SemanticDrift        []string             `json:"semantic_drift,omitempty"`
 	SemanticDriftHard    []string             `json:"semantic_drift_hard,omitempty"`
 	SemanticDriftSoft    []string             `json:"semantic_drift_soft,omitempty"`
+	SemanticShift        []string             `json:"semantic_shift,omitempty"`
+	ControlMode          string               `json:"control_mode,omitempty"`
+	ControlGain          float64              `json:"control_gain,omitempty"`
+	ControlSignals       []string             `json:"control_signals,omitempty"`
 	CausalFindings       []string             `json:"causal_findings,omitempty"`
 	CompilerImprovements []string             `json:"compiler_improvements,omitempty"`
 	MutationEvaluations  []MutationEvaluation `json:"mutation_evaluations,omitempty"`
@@ -330,6 +362,7 @@ type state struct {
 	Mutations      []CompilerMutation `json:"mutations,omitempty"`
 	Learnings      []SystemLearning   `json:"learnings,omitempty"`
 	DriftReports   []DriftReport      `json:"drift_reports,omitempty"`
+	ControlReports []ControlReport    `json:"control_reports,omitempty"`
 	NoisyRefs      map[string]int     `json:"noisy_refs,omitempty"`
 	UpdatedAt      time.Time          `json:"updated_at,omitempty"`
 }
@@ -353,7 +386,7 @@ func (r *Runtime) StartTurn(ctx context.Context, input string, _ []provider.Mess
 	}
 	goal := summarizeGoal(input)
 	st := r.loadState()
-	ir := buildIR(goal, input, st)
+	ir, policy := buildIRWithPolicy(goal, input, st)
 	now := time.Now().UTC()
 	t := &Turn{
 		rt:        r,
@@ -367,6 +400,10 @@ func (r *Runtime) StartTurn(ctx context.Context, input string, _ []provider.Mess
 			MemoryUsed:       memoryRefIDs(ir.MemoryReferences),
 			DecisionBranches: decisionBranches(ir),
 			StartedAt:        now,
+			SemanticShift:    append([]string(nil), policy.SemanticShift...),
+			ControlMode:      policy.Mode,
+			ControlGain:      policy.Gain,
+			ControlSignals:   append([]string(nil), policy.Reasons...),
 			Cost: CostMetrics{
 				EstimatedInputTokens: estimateTokens(input),
 			},
@@ -404,8 +441,14 @@ func (t *Turn) MemoryCitations() []provider.MemoryCitation {
 }
 
 func buildIR(goal, sourceEvent string, st state) PlannerIR {
+	ir, _ := buildIRWithPolicy(goal, sourceEvent, st)
+	return ir
+}
+
+func buildIRWithPolicy(goal, sourceEvent string, st state) (PlannerIR, ControlPolicy) {
 	now := time.Now().UTC()
 	st, drift := applyDriftControl(st, now, "")
+	policy := controlPolicyForState(st, drift)
 	ir := PlannerIR{
 		Version:     version,
 		Goal:        goal,
@@ -414,7 +457,7 @@ func buildIR(goal, sourceEvent string, st state) PlannerIR {
 	}
 	st.Strategies = ensureBuiltInStrategies(st.Strategies)
 	rankedStrategies := rankStrategies(goal, st.Strategies)
-	strategyPick := selectStrategy(goal, rankedStrategies, equilibriumExplorationRatePercent(st, drift))
+	strategyPick := selectStrategy(goal, rankedStrategies, policy.ExplorationRatePercent)
 	if strategyPick.Mode == "explore" {
 		ir.RuntimeMode = "explore"
 	}
@@ -496,7 +539,7 @@ func buildIR(goal, sourceEvent string, st state) PlannerIR {
 			}
 		}
 	}
-	return canonicalizeIR(ir)
+	return canonicalizeIR(ir), policy
 }
 
 func hasUsefulIR(ir PlannerIR) bool {
@@ -1123,16 +1166,94 @@ func clampExplorationRatePercent(rate int) int {
 }
 
 func equilibriumExplorationRatePercent(st state, drift DriftReport) int {
-	if equilibriumOscillating(st) {
-		return minExplorationRatePercent
+	return controlPolicyForState(st, drift).ExplorationRatePercent
+}
+
+func controlPolicyForState(st state, drift DriftReport) ControlPolicy {
+	semanticShift := semanticShiftSignals(st)
+	policy := ControlPolicy{
+		Version:                version,
+		Mode:                   "balanced",
+		Controller:             "meta",
+		ExplorationRatePercent: explorationRatePercent,
+		Gain:                   1.0,
+		Reasons:                []string{"balanced control policy"},
 	}
-	if equilibriumUnstable(st, drift) {
-		return minExplorationRatePercent
+	switch {
+	case len(semanticShift) > 0:
+		policy.Mode = "stabilize"
+		policy.ExplorationRatePercent = minExplorationRatePercent
+		policy.Gain = 0.45
+		policy.SemanticShift = semanticShift
+		policy.Reasons = []string{"semantic drift monitor requested stabilization"}
+	case equilibriumOscillating(st):
+		policy.Mode = "dampen"
+		policy.ExplorationRatePercent = minExplorationRatePercent
+		policy.Gain = 0.55
+		policy.Reasons = []string{"strategy feedback oscillation damped by meta controller"}
+	case equilibriumUnstable(st, drift):
+		policy.Mode = "stabilize"
+		policy.ExplorationRatePercent = minExplorationRatePercent
+		policy.Gain = 0.70
+		policy.Reasons = []string{"drift or failed learning requested stabilization"}
+	case equilibriumStable(st, drift):
+		policy.Mode = "explore"
+		policy.ExplorationRatePercent = maxExplorationRatePercent
+		policy.Gain = 1.15
+		policy.Reasons = []string{"stable recent learning permits controlled exploration"}
 	}
-	if equilibriumStable(st, drift) {
-		return maxExplorationRatePercent
+	policy.ExplorationRatePercent = clampExplorationRatePercent(policy.ExplorationRatePercent)
+	policy.Gain = roundScore(policy.Gain)
+	policy.MutationCooldown = controlMutationCooldown(policy.Gain)
+	policy.MutationCooldownMs = policy.MutationCooldown.Milliseconds()
+	policy.SemanticShift = limitStrings(canonicalStrings(policy.SemanticShift), 5)
+	policy.Reasons = limitStrings(canonicalStrings(policy.Reasons), 5)
+	return policy
+}
+
+func controlMutationCooldown(gain float64) time.Duration {
+	if gain <= 0 {
+		gain = 1
 	}
-	return explorationRatePercent
+	if gain < 0.35 {
+		gain = 0.35
+	}
+	if gain > 1.25 {
+		gain = 1.25
+	}
+	return time.Duration(float64(mutationFeedbackCooldown) / gain)
+}
+
+func semanticShiftSignals(st state) []string {
+	recent := recentLearnings(st.Learnings, 6)
+	softVariations := 0
+	hardDrifts := 0
+	failureMemoryFindings := 0
+	for _, learning := range recent {
+		for _, finding := range learning.CausalFindings {
+			lower := strings.ToLower(finding)
+			if strings.Contains(lower, "semantic variation") {
+				softVariations++
+			}
+			if strings.Contains(lower, "semantic drift") {
+				hardDrifts++
+			}
+			if strings.Contains(lower, "memory ") && strings.Contains(lower, "failed outcome") {
+				failureMemoryFindings++
+			}
+		}
+	}
+	var signals []string
+	if softVariations >= 3 {
+		signals = append(signals, fmt.Sprintf("soft semantic variations accumulated across recent turns: %d", softVariations))
+	}
+	if hardDrifts >= 2 {
+		signals = append(signals, fmt.Sprintf("hard semantic drift repeated across recent turns: %d", hardDrifts))
+	}
+	if failureMemoryFindings >= 3 {
+		signals = append(signals, fmt.Sprintf("memory attribution repeatedly aligned with failed outcomes: %d", failureMemoryFindings))
+	}
+	return limitStrings(canonicalStrings(signals), 5)
 }
 
 func equilibriumUnstable(st state, drift DriftReport) bool {
@@ -1542,14 +1663,21 @@ func (r *Runtime) writeTraceAndLearn(tr ExecutionTrace, strategyID string) {
 	if hasLearning(learning) {
 		st.Learnings = appendLearning(st.Learnings, learning)
 	}
+	policy := controlPolicyForState(st, DriftReport{})
 	st.Nodes, st.Edges, st.Decisions = updateGraph(st.Nodes, st.Edges, st.Decisions, tr, learning)
 	st.ExecutionState = updateExecutionState(st.ExecutionState, tr, learning)
 	st.NoisyRefs = updateNoisyRefs(st.NoisyRefs, learning)
-	st.Mutations = mergeMutations(st.Mutations, mutationsFromLearning(learning, baseline)...)
+	st.Mutations = mergeMutationsWithPolicy(policy, st.Mutations, mutationsFromLearning(learning, baseline)...)
 	st, drift := applyDriftControl(st, time.Now().UTC(), tr.ID)
+	policy = controlPolicyForState(st, drift)
+	tr.SemanticShift = append([]string(nil), policy.SemanticShift...)
+	tr.ControlMode = policy.Mode
+	tr.ControlGain = policy.Gain
+	tr.ControlSignals = append([]string(nil), policy.Reasons...)
 	if hasDrift(drift) {
 		st.DriftReports = appendDriftReport(st.DriftReports, drift)
 	}
+	st.ControlReports = appendControlReport(st.ControlReports, controlReportForTrace(tr.ID, policy, time.Now().UTC()))
 	st.UpdatedAt = time.Now().UTC()
 	bundle := splitTrace(tr, learning, debugTraceEnabled())
 	_ = appendJSONL(filepath.Join(r.dir, tracesFile), bundle.RuntimeTrace)
@@ -1588,6 +1716,8 @@ func executionTraceProjection(tr ExecutionTrace) ExecutionTrace {
 		SemanticDrift:       append([]string(nil), tr.SemanticDrift...),
 		SemanticDriftHard:   append([]string(nil), tr.SemanticDriftHard...),
 		SemanticDriftSoft:   append([]string(nil), tr.SemanticDriftSoft...),
+		ControlMode:         tr.ControlMode,
+		ControlGain:         tr.ControlGain,
 		Cost:                tr.Cost,
 		FailureReason:       tr.FailureReason,
 		StartedAt:           tr.StartedAt,
@@ -1611,6 +1741,10 @@ func learningTraceFor(tr ExecutionTrace, learning SystemLearning) (LearningTrace
 		SemanticDrift:        append([]string(nil), tr.SemanticDrift...),
 		SemanticDriftHard:    append([]string(nil), tr.SemanticDriftHard...),
 		SemanticDriftSoft:    append([]string(nil), tr.SemanticDriftSoft...),
+		SemanticShift:        append([]string(nil), tr.SemanticShift...),
+		ControlMode:          tr.ControlMode,
+		ControlGain:          tr.ControlGain,
+		ControlSignals:       append([]string(nil), tr.ControlSignals...),
 		CausalFindings:       append([]string(nil), learning.CausalFindings...),
 		CompilerImprovements: append([]string(nil), learning.CompilerImprovements...),
 		MutationEvaluations:  append([]MutationEvaluation(nil), tr.MutationEvaluations...),
@@ -1812,6 +1946,13 @@ func baselineScore(st state, strategyID string) float64 {
 }
 
 func mergeMutations(existing []CompilerMutation, next ...CompilerMutation) []CompilerMutation {
+	return mergeMutationsWithPolicy(defaultControlPolicy(), existing, next...)
+}
+
+func mergeMutationsWithPolicy(policy ControlPolicy, existing []CompilerMutation, next ...CompilerMutation) []CompilerMutation {
+	if policy.MutationCooldown <= 0 {
+		policy.MutationCooldown = mutationFeedbackCooldown
+	}
 	seen := map[string]bool{}
 	out := existing[:0]
 	for _, m := range existing {
@@ -1824,7 +1965,7 @@ func mergeMutations(existing []CompilerMutation, next ...CompilerMutation) []Com
 	}
 	for _, m := range next {
 		key := m.Target + "\x00" + m.Change + "\x00" + m.Reason
-		if seen[key] || !validMutation(m) || mutationFeedbackInCooldown(out, m) {
+		if seen[key] || !validMutation(m) || mutationFeedbackInCooldown(out, m, policy.MutationCooldown) {
 			continue
 		}
 		seen[key] = true
@@ -1836,9 +1977,26 @@ func mergeMutations(existing []CompilerMutation, next ...CompilerMutation) []Com
 	return out
 }
 
-func mutationFeedbackInCooldown(existing []CompilerMutation, next CompilerMutation) bool {
+func defaultControlPolicy() ControlPolicy {
+	policy := ControlPolicy{
+		Version:                version,
+		Mode:                   "balanced",
+		Controller:             "meta",
+		ExplorationRatePercent: explorationRatePercent,
+		Gain:                   1.0,
+		MutationCooldown:       mutationFeedbackCooldown,
+		MutationCooldownMs:     mutationFeedbackCooldown.Milliseconds(),
+		Reasons:                []string{"balanced control policy"},
+	}
+	return policy
+}
+
+func mutationFeedbackInCooldown(existing []CompilerMutation, next CompilerMutation, cooldown time.Duration) bool {
 	if next.CreatedAt.IsZero() {
 		return false
+	}
+	if cooldown <= 0 {
+		cooldown = mutationFeedbackCooldown
 	}
 	for _, m := range existing {
 		if m.Target != next.Target || m.Change != next.Change {
@@ -1858,11 +2016,40 @@ func mutationFeedbackInCooldown(existing []CompilerMutation, next CompilerMutati
 		if delta < 0 {
 			delta = -delta
 		}
-		if delta < mutationFeedbackCooldown {
+		if delta < cooldown {
 			return true
 		}
 	}
 	return false
+}
+
+func controlReportForTrace(traceID string, policy ControlPolicy, now time.Time) ControlReport {
+	return ControlReport{
+		TraceID:                traceID,
+		Mode:                   policy.Mode,
+		Controller:             policy.Controller,
+		ExplorationRatePercent: policy.ExplorationRatePercent,
+		Gain:                   policy.Gain,
+		MutationCooldownMs:     policy.MutationCooldownMs,
+		SemanticShift:          append([]string(nil), policy.SemanticShift...),
+		Reasons:                append([]string(nil), policy.Reasons...),
+		CreatedAt:              now,
+	}
+}
+
+func appendControlReport(existing []ControlReport, report ControlReport) []ControlReport {
+	if strings.TrimSpace(report.TraceID) != "" {
+		for _, r := range existing {
+			if r.TraceID == report.TraceID {
+				return existing
+			}
+		}
+	}
+	existing = append(existing, report)
+	if len(existing) > 50 {
+		existing = existing[len(existing)-50:]
+	}
+	return existing
 }
 
 func hasLearning(l SystemLearning) bool {
