@@ -175,8 +175,11 @@ export function UserMessage({
 }) {
   const t = useT();
   const imSource = parseImSourceMessage(text);
+  const [showRaw, setShowRaw] = useState(false);
   const actionText = stripMemoryCompilerExecution(imSource?.text ?? text);
-  const { text: displayText, attachments } = parseAttachmentRefsForDisplay(actionText);
+  const hasMemoryCompiler = Boolean(submitText?.includes("<memory-compiler-execution>"));
+  const displaySource = showRaw && hasMemoryCompiler && submitText ? submitText : actionText;
+  const { text: displayText, attachments } = parseAttachmentRefsForDisplay(displaySource);
   const orderedAttachments = sortDisplayAttachments(attachments);
   const sourceLabel = imSource ? imSourceLabel(imSource, t) : "";
   const sentAt = createdAt === undefined ? null : messageDate(createdAt);
@@ -391,10 +394,17 @@ export function UserMessage({
               {formatMessageTime(sentAt)}
             </time>
           )}
-          {submitText?.includes("<memory-compiler-execution>") && (
-            <span className="msg-meta__btn msg-meta__memory" title={t("msg.memoryCompilerApplied")}>
+          {hasMemoryCompiler && (
+            <button
+              type="button"
+              className={`msg-meta__btn msg-meta__memory${showRaw ? " msg-meta__memory--active" : ""}`}
+              title={showRaw ? t("msg.memoryCompilerHideRaw") : t("msg.memoryCompilerShowRaw")}
+              aria-label={showRaw ? t("msg.memoryCompilerHideRaw") : t("msg.memoryCompilerShowRaw")}
+              aria-pressed={showRaw}
+              onClick={() => setShowRaw((v) => !v)}
+            >
               <BrainCircuit size={14} />
-            </span>
+            </button>
           )}
           <CopyButton text={actionText} label={t("msg.copy")} showInlineLabel={false} className="msg-meta__btn msg-meta__copy" />
           {onEdit && (
