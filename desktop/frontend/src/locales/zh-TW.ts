@@ -918,8 +918,6 @@ export const zhTW: Record<DictKey, string> = {
   "msg.memoryCitationsCount": "{n} 條記憶引用",
   "msg.memoryCompilerCitationsCount": "{n} 條 Memory v5 編譯引用",
   "msg.memoryCompilerApplied": "此訊息已套用 Memory v5 編譯器",
-  "msg.memoryCompilerShowRaw": "顯示原始訊息文字",
-  "msg.memoryCompilerHideRaw": "隱藏原始訊息文字",
   "msg.memoryCitationLine": "第 {line} 行",
   "msg.memoryCitationLineRange": "{start}-{end} 行",
   "msg.copy": "複製",

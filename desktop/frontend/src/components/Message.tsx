@@ -1,6 +1,6 @@
 import { memo, useEffect, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
-import { BrainCircuit, ChevronDown, ChevronRight, FileText, Folder, GitBranch, Image, MessageSquare, Pencil, RotateCcw, ScrollText } from "lucide-react";
+import { ChevronDown, ChevronRight, FileText, Folder, GitBranch, Image, MessageSquare, Pencil, RotateCcw, ScrollText } from "lucide-react";
 import { Markdown } from "./Markdown";
 import { CopyButton } from "./CopyButton";
 import { ProcessBrainIcon } from "./ProcessCard";
@@ -175,11 +175,9 @@ export function UserMessage({
 }) {
   const t = useT();
   const imSource = parseImSourceMessage(text);
-  const [showRaw, setShowRaw] = useState(false);
   const actionText = stripMemoryCompilerExecution(imSource?.text ?? text);
   const hasMemoryCompiler = Boolean(submitText?.includes("<memory-compiler-execution>"));
-  const displaySource = showRaw && hasMemoryCompiler && submitText ? submitText : actionText;
-  const { text: displayText, attachments } = parseAttachmentRefsForDisplay(displaySource);
+  const { text: displayText, attachments } = parseAttachmentRefsForDisplay(actionText);
   const orderedAttachments = sortDisplayAttachments(attachments);
   const sourceLabel = imSource ? imSourceLabel(imSource, t) : "";
   const sentAt = createdAt === undefined ? null : messageDate(createdAt);
@@ -366,6 +364,7 @@ export function UserMessage({
         ) : (
           displayText && <div className="msg__text">{displayText}</div>
         )}
+        {hasMemoryCompiler && <span className="msg__memory-badge" title={t("msg.memoryCompilerApplied")}>🧠</span>}
         {failed && <div className="msg__send-failed">{t("msg.sendFailed")}</div>}
         {orderedAttachments.length > 0 && (
           <div className="msg-attachments" aria-label={t("msg.attachments")}>
@@ -393,18 +392,6 @@ export function UserMessage({
             <time className="msg-meta__time" dateTime={sentAt.toISOString()} title={sentAt.toLocaleString()}>
               {formatMessageTime(sentAt)}
             </time>
-          )}
-          {hasMemoryCompiler && (
-            <button
-              type="button"
-              className={`msg-meta__btn msg-meta__memory${showRaw ? " msg-meta__memory--active" : ""}`}
-              title={showRaw ? t("msg.memoryCompilerHideRaw") : t("msg.memoryCompilerShowRaw")}
-              aria-label={showRaw ? t("msg.memoryCompilerHideRaw") : t("msg.memoryCompilerShowRaw")}
-              aria-pressed={showRaw}
-              onClick={() => setShowRaw((v) => !v)}
-            >
-              <BrainCircuit size={14} />
-            </button>
           )}
           <CopyButton text={actionText} label={t("msg.copy")} showInlineLabel={false} className="msg-meta__btn msg-meta__copy" />
           {onEdit && (
