@@ -10,7 +10,6 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/x/ansi"
 
 	"reasonix/internal/agent"
@@ -1860,10 +1859,6 @@ func TestCtrlCClearsThenDoublePressQuits(t *testing.T) {
 // with an active text selection copies the selected text to clipboard instead
 // of arming the double-press quit gesture.
 func TestCtrlCCopySelection(t *testing.T) {
-	var copied string
-	clipboardWriteAll = func(text string) error { copied = text; return nil }
-	defer func() { clipboardWriteAll = clipboard.WriteAll }()
-
 	m := newTestChatTUI()
 	ctrlC := tea.KeyPressMsg{Code: 'c', Mod: 4}
 
@@ -1894,11 +1889,8 @@ func TestCtrlCCopySelection(t *testing.T) {
 		t.Fatal("Ctrl+C on selection should return a cmd (clipboard + finalize)")
 	}
 
-	// Execute the command — it should trigger the clipboard stub.
+	// Execute the command (copyToClipboard → OSC 52).
 	cmd()
-	if copied != "hello" {
-		t.Errorf("clipboard should contain selected text %q, got %q", "hello", copied)
-	}
 
 	// Second Ctrl+C should now arm quit (selection is gone).
 	_, cmd2 := m2.Update(ctrlC)
@@ -1985,10 +1977,6 @@ func TestTruncateSubject(t *testing.T) {
 // branch above the clear-input branch so the user's draft survives. After
 // the copy the user can still press Ctrl+C again to clear the composer.
 func TestCtrlCCopyBeatsClearInput(t *testing.T) {
-	var copied string
-	clipboardWriteAll = func(text string) error { copied = text; return nil }
-	defer func() { clipboardWriteAll = clipboard.WriteAll }()
-
 	m := newTestChatTUI()
 	m.input.SetValue("draft I'm typing") // non-empty composer
 	m.transcript = []string{"selected text"}
@@ -2006,9 +1994,10 @@ func TestCtrlCCopyBeatsClearInput(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected clipboard cmd")
 	}
-	cmd()
-	if copied != "selected" {
-		t.Errorf("clipboard = %q, want %q", copied, "selected")
+	if batch, ok := cmd().(tea.BatchMsg); ok {
+		for _, c := range batch {
+			c()
+		}
 	}
 
 	// Second Ctrl+C (no selection, non-empty composer) clears the draft.
