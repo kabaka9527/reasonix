@@ -1474,6 +1474,7 @@ export const zh: Record<DictKey, string> = {
   "msg.thinkingDone": "已完成",
   "msg.memoryCitationsCount": "{n} 条记忆引用",
   "msg.memoryCompilerCitationsCount": "{n} 条 Memory v5 编译引用",
+  "msg.memoryCompilerApplied": "此消息已应用 Memory v5 编译器",
   "msg.memoryCitationLine": "第 {line} 行",
   "msg.memoryCitationLineRange": "{start}-{end} 行",
   "msg.copy": "复制",

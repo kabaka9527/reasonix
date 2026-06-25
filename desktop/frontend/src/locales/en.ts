@@ -1472,6 +1472,7 @@ export const en = {
   "msg.thinkingDone": "done",
   "msg.memoryCitationsCount": "{n} memory references",
   "msg.memoryCompilerCitationsCount": "{n} Memory v5 compiler references",
+  "msg.memoryCompilerApplied": "Memory v5 compiler applied to this message",
   "msg.memoryCitationLine": "line {line}",
   "msg.memoryCitationLineRange": "lines {start}-{end}",
   "msg.copy": "Copy",

@@ -917,6 +917,7 @@ export const zhTW: Record<DictKey, string> = {
   "msg.thinkingDone": "已完成",
   "msg.memoryCitationsCount": "{n} 條記憶引用",
   "msg.memoryCompilerCitationsCount": "{n} 條 Memory v5 編譯引用",
+  "msg.memoryCompilerApplied": "此訊息已套用 Memory v5 編譯器",
   "msg.memoryCitationLine": "第 {line} 行",
   "msg.memoryCitationLineRange": "{start}-{end} 行",
   "msg.copy": "複製",
