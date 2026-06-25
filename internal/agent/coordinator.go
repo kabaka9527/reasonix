@@ -173,15 +173,15 @@ func (c *Coordinator) SetPlanMode(v bool) {
 func (c *Coordinator) Run(ctx context.Context, input string) error {
 	c.sink.Emit(event.Event{Kind: event.TurnStarted})
 	if c.shouldPlan != nil && !c.shouldPlan(input) {
-		c.sink.Emit(event.Event{Kind: event.Phase, Text: c.executor.prov.Name() + " · executing"})
+		c.sink.Emit(event.Event{Kind: event.Phase, Text: c.executor.prov.Name() + " · executing", Source: event.UsageSourceExecutor})
 		return c.executor.Run(ctx, input)
 	}
-	c.sink.Emit(event.Event{Kind: event.Phase, Text: c.planner.Name() + " · planning"})
+	c.sink.Emit(event.Event{Kind: event.Phase, Text: c.planner.Name() + " · planning", Source: event.UsageSourcePlanner})
 	plan, err := c.plan(ctx, input)
 	if err != nil {
 		return fmt.Errorf("planner: %w", err)
 	}
-	c.sink.Emit(event.Event{Kind: event.Phase, Text: c.executor.prov.Name() + " · executing"})
+	c.sink.Emit(event.Event{Kind: event.Phase, Text: c.executor.prov.Name() + " · executing", Source: event.UsageSourceExecutor})
 	if isNoOpPlan(plan) {
 		c.persistExecutorNoOp(ctx, input, plan)
 		c.sink.Emit(event.Event{Kind: event.Text, Text: plan})
@@ -279,7 +279,7 @@ func (c *Coordinator) plan(ctx context.Context, input string) (string, error) {
 		switch chunk.Type {
 		case provider.ChunkText:
 			text.WriteString(chunk.Text)
-			c.sink.Emit(event.Event{Kind: event.Text, Text: chunk.Text})
+			c.sink.Emit(event.Event{Kind: event.Text, Text: chunk.Text, Source: event.UsageSourcePlanner})
 		case provider.ChunkUsage:
 			usage = chunk.Usage
 		case provider.ChunkError:
@@ -288,7 +288,7 @@ func (c *Coordinator) plan(ctx context.Context, input string) (string, error) {
 	}
 	// Closes the planner's raw text block (no markdown redraw) and prints its
 	// usage line, mirroring the old Fprintln + printUsage tail.
-	c.sink.Emit(event.Event{Kind: event.Usage, Usage: usage, Pricing: c.plannerPricing, UsageSource: event.UsageSourcePlanner})
+	c.sink.Emit(event.Event{Kind: event.Usage, Usage: usage, Pricing: c.plannerPricing, Source: event.UsageSourcePlanner, UsageSource: event.UsageSourcePlanner})
 
 	plan := text.String()
 	c.plannerSess.Add(provider.Message{Role: provider.RoleAssistant, Content: plan})
@@ -321,6 +321,9 @@ func plannerSink(sink event.Sink) event.Sink {
 		case event.TurnStarted, event.TurnDone:
 			return
 		default:
+			if e.Source == "" {
+				e.Source = event.UsageSourcePlanner
+			}
 			sink.Emit(e)
 		}
 	})
