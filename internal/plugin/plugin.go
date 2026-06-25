@@ -49,9 +49,14 @@ type Spec struct {
 	Stderr io.Writer
 	// ReadOnlyToolNames marks trusted raw MCP tool names as read-only even when
 	// the server omits annotations.readOnlyHint. It is for known compatibility
-	// overrides where the tool semantics are stable; other user-configured
-	// plugins should rely on MCP metadata.
+	// overrides or user-audited plugin config where the tool semantics are
+	// stable; other user-configured plugins should rely on MCP metadata.
 	ReadOnlyToolNames map[string]bool
+	// ReadOnlyModelToolNames marks trusted model-visible MCP tool names
+	// ("mcp__<server>__<tool>") as read-only. This supports user-level
+	// declarations such as agent.plan_mode_allowed_tools without reverse-parsing
+	// normalized MCP tool names back into raw server-local names.
+	ReadOnlyModelToolNames map[string]bool
 	// StripRawPrefix, when non-empty, removes this prefix from each MCP tool's
 	// raw name before namespacing. For example, StripRawPrefix="server_" turns
 	// "server_search" into "search", yielding "mcp__search__search" instead of
@@ -504,8 +509,9 @@ func (c *Client) auxiliaryClient(ctx context.Context) (*Client, context.Context,
 
 // ToolInfo is the human-facing metadata returned by MCP tools/list for one tool.
 type ToolInfo struct {
-	Name        string
-	Description string
+	Name         string
+	Description  string
+	ReadOnlyHint bool
 }
 
 // ServerStatus summarises one connected server for the /mcp command.
@@ -999,8 +1005,12 @@ type mcpTool struct {
 	} `json:"annotations"`
 }
 
-func (s Spec) toolReadOnly(rawName string, hinted bool) bool {
-	return hinted || s.ReadOnlyToolNames[rawName]
+func (s Spec) toolReadOnly(rawName, visibleName string, hinted bool) bool {
+	return hinted || s.toolReadOnlyTrusted(rawName, visibleName)
+}
+
+func (s Spec) toolReadOnlyTrusted(rawName, visibleName string) bool {
+	return s.ReadOnlyToolNames[rawName] || s.ReadOnlyModelToolNames[toolName(s.Name, visibleName)]
 }
 
 func (c *Client) listTools(ctx context.Context) ([]tool.Tool, error) {
@@ -1026,15 +1036,16 @@ func (c *Client) listTools(ctx context.Context) ([]tool.Tool, error) {
 		if c.spec.StripRawPrefix != "" {
 			visibleName = strings.TrimPrefix(visibleName, c.spec.StripRawPrefix)
 		}
-		toolInfos = append(toolInfos, ToolInfo{Name: t.Name, Description: t.Description})
+		toolInfos = append(toolInfos, ToolInfo{Name: t.Name, Description: t.Description, ReadOnlyHint: hinted})
+		trusted := c.spec.toolReadOnlyTrusted(t.Name, visibleName)
 		tools = append(tools, &remoteTool{
 			client:          c,
 			name:            toolName(c.name, visibleName),
 			rawName:         t.Name,
 			desc:            t.Description,
 			schema:          canonicalizeSchema(t.InputSchema),
-			readOnly:        c.spec.toolReadOnly(t.Name, hinted),
-			readOnlyTrusted: c.spec.ReadOnlyToolNames[t.Name],
+			readOnly:        c.spec.toolReadOnly(t.Name, visibleName, hinted),
+			readOnlyTrusted: trusted,
 		})
 	}
 	sort.SliceStable(toolInfos, func(i, j int) bool { return toolInfos[i].Name < toolInfos[j].Name })

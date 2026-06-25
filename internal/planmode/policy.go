@@ -141,8 +141,9 @@ var goWriteOrExecArgs = map[string]bool{
 // is fail-closed for untrusted tools: a tool whose ReadOnly() is false, or whose
 // ReadOnly() is asserted by an untrusted external source (an MCP server's
 // readOnlyHint, surfaced via Call.Untrusted), is refused unless it self-reports
-// plan-safe or is declared in plan_mode_allowed_tools. A trustworthy
-// ReadOnly()==true tool — a built-in or a first-party MCP override — is allowed,
+// plan-safe, is declared in plan_mode_allowed_tools, or is trusted by plugin
+// configuration before reaching this policy. A trustworthy ReadOnly()==true tool
+// — a built-in or a first-party/user MCP override — is allowed,
 // EXCEPT one that self-reports PlanSafetyUnsafe (complete_step: read-only yet
 // post-approval only), which is refused regardless. The invariant
 // PlanSafe ⇒ ReadOnly is enforced: a writer that claims plan-safe is a wiring
@@ -179,7 +180,7 @@ func (p Policy) Decide(call Call) Decision {
 	if call.ReadOnly && call.Untrusted {
 		return Decision{
 			Blocked: true,
-			Message: fmt.Sprintf("blocked: %q reports read-only, but that flag is self-reported by an untrusted external source (e.g. an MCP server's readOnlyHint) that plan mode does not trust. Declare it in plan_mode_allowed_tools to use it while planning.", name),
+			Message: fmt.Sprintf("blocked: %q reports read-only, but that flag is self-reported by an untrusted external source (e.g. an MCP server's readOnlyHint) that plan mode does not trust. Declare the concrete tool in plan_mode_allowed_tools, or add its raw MCP name to the plugin's trusted_read_only_tools, to use it while planning.", name),
 		}
 	}
 	return Decision{

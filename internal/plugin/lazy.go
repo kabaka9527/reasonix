@@ -366,13 +366,14 @@ func LazyToolset(spec Spec, cs *CachedSchema, host *Host, reg *tool.Registry, se
 			if spec.StripRawPrefix != "" {
 				visibleName = strings.TrimPrefix(visibleName, spec.StripRawPrefix)
 			}
+			trusted := spec.toolReadOnlyTrusted(ct.Name, visibleName)
 			out = append(out, &lazyTool{
 				shared:          shared,
 				name:            toolName(spec.Name, visibleName),
 				desc:            ct.Description,
 				schema:          ct.Schema,
-				readOnly:        spec.toolReadOnly(ct.Name, ct.ReadOnly),
-				readOnlyTrusted: spec.ReadOnlyToolNames[ct.Name],
+				readOnly:        spec.toolReadOnly(ct.Name, visibleName, ct.ReadOnly),
+				readOnlyTrusted: trusted,
 				hasCache:        true,
 			})
 		}

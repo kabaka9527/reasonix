@@ -138,6 +138,9 @@ stalled_warning_seconds = 900   # warn once per background job after this many q
 # [[plugins]]
 # name    = "example"
 # command = "reasonix-plugin-example"
+# # Raw MCP tool names that Reasonix may trust as read-only for planner / plan mode.
+# # Use for audited third-party readers whose readOnlyHint is otherwise untrusted.
+# # trusted_read_only_tools = ["search"]
 # # Enabled MCP servers connect automatically in the background after session
 # # start. Use /mcp or the desktop MCP panel to refresh, reconnect, or disable.
 

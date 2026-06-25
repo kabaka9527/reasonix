@@ -95,6 +95,49 @@ func TestSpecReadOnlyToolNamesMarksUnhintedToolsReadOnly(t *testing.T) {
 	}
 }
 
+func TestSpecReadOnlyModelToolNamesMarksVisibleToolsTrusted(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	spec := Spec{
+		Name:    "mock",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestHelperProcess", "--"},
+		Env:     map[string]string{"GO_WANT_HELPER_PROCESS": "1"},
+		ReadOnlyModelToolNames: map[string]bool{
+			"mcp__mock__echo": true,
+		},
+	}
+
+	host, tools, err := StartAll(ctx, []Spec{spec})
+	if err != nil {
+		t.Fatalf("StartAll: %v", err)
+	}
+	defer host.Close()
+
+	byName := map[string]tool.Tool{}
+	for _, tl := range tools {
+		byName[tl.Name()] = tl
+	}
+	echo := byName["mcp__mock__echo"]
+	if echo == nil {
+		t.Fatalf("mcp__mock__echo missing from %v", byName)
+	}
+	if !echo.ReadOnly() {
+		t.Fatal("model-visible read-only override did not mark echo tool read-only")
+	}
+	if u, ok := echo.(tool.PlanModeUntrustedReadOnly); ok && u.PlanModeUntrustedReadOnly() {
+		t.Fatal("model-visible read-only override should be trusted in plan mode")
+	}
+	zed := byName["mcp__mock__zed"]
+	if zed == nil {
+		t.Fatalf("mcp__mock__zed missing from %v", byName)
+	}
+	if zed.ReadOnly() {
+		t.Fatal("model-visible read-only override should not mark non-listed tools read-only")
+	}
+}
+
 func TestApplyKnownReadOnlyOverridesMarksCodeGraphReadTools(t *testing.T) {
 	got := ApplyKnownReadOnlyOverrides(Spec{Name: "codegraph", ReadOnlyToolNames: map[string]bool{"custom": true}})
 	for _, name := range []string{"custom", "codegraph_context", "codegraph_search", "context", "search"} {

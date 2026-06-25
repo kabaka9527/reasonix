@@ -1460,6 +1460,62 @@ env = { GO_WANT_HELPER_PROCESS = "1" }
 	}
 }
 
+func TestBuildTokenEconomyPlanModeCanConnectTrustedReadOnlyMCPSource(t *testing.T) {
+	isolateConfigHome(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+
+	registerBootTokenProfileTestProvider()
+	prov := testutil.NewMock("token-economy",
+		testutil.Turn{ToolCalls: []provider.ToolCall{
+			{ID: "source-1", Name: "connect_tool_source", Arguments: `{"source":"mcp","name":"mockmcp"}`},
+		}},
+		testutil.Turn{Text: "done"},
+	)
+	setBootTokenProfileTestProvider(t, prov)
+	writeFile(t, dir, "reasonix.toml", fmt.Sprintf(`
+default_model = "test-model"
+
+[agent]
+system_prompt = "BASE"
+
+[[providers]]
+name = "test-model"
+kind = "boot-token-profile-test"
+model = "x"
+
+[[plugins]]
+name = "mockmcp"
+command = %q
+args = ["-test.run=TestHelperProcess", "--"]
+env = { GO_WANT_HELPER_PROCESS = "1" }
+trusted_read_only_tools = ["echo"]
+`, os.Args[0]))
+
+	ctrl, err := Build(context.Background(), Options{Sink: event.Discard, TokenMode: TokenModeEconomy})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer ctrl.Close()
+	ctrl.SetPlanMode(true)
+	if err := ctrl.Run(context.Background(), "connect trusted mcp while planning"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	reqs := prov.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("requests = %d, want 2", len(reqs))
+	}
+	if !requestHasTool(reqs[1], "mcp__mockmcp__echo") {
+		t.Fatalf("second request should expose trusted MCP source in plan economy mode; tools=%v", toolSchemaNames(reqs[1].Tools))
+	}
+	for _, msg := range ctrl.History() {
+		if msg.Role == provider.RoleTool && msg.Name == "connect_tool_source" && strings.Contains(msg.Content, "blocked:") {
+			t.Fatalf("connect_tool_source should not block trusted MCP in plan mode, got:\n%s", msg.Content)
+		}
+	}
+}
+
 func TestPlanModeAllowsMCPServerRequiresConcreteToolName(t *testing.T) {
 	if planModeAllowsMCPServer([]string{"mcp__mockmcp__"}, "mockmcp") {
 		t.Fatal("bare MCP namespace prefix should not allow a server in plan mode")
@@ -2354,6 +2410,50 @@ func TestPluginSpecsTrustKnownCodeGraphReadTools(t *testing.T) {
 		if !specs[0].ReadOnlyToolNames[name] {
 			t.Fatalf("codegraph spec missing read-only override for %q: %+v", name, specs[0].ReadOnlyToolNames)
 		}
+	}
+}
+
+func TestPluginSpecsTrustConfiguredReadOnlyTools(t *testing.T) {
+	specs := PluginSpecs([]config.PluginEntry{{
+		Name:                 "github",
+		TrustedReadOnlyTools: []string{"issue_read", " pull_request_read ", ""},
+	}})
+	if len(specs) != 1 {
+		t.Fatalf("PluginSpecs returned %d specs, want 1", len(specs))
+	}
+	for _, name := range []string{"issue_read", "pull_request_read"} {
+		if !specs[0].ReadOnlyToolNames[name] {
+			t.Fatalf("configured trusted read-only tool %q missing: %+v", name, specs[0].ReadOnlyToolNames)
+		}
+	}
+	if specs[0].ReadOnlyToolNames[""] {
+		t.Fatalf("empty trusted read-only tool name should be ignored: %+v", specs[0].ReadOnlyToolNames)
+	}
+}
+
+func TestPluginSpecsTrustPlanModeAllowedMCPTools(t *testing.T) {
+	specs := PluginSpecsForRootWithPlanModeAllowedTools(
+		[]config.PluginEntry{{Name: "github"}, {Name: "linear"}},
+		"",
+		[]string{
+			"mcp__github__issue_read",
+			"mcp__linear__issue_read",
+			"mcp__github__",
+			"read_file",
+			"mcp__other__issue_read",
+		},
+	)
+	if len(specs) != 2 {
+		t.Fatalf("PluginSpecsForRootWithPlanModeAllowedTools returned %d specs, want 2", len(specs))
+	}
+	if !specs[0].ReadOnlyModelToolNames["mcp__github__issue_read"] {
+		t.Fatalf("github allowed MCP tool missing from model trust map: %+v", specs[0].ReadOnlyModelToolNames)
+	}
+	if specs[0].ReadOnlyModelToolNames["mcp__github__"] || specs[0].ReadOnlyModelToolNames["mcp__other__issue_read"] {
+		t.Fatalf("github trust map accepted non-concrete or other-server tools: %+v", specs[0].ReadOnlyModelToolNames)
+	}
+	if !specs[1].ReadOnlyModelToolNames["mcp__linear__issue_read"] {
+		t.Fatalf("linear allowed MCP tool missing from model trust map: %+v", specs[1].ReadOnlyModelToolNames)
 	}
 }
 

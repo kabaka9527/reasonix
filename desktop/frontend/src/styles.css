@@ -9526,8 +9526,8 @@ a[href] {
 }
 .cap-tool-list {
   display: grid;
-  grid-template-columns: minmax(82px, max-content) minmax(0, 1fr);
-  column-gap: 14px;
+  grid-template-columns: minmax(82px, max-content) minmax(0, 1fr) minmax(58px, max-content);
+  column-gap: 12px;
   row-gap: 5px;
   margin: 0 0 9px 31px;
   padding: 7px 0 2px 12px;
@@ -9555,13 +9555,79 @@ a[href] {
 }
 .cap-tool__desc {
   min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
   color: var(--fg-dim);
   font-size: 11px;
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
+.cap-tool__action {
+  display: flex;
+  justify-content: flex-end;
+  align-items: flex-start;
+  min-width: 0;
+}
+.cap-tool-trust,
+.cap-tool-trust-btn,
+.cap-tool-untrust-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 58px;
+  height: 22px;
+  padding: 0 8px;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+}
+.cap-trust-bulk {
+  gap: 5px;
+}
+.cap-tool-trust {
+  border: 1px solid color-mix(in srgb, var(--ok) 34%, transparent);
+  border-radius: 999px;
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 9%, transparent);
+}
+.cap-tool-hint {
+  display: inline-flex;
+  align-items: center;
+  min-height: 17px;
+  padding: 0 5px;
+  border: 1px solid color-mix(in srgb, var(--accent) 26%, transparent);
+  border-radius: 999px;
+  color: var(--fg-dim);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  font-size: 10px;
+  line-height: 1;
+  white-space: nowrap;
+}
+.cap-tool-trust-stack {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+}
+.cap-tool-trust-btn,
+.cap-tool-untrust-btn {
+  border-color: var(--border-soft);
+  color: var(--fg-dim);
+}
+.cap-tool-trust-btn:hover:not(:disabled),
+.cap-tool-untrust-btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--ok) 42%, var(--border));
+  color: var(--fg);
+}
+.cap-tool-untrust-btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--warn) 42%, var(--border));
+}
 .cap-server-entry--disabled .cap-tool__name,
-.cap-server-entry--disabled .cap-tool__desc {
+.cap-server-entry--disabled .cap-tool__desc,
+.cap-server-entry--disabled .cap-tool__action {
   color: var(--fg-faint);
 }
 .cap-server-details {
