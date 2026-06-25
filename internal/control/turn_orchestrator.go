@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"errors"
 
 	"reasonix/internal/agent"
 	"reasonix/internal/jobs"
@@ -50,6 +51,16 @@ func (o *turnOrchestrator) runTurnWithRawDisplay(ctx context.Context, input, raw
 		defer func() { c.hooks.Stop(context.Background(), lastAssistantText(c.History()), turn) }()
 	}
 	if err := c.runner.Run(ctx, input); err != nil {
+		// When the user explicitly cancels (Ctrl+C), the incomplete turn's
+		// assistant messages and tool results are already saved to the
+		// session.  If they stay, the next turn's model sees leftover
+		// in-progress todo items and partial tool calls and may re-execute
+		// the interrupted work (the next user message looks like a
+		// continuation instead of a fresh task).  Strip the turn so the
+		// next prompt starts clean.
+		if errors.Is(err, context.Canceled) && c.CancelRequested() {
+			c.stripTurnMessagesAfter(startMessages)
+		}
 		return err
 	}
 	c.mu.Lock()
@@ -80,6 +91,9 @@ func (o *turnOrchestrator) runTurnWithRawDisplay(ctx context.Context, input, raw
 	c.approval.setPlanAutoApprove(true)
 	defer c.approval.setPlanAutoApprove(false)
 	if err := c.runner.Run(ctx, c.ComposeSynthetic(planApprovedMessage)); err != nil {
+		if errors.Is(err, context.Canceled) && c.CancelRequested() {
+			c.stripTurnMessagesAfter(execStart)
+		}
 		return err
 	}
 	if todoArgs != "" && !c.hasTodoUpdateSince(execStart) {

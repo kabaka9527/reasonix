@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -300,4 +301,66 @@ func TestTurnOrchestratorStopHookCancelledContext(t *testing.T) {
 	if stopCalls != 1 {
 		t.Fatalf("Stop hooks called = %d; want 1", stopCalls)
 	}
+}
+
+// TestTurnOrchestratorCancelStripsIncompleteTurn verifies that when the user
+// explicitly cancels a turn (Ctrl+C), the incomplete turn's messages are
+// stripped from the session so the next turn starts clean.  Without this, the
+// model sees leftover in-progress todo items and partial tool calls and may
+// re-execute the interrupted work.  See #5286.
+func TestTurnOrchestratorCancelStripsIncompleteTurn(t *testing.T) {
+	sess := agent.NewSession("you are a helpful agent")
+	// Pre-populate with a few messages from an earlier turn.
+	sess.Add(provider.Message{Role: provider.RoleUser, Content: "previous work"})
+	sess.Add(provider.Message{Role: provider.RoleAssistant, Content: "done"})
+	preCount := len(sess.Messages)
+
+	// runner that simulates a cancelled turn: it adds the user message plus
+	// some tool-call garbage the real agent would leave behind, then returns
+	// context.Canceled.
+	runner := &cancelStrippingRunner{
+		session: sess,
+		add: []provider.Message{
+			{Role: provider.RoleAssistant, Content: "let me do that", ToolCalls: []provider.ToolCall{
+				{ID: "c1", Name: "todo_write", Arguments: `{"todos":[{"content":"add abc","status":"in_progress"}]}`},
+			}},
+			{Role: provider.RoleTool, Content: "Todos updated: 1 total — 0 completed, 1 in_progress, 0 pending.", ToolCallID: "c1", Name: "todo_write"},
+		},
+		err: context.Canceled,
+	}
+
+	c := New(Options{Runner: runner, Executor: agent.New(nil, nil, sess, agent.Options{}, event.Discard)})
+	// Simulate a user-initiated cancel: set the cancelling flag.
+	c.mu.Lock()
+	c.canceling = true
+	c.mu.Unlock()
+
+	o := newTurnOrchestrator(c)
+	err := o.runTurnWithRawDisplay(context.Background(), "add config file abc", "add config file abc", "")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+
+	// The incomplete turn (user prompt + assistant + tool result) must be
+	// stripped; the session must only contain the pre-turn messages.
+	msgs := sess.Messages
+	if len(msgs) != preCount {
+		t.Fatalf("session messages after cancel = %d, want pre-turn count %d: %+v", len(msgs), preCount, msgs)
+	}
+}
+
+// cancelStrippingRunner adds messages to a session then returns a fixed error,
+// simulating an agent that was interrupted mid-turn.
+type cancelStrippingRunner struct {
+	session *agent.Session
+	add     []provider.Message
+	err     error
+}
+
+func (r *cancelStrippingRunner) Run(ctx context.Context, input string) error {
+	r.session.Add(provider.Message{Role: provider.RoleUser, Content: input})
+	for _, m := range r.add {
+		r.session.Add(m)
+	}
+	return r.err
 }
