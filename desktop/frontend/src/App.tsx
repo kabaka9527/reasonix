@@ -2470,7 +2470,7 @@ export default function App() {
     const sessionItems: PaletteItem[] = paletteSessions.slice(0, 12).map((s) => ({
       id: `sess-${s.path}`,
       group: t("palette.group.sessions"),
-      title: s.title?.trim() || s.preview || t("history.emptySession"),
+      title: s.topicTitle || s.title?.trim() || s.preview || t("history.emptySession"),
       hint: s.workspaceRoot || undefined,
       meta: dayLabel(sessionActivityTime(s)),
       badge: t(s.turns === 1 ? "history.turnOne" : "history.turnOther", { n: s.turns }),

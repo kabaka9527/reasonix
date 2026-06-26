@@ -607,7 +607,6 @@ function sessionLocation(s: SessionMeta, tr: ReturnType<typeof useT>): string {
   if (isChannelSession(s)) {
     return [s.channelLabel || s.channel || tr("history.channel"), s.remoteId].filter(Boolean).join(" · ");
   }
-  if (s.topicTitle) return s.topicTitle;
   if (s.workspaceRoot) {
     const parts = s.workspaceRoot.split(/[\\/]/).filter(Boolean);
     return parts[parts.length - 1] || s.workspaceRoot;
@@ -616,7 +615,7 @@ function sessionLocation(s: SessionMeta, tr: ReturnType<typeof useT>): string {
 }
 
 function sessionDisplayTitle(s: SessionMeta, fallback: string): string {
-  return s.title || s.preview || fallback;
+  return s.topicTitle || s.title || s.preview || fallback;
 }
 
 function sessionMetaLine(s: SessionMeta, tr: ReturnType<typeof useT>, isTrash = false): string {
