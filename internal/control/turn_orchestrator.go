@@ -14,31 +14,48 @@ type turnOrchestrator struct {
 	c *Controller
 }
 
+type orchestratedTurn struct {
+	input     string
+	raw       string
+	display   string
+	synthetic bool
+}
+
 func newTurnOrchestrator(c *Controller) *turnOrchestrator {
 	return &turnOrchestrator{c: c}
 }
 
 func (o *turnOrchestrator) runTurnWithRawDisplay(ctx context.Context, input, raw, display string) error {
+	return o.runOrchestratedTurn(ctx, orchestratedTurn{input: input, raw: raw, display: display})
+}
+
+func (o *turnOrchestrator) runSyntheticTurnWithRawDisplay(ctx context.Context, input, raw, display string) error {
+	return o.runOrchestratedTurn(ctx, orchestratedTurn{input: input, raw: raw, display: display, synthetic: true})
+}
+
+func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchestratedTurn) error {
 	c := o.c
 	c.maybeSessionStart(ctx)
-	c.maybeAutoPlan(ctx, raw)
+	if !turn.synthetic {
+		c.maybeAutoPlan(ctx, turn.raw)
+	}
 	parentSession := c.parentSessionID()
 	ctx = agent.WithParentSession(ctx, parentSession)
 	ctx = jobs.WithSession(ctx, parentSession)
-	ctx = agent.WithUserImages(ctx, c.inputImages(input))
+	ctx = agent.WithUserImages(ctx, c.inputImages(turn.input))
 	// Synthetic, controller-injected turns (goal-loop continuation,
 	// plan-approved execution, …) must not be Memory v5-compiled: compiling them
 	// re-injects a contract the model echoes back, which spins the goal loop
 	// forever (#5342, #5329). Only genuine user turns supply a compiler source.
-	if IsSyntheticUserMessage(raw) {
+	if turn.synthetic || IsSyntheticUserMessage(turn.raw) {
 		ctx = agent.WithMemoryCompilerSkip(ctx)
 	} else {
-		ctx = agent.WithMemoryCompilerSourceInput(ctx, raw)
+		ctx = agent.WithMemoryCompilerSourceInput(ctx, turn.raw)
 	}
-	input = c.Compose(input)
+	input := c.Compose(turn.input)
 	startMessages := c.messageCount()
 	defer c.snapshotActivityIfChanged(startMessages)
-	defer c.recordDisplayForNewUser(startMessages, display)
+	defer c.recordDisplayForNewUser(startMessages, turn.display)
 	// Open a checkpoint for this turn before the user message is appended, so the
 	// recorded message boundary precedes it and pre-edit snapshots land here.
 	c.beginCheckpoint(input)
@@ -136,7 +153,7 @@ func (o *turnOrchestrator) continueGoal(ctx context.Context) error {
 			turn = msg
 			c.notice("goal intercept: incomplete todos remain (override with a second [goal:complete])")
 		}
-		if err := o.runTurnWithRawDisplay(ctx, turn, turn, ""); err != nil {
+		if err := o.runSyntheticTurnWithRawDisplay(ctx, turn, turn, ""); err != nil {
 			if ctx.Err() != nil {
 				c.stopGoal(GoalStatusStopped)
 			}

@@ -67,6 +67,49 @@ func TestTurnOrchestratorSkipsMemoryCompilerForSyntheticTurns(t *testing.T) {
 	}
 }
 
+func TestTurnOrchestratorTypedSyntheticTurnDoesNotDependOnPrefix(t *testing.T) {
+	runner := &fakeTurnRunner{}
+	c := New(Options{AutoPlan: "on", Runner: runner})
+	o := newTurnOrchestrator(c)
+
+	turn := "Controller-created follow-up with a brand-new synthetic wording:\n- inspect\n- edit\n- verify"
+	if IsSyntheticUserMessage(turn) {
+		t.Fatalf("test setup: %q unexpectedly matched the legacy synthetic prefix list", turn)
+	}
+	if err := o.runSyntheticTurnWithRawDisplay(context.Background(), turn, turn, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(runner.inputs) != 1 {
+		t.Fatalf("runner inputs = %d, want 1", len(runner.inputs))
+	}
+	if strings.HasPrefix(runner.inputs[0], PlanModeMarker) {
+		t.Fatalf("typed synthetic turn should not be auto-planned, got %q", runner.inputs[0])
+	}
+	if len(runner.memoryCompilerSkips) != 1 || !runner.memoryCompilerSkips[0] {
+		t.Fatalf("typed synthetic turn was not marked skip-compile: %+v", runner.memoryCompilerSkips)
+	}
+	if len(runner.memoryCompilerInputs) != 0 {
+		t.Fatalf("typed synthetic turn supplied Memory v5 source input: %+v", runner.memoryCompilerInputs)
+	}
+}
+
+func TestTurnOrchestratorLegacySyntheticPrefixStillSkipsMemoryCompiler(t *testing.T) {
+	runner := &fakeTurnRunner{}
+	c := New(Options{Runner: runner})
+	o := newTurnOrchestrator(c)
+
+	if err := o.runTurnWithRawDisplay(context.Background(), goalContinueTurn, goalContinueTurn, ""); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.memoryCompilerSkips) != 1 || !runner.memoryCompilerSkips[0] {
+		t.Fatalf("legacy synthetic prefix was not marked skip-compile: %+v", runner.memoryCompilerSkips)
+	}
+	if len(runner.memoryCompilerInputs) != 0 {
+		t.Fatalf("legacy synthetic prefix supplied Memory v5 source input: %+v", runner.memoryCompilerInputs)
+	}
+}
+
 func TestTurnOrchestratorStopHookIgnoresCanceledTurnContext(t *testing.T) {
 	runCtx, cancel := context.WithCancel(context.Background())
 	var stopCalls int
