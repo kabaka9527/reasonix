@@ -61,6 +61,17 @@ const statsOnly = reducer(sent, { type: "event", e: memoryStatsEvent });
 eq(statsOnly, sent, "memory compiler stats do not confirm or mutate the visible turn");
 const startedThenStats = reducer(reducer(sent, { type: "event", e: { kind: "turn_started" } as WireEvent }), { type: "event", e: memoryStatsEvent });
 eq(startedThenStats.items.length, 2, "memory compiler stats do not add transcript items after turn start");
+const compilerCitationMessage = {
+  kind: "message",
+  memoryCitations: [{ kind: "compiler_reference", source: "Memory v5", note: "evidence: bash succeeded" }],
+} as WireEvent;
+const citationOnlyFinal = reducer(reducer(sent, { type: "event", e: { kind: "turn_started" } as WireEvent }), { type: "event", e: compilerCitationMessage });
+eq(citationOnlyFinal.items.length, 1, "memory compiler citations alone do not leave an empty assistant bubble");
+eq(citationOnlyFinal.items.some((it) => it.kind === "assistant"), false, "memory compiler citations alone stay hidden from the transcript");
+const textThenCitationFinal = reducer(reducer(startedThenStats, { type: "event", e: { kind: "text", text: "done" } as WireEvent }), { type: "event", e: compilerCitationMessage });
+const citedAssistant = textThenCitationFinal.items.find((it) => it.kind === "assistant");
+eq(citedAssistant?.kind === "assistant" && citedAssistant.text, "done", "memory compiler citations preserve existing assistant text");
+eq(citedAssistant?.kind === "assistant" && citedAssistant.memoryCitations?.length, 1, "memory compiler citations attach to real assistant content");
 
 const failedState = reducer(sent, { type: "send_failed", error: "Send failed: bridge unavailable" });
 const failedBubble = failedState.items.find((it) => it.kind === "user");
@@ -94,10 +105,26 @@ eq(
 );
 
 const here = dirname(fileURLToPath(import.meta.url));
+const appSource = readFileSync(resolve(here, "../App.tsx"), "utf8");
 const typesSource = readFileSync(resolve(here, "../lib/types.ts"), "utf8");
 const controllerSource = readFileSync(resolve(here, "../lib/useController.ts"), "utf8");
 eq(typesSource.includes('"mcp_surface_ready"'), true, "TypeScript EventKind declares mcp_surface_ready");
 eq(controllerSource.includes('e.kind === "memory_compiler_stats" || e.kind === "mcp_surface_ready"'), true, "reducer handles mcp_surface_ready before optimistic confirmation");
+eq(
+  /state\.approval!\.tool === "exit_plan_mode" && allow\) await applyCollaborationMode\("normal"\);/.test(appSource),
+  true,
+  "plan approval clears the remembered plan restore intent before execution",
+);
+eq(
+  !/exit_plan_mode[\s\S]{0,240}rememberUserIntent:\s*false/.test(appSource),
+  true,
+  "plan approval must not preserve stale plan restore intent",
+);
+eq(
+  !appSource.includes("rememberUserIntent"),
+  true,
+  "collaboration mode changes always reconcile the remembered plan restore intent",
+);
 
 const unsent = reducer(sent, { type: "unsend" });
 eq(unsent.pendingUser, undefined, "unsend clears the pending marker");

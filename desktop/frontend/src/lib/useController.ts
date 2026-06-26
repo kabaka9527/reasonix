@@ -551,6 +551,19 @@ function applyEvent(s: State, e: WireEvent): State {
       return { ...s, items, live, currentAssistant: id, seq };
     }
     case "message": {
+      const existingAssistant =
+        s.currentAssistant === undefined
+          ? undefined
+          : s.items.find((it): it is Extract<Item, { kind: "assistant" }> => it.kind === "assistant" && it.id === s.currentAssistant);
+      const text = e.text ?? s.live?.text ?? existingAssistant?.text ?? "";
+      const reasoning = e.reasoning ?? s.live?.reasoning ?? existingAssistant?.reasoning ?? "";
+      if (text.trim() === "" && reasoning.trim() === "") {
+        const items =
+          existingAssistant && existingAssistant.text.trim() === "" && existingAssistant.reasoning.trim() === "" && !existingAssistant.memoryCitations?.length
+            ? s.items.filter((it) => !(it.kind === "assistant" && it.id === existingAssistant.id))
+            : s.items;
+        return { ...s, items, live: undefined, currentAssistant: undefined };
+      }
       const { items, id, seq } = ensureAssistant(s);
       const next = items.map((it) =>
         it.kind === "assistant" && it.id === id
@@ -558,8 +571,8 @@ function applyEvent(s: State, e: WireEvent): State {
               const memoryCitations = asArray<MemoryCitation>(e.memoryCitations ?? it.memoryCitations);
               return {
                 ...it,
-                text: e.text ?? s.live?.text ?? it.text,
-                reasoning: e.reasoning ?? s.live?.reasoning ?? it.reasoning,
+                text,
+                reasoning,
                 streaming: false,
                 memoryCitations: memoryCitations.length > 0 ? memoryCitations : undefined,
               };
