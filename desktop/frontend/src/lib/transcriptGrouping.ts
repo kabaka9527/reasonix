@@ -30,6 +30,13 @@ export function warmLayerWithNextColdPage(state: WarmLayerState, sessionKey: str
   return { ...current, coldPage: current.coldPage + 1 };
 }
 
+export function warmLayerWithColdPageAtLeast(state: WarmLayerState, sessionKey: string, coldPage: number): WarmLayerState {
+  const current = warmLayerForSession(state, sessionKey);
+  const safeColdPage = Math.max(0, Math.floor(coldPage));
+  if (current.coldPage >= safeColdPage) return current;
+  return { ...current, coldPage: safeColdPage };
+}
+
 export function warmLayerWithExpandedTurn(state: WarmLayerState, sessionKey: string, turn: number, expand: boolean): WarmLayerState {
   const current = warmLayerForSession(state, sessionKey);
   const expandedWarmTurns = new Set(current.expandedWarmTurns);
@@ -120,4 +127,21 @@ export function warmPagination({ turnCount, hotTurns, pageSize, coldPage }: {
     warmEndTurn,
     coldTurnCount: warmEndTurn - shownWarmCount,
   };
+}
+
+export function warmColdPageForTurn({ turn, turnCount, hotTurns, pageSize }: {
+  turn: number;
+  turnCount: number;
+  hotTurns: number;
+  pageSize: number;
+}): number {
+  const safeTurnCount = Math.max(0, turnCount);
+  const safeHotTurns = Math.max(0, hotTurns);
+  const warmEndTurn = Math.max(0, safeTurnCount - Math.min(safeTurnCount, safeHotTurns));
+  if (warmEndTurn === 0 || turn >= warmEndTurn) return 0;
+
+  const safePageSize = Math.max(1, pageSize);
+  const targetTurn = Math.max(0, Math.floor(turn));
+  const shownTurnsNeeded = warmEndTurn - targetTurn;
+  return Math.max(0, Math.ceil(shownTurnsNeeded / safePageSize) - 1);
 }

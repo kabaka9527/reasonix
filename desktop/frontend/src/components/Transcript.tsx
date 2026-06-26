@@ -14,7 +14,7 @@ import { isReadOnlyTool } from "../lib/useController";
 import { useGSAPCollapse } from "../lib/useGSAPCollapse";
 import { useEntranceAnimation } from "../lib/useEntranceAnimation";
 import { useScrollManager } from "../lib/useScrollManager";
-import { buildTurnGroups, compactQuestionText, createWarmLayerState, questionAnchorId, scrollVersion, warmLayerWithExpandedTurn, warmLayerWithNextColdPage, warmPagination, warmUserPreview, type QuestionAnchor, type TurnGroup, type WarmLayerState } from "../lib/transcriptGrouping";
+import { buildTurnGroups, compactQuestionText, createWarmLayerState, questionAnchorId, scrollVersion, warmColdPageForTurn, warmLayerWithColdPageAtLeast, warmLayerWithExpandedTurn, warmLayerWithNextColdPage, warmPagination, warmUserPreview, type QuestionAnchor, type TurnGroup, type WarmLayerState } from "../lib/transcriptGrouping";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type AssistantItem = Extract<Item, { kind: "assistant" }>;
@@ -131,6 +131,7 @@ export function Transcript({
   } = useScrollManager();
   const autoScrollFrame = useRef<number | null>(null);
   const pendingRevealBottomScroll = useRef(false);
+  const pendingQuestionJump = useRef<QuestionAnchor | null>(null);
   const sessionKey = useMemo(() => `${items[0]?.id ?? ""}|${items[items.length - 1]?.id ?? ""}`, [items]);
   const warmLayerSessionKey = useMemo(() => `${tabId ?? ""}|${revealSignal}|${items[0]?.id ?? ""}`, [items, revealSignal, tabId]);
   const entranceRef = useEntranceAnimation<HTMLDivElement>(sessionKey, items.length);
@@ -281,6 +282,16 @@ export function Transcript({
     [coldPage, turnGroups.length],
   );
 
+  useLayoutEffect(() => {
+    const question = pendingQuestionJump.current;
+    if (!question) return;
+    const node = document.getElementById(questionAnchorId(question.id));
+    if (!node) return;
+    pendingQuestionJump.current = null;
+    stick.current = false;
+    smoothScrollTo(node, 12);
+  }, [expandedWarmTurns, smoothScrollTo, stick, warmStartTurn]);
+
   // ── The turn action menu ──────────────────────────────────────────────────
   const [openAction, setOpenAction] = useState<OpenTurnAction | null>(null);
   useEffect(() => {
@@ -300,15 +311,26 @@ export function Transcript({
   const jumpToQuestion = (question: QuestionAnchor) => {
     const node = document.getElementById(questionAnchorId(question.id));
     if (!node) return;
+    pendingQuestionJump.current = null;
     stick.current = false;
     smoothScrollTo(node, 12);
   };
 
   const handleJumpToQuestion = useCallback((question: QuestionAnchor) => {
+    pendingQuestionJump.current = question;
     // Auto-expand the warm turn when jumping to an old question.
     const warmTurnStart = turnGroups.length - HOT_TURNS;
     if (question.turn < warmTurnStart) {
-      setWarmLayerState((prev) => warmLayerWithExpandedTurn(prev, warmLayerSessionKey, question.turn, true));
+      const neededColdPage = warmColdPageForTurn({
+        turn: question.turn,
+        turnCount: turnGroups.length,
+        hotTurns: HOT_TURNS,
+        pageSize: WARM_PAGE_SIZE,
+      });
+      setWarmLayerState((prev) => {
+        const paged = warmLayerWithColdPageAtLeast(prev, warmLayerSessionKey, neededColdPage);
+        return warmLayerWithExpandedTurn(paged, warmLayerSessionKey, question.turn, true);
+      });
     }
     jumpToQuestion(question);
   }, [turnGroups.length, warmLayerSessionKey]);
