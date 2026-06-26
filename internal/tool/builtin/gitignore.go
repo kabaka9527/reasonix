@@ -30,12 +30,12 @@ type ignoreFrame struct {
 // Stateful across one WalkDir: enter pushes a directory's cumulative frame before
 // its children are visited; skip pops frames once the walk leaves them.
 type walkIgnorer struct {
-	root         string
-	repoRoot     string
-	disabled     bool
-	frames       []ignoreFrame // shallow→deep; the deepest is the active matcher
-	compiled     map[string]*ignore.GitIgnore
-	forbidRoots  []string // directories the walk must never enter
+	root        string
+	repoRoot    string
+	disabled    bool
+	frames      []ignoreFrame // shallow→deep; the deepest is the active matcher
+	compiled    map[string]*ignore.GitIgnore
+	forbidRoots []string // directories the walk must never enter
 }
 
 func newWalkIgnorer(root string, forbidRoots []string) *walkIgnorer {

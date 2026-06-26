@@ -300,4 +300,3 @@ func TestAvailableNonDarwin(t *testing.T) {
 		t.Error("non-darwin should report unavailable")
 	}
 }
-

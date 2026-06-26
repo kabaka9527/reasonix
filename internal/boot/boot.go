@@ -280,7 +280,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	}
 
 	addBuiltins(reg, enabledBuiltins, cfg.WriteRootsForRoot(root), bashSpec, bashTimeout, searchSpec, stderr, root, proxySpec, cfg.ForbidReadRootsForRoot(root))
-		// Use the caller-supplied shared host when set, so controllers for the same
+	// Use the caller-supplied shared host when set, so controllers for the same
 	// workspace root reuse running MCP processes (e.g. one CodeGraph daemon
 	// instead of one per tab). Otherwise construct a private host per controller.
 	pluginHost := opts.SharedHost
