@@ -22,11 +22,6 @@ import (
 	globalstate "reasonix/internal/equilibrium/global_state"
 	"reasonix/internal/fileutil"
 	"reasonix/internal/provider"
-	runtimecanary "reasonix/internal/runtime/canary"
-	runtimeresource "reasonix/internal/runtime/resource"
-	runtimerollback "reasonix/internal/runtime/rollback"
-	runtimesandbox "reasonix/internal/runtime/sandbox"
-	runtimesnapshot "reasonix/internal/runtime/snapshot"
 )
 
 const (
@@ -46,11 +41,9 @@ const (
 	mutationFeedbackCooldown  = 30 * time.Minute
 	strategyDecayK            = 10.0
 	staleConfidenceThreshold  = 0.2
-	snapshotEveryExecutions   = 3
 )
 
 var runtimeLocks sync.Map
-var budgetCoordinators sync.Map
 
 // Runtime owns one project's Memory v5 state.
 type Runtime struct {
@@ -71,11 +64,6 @@ func New(dir string) *Runtime {
 func runtimeLockForDir(dir string) *sync.Mutex {
 	actual, _ := runtimeLocks.LoadOrStore(filepath.Clean(dir), &sync.Mutex{})
 	return actual.(*sync.Mutex)
-}
-
-func budgetCoordinatorForDir(dir string) *runtimeresource.Coordinator {
-	actual, _ := budgetCoordinators.LoadOrStore(filepath.Clean(dir), runtimeresource.NewCoordinator())
-	return actual.(*runtimeresource.Coordinator)
 }
 
 // PlannerIR is the memory-compiled execution plan language embedded in the
@@ -146,33 +134,32 @@ type ToolRecord struct {
 }
 
 type ExecutionTrace struct {
-	ID                  string                    `json:"id"`
-	IRVersion           string                    `json:"ir_version"`
-	Goal                string                    `json:"goal"`
-	Steps               []Step                    `json:"steps,omitempty"`
-	Outcome             string                    `json:"outcome"`
-	EfficiencyScore     float64                   `json:"efficiency_score"`
-	MemoryEffectiveness float64                   `json:"memory_effectiveness"`
-	StrategyUsed        []string                  `json:"strategy_used,omitempty"`
-	MemoryUsed          []string                  `json:"memory_used,omitempty"`
-	DecisionBranches    []DecisionBranch          `json:"decision_branches,omitempty"`
-	CausalEdges         []CausalEdge              `json:"causal_edges,omitempty"`
-	SemanticDrift       []string                  `json:"semantic_drift,omitempty"`
-	SemanticDriftHard   []string                  `json:"semantic_drift_hard,omitempty"`
-	SemanticDriftSoft   []string                  `json:"semantic_drift_soft,omitempty"`
-	SemanticShift       []string                  `json:"semantic_shift,omitempty"`
-	ControlMode         string                    `json:"control_mode,omitempty"`
-	ControlGain         float64                   `json:"control_gain,omitempty"`
-	ControlSignals      []string                  `json:"control_signals,omitempty"`
-	EquilibriumTrace    *EquilibriumTrace         `json:"equilibrium_trace,omitempty"`
-	ProductionHardening *ProductionHardeningTrace `json:"production_hardening,omitempty"`
-	Compression         *CompressionReport        `json:"compression,omitempty"`
-	Cost                CostMetrics               `json:"cost,omitempty"`
-	MutationEvaluations []MutationEvaluation      `json:"mutation_evaluations,omitempty"`
-	FailureReason       string                    `json:"failure_reason,omitempty"`
-	ToolResults         []ToolRecord              `json:"tool_results,omitempty"`
-	StartedAt           time.Time                 `json:"started_at"`
-	CompletedAt         time.Time                 `json:"completed_at"`
+	ID                  string               `json:"id"`
+	IRVersion           string               `json:"ir_version"`
+	Goal                string               `json:"goal"`
+	Steps               []Step               `json:"steps,omitempty"`
+	Outcome             string               `json:"outcome"`
+	EfficiencyScore     float64              `json:"efficiency_score"`
+	MemoryEffectiveness float64              `json:"memory_effectiveness"`
+	StrategyUsed        []string             `json:"strategy_used,omitempty"`
+	MemoryUsed          []string             `json:"memory_used,omitempty"`
+	DecisionBranches    []DecisionBranch     `json:"decision_branches,omitempty"`
+	CausalEdges         []CausalEdge         `json:"causal_edges,omitempty"`
+	SemanticDrift       []string             `json:"semantic_drift,omitempty"`
+	SemanticDriftHard   []string             `json:"semantic_drift_hard,omitempty"`
+	SemanticDriftSoft   []string             `json:"semantic_drift_soft,omitempty"`
+	SemanticShift       []string             `json:"semantic_shift,omitempty"`
+	ControlMode         string               `json:"control_mode,omitempty"`
+	ControlGain         float64              `json:"control_gain,omitempty"`
+	ControlSignals      []string             `json:"control_signals,omitempty"`
+	EquilibriumTrace    *EquilibriumTrace    `json:"equilibrium_trace,omitempty"`
+	Compression         *CompressionReport   `json:"compression,omitempty"`
+	Cost                CostMetrics          `json:"cost,omitempty"`
+	MutationEvaluations []MutationEvaluation `json:"mutation_evaluations,omitempty"`
+	FailureReason       string               `json:"failure_reason,omitempty"`
+	ToolResults         []ToolRecord         `json:"tool_results,omitempty"`
+	StartedAt           time.Time            `json:"started_at"`
+	CompletedAt         time.Time            `json:"completed_at"`
 }
 
 type DecisionBranch struct {
@@ -205,20 +192,6 @@ type EquilibriumTrace struct {
 	ConvergenceVelocity  float64  `json:"convergence_velocity,omitempty"`
 	OscillationIndex     float64  `json:"oscillation_index,omitempty"`
 	Actions              []string `json:"actions,omitempty"`
-}
-
-type ProductionHardeningTrace struct {
-	Sandbox              runtimesandbox.ExecutionSnapshot    `json:"sandbox,omitempty"`
-	ResourceReservation  runtimeresource.Reservation         `json:"resource_reservation,omitempty"`
-	ResourceDecision     runtimeresource.Decision            `json:"resource_decision,omitempty"`
-	BudgetCoordinator    runtimeresource.CoordinatorSnapshot `json:"budget_coordinator,omitempty"`
-	Canary               runtimecanary.Evaluation            `json:"canary,omitempty"`
-	CanaryDiff           runtimecanary.BehaviorDiff          `json:"canary_diff,omitempty"`
-	SnapshotID           string                              `json:"snapshot_id,omitempty"`
-	RollbackDecision     runtimerollback.Decision            `json:"rollback_decision,omitempty"`
-	EnforcementAuthority string                              `json:"enforcement_authority,omitempty"`
-	Allowed              bool                                `json:"allowed"`
-	BlockReasons         []string                            `json:"block_reasons,omitempty"`
 }
 
 type CompilerMutation struct {
@@ -307,29 +280,28 @@ type TraceBundle struct {
 }
 
 type LearningTrace struct {
-	ID                   string                    `json:"id"`
-	IRVersion            string                    `json:"ir_version"`
-	Outcome              string                    `json:"outcome"`
-	QualityScore         float64                   `json:"quality_score"`
-	StrategyUsed         []string                  `json:"strategy_used,omitempty"`
-	MemoryUsed           []string                  `json:"memory_used,omitempty"`
-	DecisionBranches     []DecisionBranch          `json:"decision_branches,omitempty"`
-	CausalEdges          []CausalEdge              `json:"causal_edges,omitempty"`
-	SemanticDrift        []string                  `json:"semantic_drift,omitempty"`
-	SemanticDriftHard    []string                  `json:"semantic_drift_hard,omitempty"`
-	SemanticDriftSoft    []string                  `json:"semantic_drift_soft,omitempty"`
-	SemanticShift        []string                  `json:"semantic_shift,omitempty"`
-	ControlMode          string                    `json:"control_mode,omitempty"`
-	ControlGain          float64                   `json:"control_gain,omitempty"`
-	ControlSignals       []string                  `json:"control_signals,omitempty"`
-	EquilibriumTrace     *EquilibriumTrace         `json:"equilibrium_trace,omitempty"`
-	ProductionHardening  *ProductionHardeningTrace `json:"production_hardening,omitempty"`
-	Compression          *CompressionReport        `json:"compression,omitempty"`
-	CausalFindings       []string                  `json:"causal_findings,omitempty"`
-	CompilerImprovements []string                  `json:"compiler_improvements,omitempty"`
-	MutationEvaluations  []MutationEvaluation      `json:"mutation_evaluations,omitempty"`
-	Cost                 CostMetrics               `json:"cost,omitempty"`
-	CreatedAt            time.Time                 `json:"created_at"`
+	ID                   string               `json:"id"`
+	IRVersion            string               `json:"ir_version"`
+	Outcome              string               `json:"outcome"`
+	QualityScore         float64              `json:"quality_score"`
+	StrategyUsed         []string             `json:"strategy_used,omitempty"`
+	MemoryUsed           []string             `json:"memory_used,omitempty"`
+	DecisionBranches     []DecisionBranch     `json:"decision_branches,omitempty"`
+	CausalEdges          []CausalEdge         `json:"causal_edges,omitempty"`
+	SemanticDrift        []string             `json:"semantic_drift,omitempty"`
+	SemanticDriftHard    []string             `json:"semantic_drift_hard,omitempty"`
+	SemanticDriftSoft    []string             `json:"semantic_drift_soft,omitempty"`
+	SemanticShift        []string             `json:"semantic_shift,omitempty"`
+	ControlMode          string               `json:"control_mode,omitempty"`
+	ControlGain          float64              `json:"control_gain,omitempty"`
+	ControlSignals       []string             `json:"control_signals,omitempty"`
+	EquilibriumTrace     *EquilibriumTrace    `json:"equilibrium_trace,omitempty"`
+	Compression          *CompressionReport   `json:"compression,omitempty"`
+	CausalFindings       []string             `json:"causal_findings,omitempty"`
+	CompilerImprovements []string             `json:"compiler_improvements,omitempty"`
+	MutationEvaluations  []MutationEvaluation `json:"mutation_evaluations,omitempty"`
+	Cost                 CostMetrics          `json:"cost,omitempty"`
+	CreatedAt            time.Time            `json:"created_at"`
 }
 
 type DriftReport struct {
@@ -338,23 +310,6 @@ type DriftReport struct {
 	StaleMemoryNodes   []string  `json:"stale_memory_nodes,omitempty"`
 	ConflictingFacts   []string  `json:"conflicting_facts,omitempty"`
 	CreatedAt          time.Time `json:"created_at"`
-}
-
-type ProductionState struct {
-	Budget                  runtimeresource.ResourceBudget `json:"budget,omitempty"`
-	Canary                  runtimecanary.Policy           `json:"canary,omitempty"`
-	CanaryBaseline          runtimecanary.BehaviorSample   `json:"canary_baseline,omitempty"`
-	ExecutionCount          int                            `json:"execution_count,omitempty"`
-	ExecutionsSinceSnapshot int                            `json:"executions_since_snapshot,omitempty"`
-	LastSnapshotID          string                         `json:"last_snapshot_id,omitempty"`
-	Rollbacks               []RollbackRecord               `json:"rollbacks,omitempty"`
-}
-
-type RollbackRecord struct {
-	TraceID    string    `json:"trace_id"`
-	SnapshotID string    `json:"snapshot_id"`
-	Reasons    []string  `json:"reasons,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
 }
 
 type MemoryQuality string
@@ -441,7 +396,6 @@ type state struct {
 	DriftReports       []DriftReport       `json:"drift_reports,omitempty"`
 	ControlReports     []ControlReport     `json:"control_reports,omitempty"`
 	CompressionReports []CompressionReport `json:"compression_reports,omitempty"`
-	Production         ProductionState     `json:"production,omitempty"`
 	NoisyRefs          map[string]int      `json:"noisy_refs,omitempty"`
 	UpdatedAt          time.Time           `json:"updated_at,omitempty"`
 }
@@ -496,26 +450,24 @@ func (r *Runtime) StartTurn(ctx context.Context, input string, _ []provider.Mess
 	ir, policy := buildIRWithPolicy(goal, input, st)
 	now := time.Now().UTC()
 	id := traceID(now)
-	hardening := r.hardeningTraceForStart(ctx, ir, input, st, now, id)
 	t := &Turn{
 		rt:        r,
 		ir:        ir,
 		citations: memoryCitationsForIR(ir),
 		metrics:   turnMetricsForIR(ir, st),
 		trace: ExecutionTrace{
-			ID:                  id,
-			IRVersion:           version,
-			Goal:                goal,
-			Steps:               ir.ExecutionSteps,
-			MemoryUsed:          memoryRefIDs(ir.MemoryReferences),
-			DecisionBranches:    decisionBranches(ir),
-			StartedAt:           now,
-			SemanticShift:       append([]string(nil), policy.SemanticShift...),
-			ControlMode:         policy.Mode,
-			ControlGain:         policy.Gain,
-			ControlSignals:      append([]string(nil), policy.Reasons...),
-			EquilibriumTrace:    equilibriumTraceForPolicy(policy),
-			ProductionHardening: hardening,
+			ID:               id,
+			IRVersion:        version,
+			Goal:             goal,
+			Steps:            ir.ExecutionSteps,
+			MemoryUsed:       memoryRefIDs(ir.MemoryReferences),
+			DecisionBranches: decisionBranches(ir),
+			StartedAt:        now,
+			SemanticShift:    append([]string(nil), policy.SemanticShift...),
+			ControlMode:      policy.Mode,
+			ControlGain:      policy.Gain,
+			ControlSignals:   append([]string(nil), policy.Reasons...),
+			EquilibriumTrace: equilibriumTraceForPolicy(policy),
 			Cost: CostMetrics{
 				EstimatedInputTokens: estimateTokens(input),
 			},
@@ -1400,165 +1352,6 @@ func equilibriumTraceForPolicy(policy ControlPolicy) *EquilibriumTrace {
 	}
 }
 
-func hardeningTraceForStart(ctx context.Context, ir PlannerIR, input string, st state, now time.Time) *ProductionHardeningTrace {
-	return hardeningTraceForStartWithCoordinator(ctx, ir, input, st, now, nil, "")
-}
-
-func (r *Runtime) hardeningTraceForStart(ctx context.Context, ir PlannerIR, input string, st state, now time.Time, reservationID string) *ProductionHardeningTrace {
-	return hardeningTraceForStartWithCoordinator(ctx, ir, input, st, now, budgetCoordinatorForDir(r.dir), reservationID)
-}
-
-func hardeningTraceForStartWithCoordinator(ctx context.Context, ir PlannerIR, input string, st state, now time.Time, coordinator *runtimeresource.Coordinator, reservationID string) *ProductionHardeningTrace {
-	prod := normalizeProductionState(st.Production)
-	// Reserve only what the injected IR plan actually uses (its execution steps),
-	// not the full MaxToolCalls. An empty / un-useful IR injects no contract, so
-	// it must not reserve the entire tool budget — with the shared per-workspace
-	// coordinator that let concurrent tabs starve each other's reservations.
-	usage := hardeningUsageForStart(ir, input, st)
-	reservation := reserveProductionBudget(coordinator, reservationID, prod.Budget, usage, sandboxContextForProduction(prod), now)
-	resourceDecision := reservation.Decision()
-	canaryDecision := runtimecanary.Evaluate(prod.Canary, ir.Goal+"\x00"+ir.SourceEvent)
-	// Production hardening is observability only: it records a budget/canary view
-	// of the turn. It no longer runs a per-turn sandbox replay or an isolated
-	// goroutine — that work produced trace metadata that never reached the model
-	// yet cost a goroutine + CPU on every single turn.
-	trace := &ProductionHardeningTrace{
-		ResourceReservation:  reservation,
-		ResourceDecision:     resourceDecision,
-		BudgetCoordinator:    coordinatorSnapshot(coordinator, now),
-		Canary:               canaryDecision,
-		EnforcementAuthority: "production_hardening",
-		Allowed:              resourceDecision.Allowed && canaryDecision.Enabled,
-	}
-	if !resourceDecision.Allowed {
-		trace.BlockReasons = append(trace.BlockReasons, resourceDecision.Reasons...)
-	}
-	if !canaryDecision.Enabled {
-		trace.BlockReasons = append(trace.BlockReasons, canaryDecision.Reasons...)
-	}
-	trace.BlockReasons = limitStrings(canonicalStrings(trace.BlockReasons), 6)
-	return trace
-}
-
-func hardeningUsageForStart(ir PlannerIR, input string, st state) runtimeresource.Usage {
-	return runtimeresource.Usage{
-		Tokens:      estimateTokens(input) + estimateIRTokens(ir),
-		ToolCalls:   len(ir.ExecutionSteps),
-		MemoryNodes: len(st.Nodes) + estimatedMemoryWritebackGrowth(ir),
-	}
-}
-
-func reserveProductionBudget(coordinator *runtimeresource.Coordinator, id string, budget runtimeresource.ResourceBudget, usage runtimeresource.Usage, sandbox runtimesandbox.SandboxContext, now time.Time) runtimeresource.Reservation {
-	if coordinator == nil {
-		reservation := runtimeresource.Reserve(budget, usage)
-		reservation.ID = strings.TrimSpace(id)
-		if now.IsZero() {
-			now = time.Now().UTC()
-		}
-		reservation.CreatedAt = now.UTC()
-		reservation.ExpiresAt = now.Add(productionReservationTTL(sandbox)).UTC()
-		return reservation
-	}
-	return coordinator.Reserve(id, budget, usage, now, productionReservationTTL(sandbox))
-}
-
-func commitProductionBudget(coordinator *runtimeresource.Coordinator, reservation runtimeresource.Reservation, actual runtimeresource.Usage, now time.Time) runtimeresource.Decision {
-	if coordinator != nil && reservation.Allowed && strings.TrimSpace(reservation.ID) != "" {
-		return coordinator.Commit(reservation.ID, actual, now)
-	}
-	return reservation.Commit(actual)
-}
-
-func productionReservationTTL(sandbox runtimesandbox.SandboxContext) time.Duration {
-	if sandbox.MaxTimeMs <= 0 {
-		sandbox = runtimesandbox.DefaultContext()
-	}
-	if sandbox.MaxTimeMs <= 0 {
-		return 11 * time.Minute
-	}
-	return time.Duration(sandbox.MaxTimeMs)*time.Millisecond + time.Minute
-}
-
-func coordinatorSnapshot(coordinator *runtimeresource.Coordinator, now time.Time) runtimeresource.CoordinatorSnapshot {
-	if coordinator == nil {
-		return runtimeresource.CoordinatorSnapshot{}
-	}
-	return coordinator.Snapshot(now)
-}
-
-func sandboxHasActiveEscape(snapshot runtimesandbox.ExecutionSnapshot) bool {
-	return runtimesandbox.HasActiveEscape(snapshot.Isolation.EscapeReport)
-}
-
-func estimatedMemoryWritebackGrowth(ir PlannerIR) int {
-	const (
-		baseWritebackNodes          = 6
-		defaultToolResultNodeBudget = 12
-		maxWritebackNodeBudget      = 256
-	)
-	toolResultNodes := len(ir.ExecutionSteps)
-	if toolResultNodes < defaultToolResultNodeBudget {
-		toolResultNodes = defaultToolResultNodeBudget
-	}
-	growth := baseWritebackNodes + toolResultNodes
-	if len(ir.MemoryReferences) > 0 {
-		growth += 1
-	}
-	if len(ir.Constraints) > 0 {
-		growth += 1
-	}
-	if growth > maxWritebackNodeBudget {
-		return maxWritebackNodeBudget
-	}
-	return growth
-}
-
-func actualMemoryWritebackGrowth(tr ExecutionTrace) int {
-	const (
-		baseWritebackNodes     = 6
-		maxWritebackNodeBudget = 256
-	)
-	growth := baseWritebackNodes + len(tr.ToolResults)
-	if growth > maxWritebackNodeBudget {
-		return maxWritebackNodeBudget
-	}
-	return growth
-}
-
-func estimateIRTokens(ir PlannerIR) int {
-	b, err := json.Marshal(canonicalizeIR(ir))
-	if err != nil {
-		return 0
-	}
-	return estimateTokens(string(b))
-}
-
-func normalizeProductionState(prod ProductionState) ProductionState {
-	prod.Budget = runtimeresource.Normalize(prod.Budget)
-	if prod.Canary.Mode == "" {
-		prod.Canary = runtimecanary.DefaultPolicy()
-	}
-	prod.Canary = runtimecanary.Normalize(prod.Canary)
-	if prod.ExecutionCount < 0 {
-		prod.ExecutionCount = 0
-	}
-	if prod.ExecutionsSinceSnapshot < 0 {
-		prod.ExecutionsSinceSnapshot = 0
-	}
-	if len(prod.Rollbacks) > 20 {
-		prod.Rollbacks = prod.Rollbacks[len(prod.Rollbacks)-20:]
-	}
-	return prod
-}
-
-func sandboxContextForProduction(prod ProductionState) runtimesandbox.SandboxContext {
-	budget := runtimeresource.Normalize(prod.Budget)
-	ctx := runtimesandbox.DefaultContext()
-	ctx.ToolCallLimit = budget.MaxToolCalls
-	ctx.MemoryLimit = budget.MaxMemoryNodes
-	return ctx
-}
-
 func controlPlaneSystemState(st state, drift DriftReport) controlgraph.SystemState {
 	recent := recentLearnings(st.Learnings, 6)
 	cp := controlgraph.SystemState{
@@ -2041,7 +1834,6 @@ func (r *Runtime) writeTraceAndLearn(tr ExecutionTrace, strategyID string) {
 		return
 	}
 	st := r.loadStateLocked()
-	st.Production = normalizeProductionState(st.Production)
 	st.Strategies = ensureBuiltInStrategies(st.Strategies)
 	if strategyID == "" {
 		strategyID = classifyStrategy(tr.Goal)
@@ -2050,15 +1842,13 @@ func (r *Runtime) writeTraceAndLearn(tr ExecutionTrace, strategyID string) {
 	st.Mutations, evaluations = evaluateMutations(st.Mutations, tr)
 	tr.MutationEvaluations = evaluations
 	now := time.Now().UTC()
-	policy := controlPolicyForState(st, DriftReport{})
-	st, tr = r.applyProductionHardening(st, tr, policy, now)
 	baseline := baselineScore(st, strategyID)
 	st.Strategies = updateStrategy(st.Strategies, strategyID, tr.Outcome)
 	learning := analyzeTrace(tr, strategyID)
 	if hasLearning(learning) {
 		st.Learnings = appendLearning(st.Learnings, learning)
 	}
-	policy = controlPolicyForState(st, DriftReport{})
+	policy := controlPolicyForState(st, DriftReport{})
 	st.Nodes, st.Edges, st.Decisions = updateGraph(st.Nodes, st.Edges, st.Decisions, tr, learning)
 	st.ExecutionState = updateExecutionState(st.ExecutionState, tr, learning)
 	st.NoisyRefs = updateNoisyRefs(st.NoisyRefs, learning)
@@ -2085,315 +1875,6 @@ func (r *Runtime) writeTraceAndLearn(tr ExecutionTrace, strategyID string) {
 		_ = appendJSONL(filepath.Join(r.dir, debugTracesFile), *bundle.DebugTrace)
 	}
 	_ = writeJSON(filepath.Join(r.dir, stateFile), st)
-}
-
-func (r *Runtime) applyProductionHardening(st state, tr ExecutionTrace, policy ControlPolicy, now time.Time) (state, ExecutionTrace) {
-	st.Production = normalizeProductionState(st.Production)
-	if tr.ProductionHardening == nil {
-		ir := PlannerIR{Version: version, Goal: tr.Goal, SourceEvent: tr.Goal, ExecutionSteps: append([]Step(nil), tr.Steps...)}
-		tr.ProductionHardening = r.hardeningTraceForStart(context.Background(), ir, tr.Goal, st, tr.StartedAt, tr.ID)
-	}
-	hardening := *tr.ProductionHardening
-	actualUsage := runtimeresource.Usage{
-		Tokens:      tr.Cost.EstimatedInputTokens + tr.Cost.EstimatedCompiledTokens,
-		ToolCalls:   tr.Cost.ToolCalls,
-		MemoryNodes: len(st.Nodes) + actualMemoryWritebackGrowth(tr),
-	}
-	if actualUsage.Tokens <= 0 {
-		actualUsage.Tokens = estimateTokens(tr.Goal)
-	}
-	reservation := hardening.ResourceReservation
-	if reservation.Budget.MaxTokens == 0 && reservation.Budget.MaxToolCalls == 0 && reservation.Budget.MaxMemoryNodes == 0 {
-		reservation = reserveProductionBudget(budgetCoordinatorForDir(r.dir), tr.ID, st.Production.Budget, actualUsage, sandboxContextForProduction(st.Production), now)
-	}
-	resourceDecision := commitProductionBudget(budgetCoordinatorForDir(r.dir), reservation, actualUsage, now)
-	hardening.ResourceReservation = reservation
-	hardening.ResourceDecision = resourceDecision
-	hardening.BudgetCoordinator = coordinatorSnapshot(budgetCoordinatorForDir(r.dir), now)
-	hardening.EnforcementAuthority = "production_hardening"
-	hardening.BlockReasons = nil
-	if !resourceDecision.Allowed {
-		hardening.BlockReasons = append(hardening.BlockReasons, resourceDecision.Reasons...)
-	}
-	if !hardening.Canary.Enabled && hardening.Canary.Mode == "" {
-		hardening.Canary = runtimecanary.Evaluate(st.Production.Canary, tr.Goal+"\x00"+tr.ID)
-	}
-	if !hardening.Canary.Enabled {
-		hardening.BlockReasons = append(hardening.BlockReasons, hardening.Canary.Reasons...)
-	}
-	hardening.Allowed = resourceDecision.Allowed && hardening.Canary.Enabled
-	hardening.BlockReasons = limitStrings(canonicalStrings(hardening.BlockReasons), 6)
-	// Hardening NEVER rewrites tr.Outcome. The turn already executed and its real
-	// result stands; a not-Allowed verdict is recorded on the trace as an advisory
-	// budget/canary observation only. (Previously a successful turn with >20 tool
-	// calls was silently demoted to partial_success, poisoning the trace log.)
-	sample := productionBehaviorSample(tr, hardening)
-	if st.Production.Canary.Mode == runtimecanary.CanaryMode && hardening.Canary.Enabled {
-		hardening.CanaryDiff = runtimecanary.CompareBehavior(sample, st.Production.CanaryBaseline)
-		if hardening.CanaryDiff.Diverged {
-			tr.CausalEdges = appendCausalEdge(tr.CausalEdges, CausalEdge{
-				From:     "canary:" + tr.ID + ":" + hardening.CanaryDiff.Attribution.PrimaryCause,
-				To:       "outcome:" + tr.ID,
-				Relation: "explains_divergence",
-			})
-		}
-	} else if tr.Outcome == "success" && hardening.Allowed {
-		st.Production.CanaryBaseline = sample
-	}
-	st.Production.ExecutionCount++
-	st.Production.ExecutionsSinceSnapshot++
-	if shouldCreateProductionSnapshot(st.Production, tr, resourceDecision) {
-		stable := stableProductionSnapshot(tr, resourceDecision, policy, hardening)
-		barrier := runtimesnapshot.NewBarrier(productionSnapshotID(tr), now)
-		snap, err := runtimesnapshot.CaptureAtomic(productionSnapshotID(tr), productionSnapshotState(st, policy), stable, st.Production.ExecutionCount, barrier)
-		if err == nil {
-			if err := runtimesnapshot.Save(r.dir, snap); err == nil {
-				hardening.SnapshotID = snap.ID
-				st.Production.ExecutionsSinceSnapshot = 0
-				if snap.Stable {
-					st.Production.LastSnapshotID = snap.ID
-				}
-			}
-		}
-	}
-	rollbackDecision := runtimerollback.EvaluateWithSnapshot(r.dir, rollbackSignalsForState(st, tr, policy))
-	hardening.RollbackDecision = rollbackDecision
-	tr.ProductionHardening = &hardening
-	if rollbackDecision.ShouldRollback && rollbackDecision.SnapshotID != "" {
-		if restored, err := restoreProductionSnapshot(r.dir, rollbackDecision.SnapshotID, st.Production); err == nil {
-			restored.Production.Rollbacks = appendRollbackRecord(restored.Production.Rollbacks, RollbackRecord{
-				TraceID:    tr.ID,
-				SnapshotID: rollbackDecision.SnapshotID,
-				Reasons:    append([]string(nil), rollbackDecision.Reasons...),
-				CreatedAt:  now,
-			})
-			st = restored
-		}
-	}
-	if st.NoisyRefs == nil {
-		st.NoisyRefs = map[string]int{}
-	}
-	st.Production = normalizeProductionState(st.Production)
-	return st, tr
-}
-
-type memoryGraphSnapshot struct {
-	Nodes          []MemoryNode   `json:"nodes,omitempty"`
-	Edges          []MemoryEdge   `json:"edges,omitempty"`
-	Decisions      []DecisionNode `json:"decisions,omitempty"`
-	ExecutionState ExecutionState `json:"execution_state,omitempty"`
-	NoisyRefs      map[string]int `json:"noisy_refs,omitempty"`
-}
-
-type controlGraphSnapshot struct {
-	ControlReports []ControlReport `json:"control_reports,omitempty"`
-	DriftReports   []DriftReport   `json:"drift_reports,omitempty"`
-}
-
-func shouldCreateProductionSnapshot(prod ProductionState, tr ExecutionTrace, decision runtimeresource.Decision) bool {
-	if tr.ID == "" || !decision.Allowed {
-		return false
-	}
-	if prod.LastSnapshotID == "" && tr.Outcome == "success" {
-		return true
-	}
-	return prod.ExecutionsSinceSnapshot >= snapshotEveryExecutions
-}
-
-func stableProductionSnapshot(tr ExecutionTrace, decision runtimeresource.Decision, policy ControlPolicy, hardening ProductionHardeningTrace) bool {
-	return tr.Outcome == "success" &&
-		decision.Allowed &&
-		hardening.Allowed &&
-		!hardening.CanaryDiff.Diverged &&
-		hardening.Sandbox.KillReason == "" &&
-		len(tr.SemanticDriftHard) == 0 &&
-		policy.OscillationIndex < 0.8
-}
-
-func productionBehaviorSample(tr ExecutionTrace, hardening ProductionHardeningTrace) runtimecanary.BehaviorSample {
-	return runtimecanary.BehaviorSample{
-		Decision:        hardening.EnforcementAuthority,
-		Strategy:        firstNonEmpty(tr.StrategyUsed, classifyStrategy(tr.Goal)),
-		Outcome:         tr.Outcome,
-		Steps:           stepIDs(tr.Steps),
-		DecisionReasons: productionDecisionReasons(tr, hardening),
-	}
-}
-
-func productionDecisionReasons(tr ExecutionTrace, hardening ProductionHardeningTrace) []string {
-	reasons := []string{}
-	reasons = append(reasons, hardening.BlockReasons...)
-	reasons = append(reasons, hardening.ResourceDecision.Reasons...)
-	reasons = append(reasons, hardening.Canary.Reasons...)
-	reasons = append(reasons, tr.ControlSignals...)
-	reasons = append(reasons, tr.SemanticDriftHard...)
-	reasons = append(reasons, tr.SemanticDriftSoft...)
-	return limitStrings(canonicalStrings(reasons), 6)
-}
-
-func stepIDs(steps []Step) []string {
-	out := make([]string, 0, len(steps))
-	for _, step := range steps {
-		if strings.TrimSpace(step.ID) != "" {
-			out = append(out, step.ID)
-		}
-	}
-	return out
-}
-
-func productionSnapshotID(tr ExecutionTrace) string {
-	id := strings.TrimSpace(tr.ID)
-	if id == "" {
-		id = traceID(time.Now().UTC())
-	}
-	return "prod-" + id
-}
-
-func productionSnapshotState(st state, policy ControlPolicy) runtimesnapshot.SystemState {
-	return runtimesnapshot.SystemState{
-		MemoryGraph: memoryGraphSnapshot{
-			Nodes:          append([]MemoryNode(nil), st.Nodes...),
-			Edges:          append([]MemoryEdge(nil), st.Edges...),
-			Decisions:      append([]DecisionNode(nil), st.Decisions...),
-			ExecutionState: st.ExecutionState,
-			NoisyRefs:      cloneNoisyRefs(st.NoisyRefs),
-		},
-		ControlGraph: controlGraphSnapshot{
-			ControlReports: append([]ControlReport(nil), st.ControlReports...),
-			DriftReports:   append([]DriftReport(nil), st.DriftReports...),
-		},
-		StrategyRegistry: append([]Strategy(nil), st.Strategies...),
-		EquilibriumState: policy,
-	}
-}
-
-func restoreProductionSnapshot(root, id string, prod ProductionState) (state, error) {
-	raw, err := runtimesnapshot.RestoreRaw(root, id)
-	if err != nil {
-		return state{}, err
-	}
-	var memoryGraph memoryGraphSnapshot
-	if err := decodeSnapshotPart(raw.MemoryGraph, &memoryGraph); err != nil {
-		return state{}, err
-	}
-	var controlGraph controlGraphSnapshot
-	if err := decodeSnapshotPart(raw.ControlGraph, &controlGraph); err != nil {
-		return state{}, err
-	}
-	var strategies []Strategy
-	if err := decodeSnapshotPart(raw.StrategyRegistry, &strategies); err != nil {
-		return state{}, err
-	}
-	out := state{
-		Nodes:          append([]MemoryNode(nil), memoryGraph.Nodes...),
-		Edges:          append([]MemoryEdge(nil), memoryGraph.Edges...),
-		Decisions:      append([]DecisionNode(nil), memoryGraph.Decisions...),
-		ExecutionState: memoryGraph.ExecutionState,
-		Strategies:     ensureBuiltInStrategies(strategies),
-		DriftReports:   append([]DriftReport(nil), controlGraph.DriftReports...),
-		ControlReports: append([]ControlReport(nil), controlGraph.ControlReports...),
-		NoisyRefs:      cloneNoisyRefs(memoryGraph.NoisyRefs),
-		Production:     normalizeProductionState(prod),
-		UpdatedAt:      time.Now().UTC(),
-	}
-	if out.NoisyRefs == nil {
-		out.NoisyRefs = map[string]int{}
-	}
-	return out, nil
-}
-
-func decodeSnapshotPart(raw any, target any) error {
-	if raw == nil {
-		return nil
-	}
-	switch v := raw.(type) {
-	case json.RawMessage:
-		if len(v) == 0 {
-			return nil
-		}
-		return json.Unmarshal(v, target)
-	case []byte:
-		if len(v) == 0 {
-			return nil
-		}
-		return json.Unmarshal(v, target)
-	default:
-		b, err := json.Marshal(v)
-		if err != nil {
-			return err
-		}
-		return json.Unmarshal(b, target)
-	}
-}
-
-func rollbackSignalsForState(st state, tr ExecutionTrace, policy ControlPolicy) runtimerollback.Signals {
-	recent := recentLearnings(st.Learnings, 6)
-	failures := 0
-	for _, learning := range recent {
-		if len(learning.BadStrategies) > 0 || len(learning.MemoryNoisePatterns) > 0 {
-			failures++
-		}
-	}
-	if tr.Outcome == "failure" && len(recent) == 0 {
-		failures = 1
-	}
-	budgetViolations := 0
-	sandboxViolations := 0
-	canaryDivergences := 0
-	if tr.ProductionHardening != nil {
-		if !tr.ProductionHardening.ResourceDecision.Allowed {
-			budgetViolations++
-		}
-		if tr.ProductionHardening.Sandbox.KillReason != "" || tr.ProductionHardening.Sandbox.Isolation.PotentialLeak || sandboxHasActiveEscape(tr.ProductionHardening.Sandbox) {
-			sandboxViolations++
-		}
-		if tr.ProductionHardening.CanaryDiff.Diverged {
-			canaryDivergences++
-		}
-	}
-	corrupted := 0
-	for _, node := range st.Nodes {
-		if node.Quality == QualityCorrupted {
-			corrupted++
-		}
-	}
-	activeStrategies := 0
-	rejectedStrategies := 0
-	for _, s := range st.Strategies {
-		if lowSuccessStrategy(s) {
-			rejectedStrategies++
-			continue
-		}
-		activeStrategies++
-	}
-	recentExecutions := len(recent)
-	if recentExecutions == 0 && tr.ID != "" {
-		recentExecutions = 1
-	}
-	return runtimerollback.Signals{
-		RecentExecutions:     recentExecutions,
-		RecentFailures:       failures,
-		BudgetViolations:     budgetViolations,
-		SandboxViolations:    sandboxViolations,
-		CanaryDivergences:    canaryDivergences,
-		OscillationIndex:     policy.OscillationIndex,
-		CorruptedMemoryNodes: corrupted,
-		ActiveStrategies:     activeStrategies,
-		RejectedStrategies:   rejectedStrategies,
-	}
-}
-
-func appendRollbackRecord(existing []RollbackRecord, next ...RollbackRecord) []RollbackRecord {
-	for _, record := range next {
-		if strings.TrimSpace(record.TraceID) == "" || strings.TrimSpace(record.SnapshotID) == "" {
-			continue
-		}
-		existing = append(existing, record)
-	}
-	if len(existing) > 20 {
-		existing = existing[len(existing)-20:]
-	}
-	return existing
 }
 
 func cloneNoisyRefs(in map[string]int) map[string]int {
@@ -2436,7 +1917,6 @@ func executionTraceProjection(tr ExecutionTrace) ExecutionTrace {
 		ControlMode:         tr.ControlMode,
 		ControlGain:         tr.ControlGain,
 		EquilibriumTrace:    cloneEquilibriumTrace(tr.EquilibriumTrace),
-		ProductionHardening: cloneProductionHardeningTrace(tr.ProductionHardening),
 		Compression:         cloneCompressionReport(tr.Compression),
 		Cost:                tr.Cost,
 		FailureReason:       tr.FailureReason,
@@ -2457,7 +1937,7 @@ func learningTraceFor(tr ExecutionTrace, learning SystemLearning) (LearningTrace
 		StrategyUsed:         append([]string(nil), tr.StrategyUsed...),
 		MemoryUsed:           append([]string(nil), tr.MemoryUsed...),
 		DecisionBranches:     append([]DecisionBranch(nil), tr.DecisionBranches...),
-		CausalEdges:          compressCausalEdges(tr.CausalEdges, tr.ProductionHardening, maxCompressedCausalAnchors).AnchorEdges,
+		CausalEdges:          compressCausalEdges(tr.CausalEdges, maxCompressedCausalAnchors).AnchorEdges,
 		SemanticDrift:        append([]string(nil), tr.SemanticDrift...),
 		SemanticDriftHard:    append([]string(nil), tr.SemanticDriftHard...),
 		SemanticDriftSoft:    append([]string(nil), tr.SemanticDriftSoft...),
@@ -2466,7 +1946,6 @@ func learningTraceFor(tr ExecutionTrace, learning SystemLearning) (LearningTrace
 		ControlGain:          tr.ControlGain,
 		ControlSignals:       append([]string(nil), tr.ControlSignals...),
 		EquilibriumTrace:     cloneEquilibriumTrace(tr.EquilibriumTrace),
-		ProductionHardening:  cloneProductionHardeningTrace(tr.ProductionHardening),
 		Compression:          cloneCompressionReport(tr.Compression),
 		CausalFindings:       append([]string(nil), learning.CausalFindings...),
 		CompilerImprovements: append([]string(nil), learning.CompilerImprovements...),
@@ -2482,22 +1961,6 @@ func cloneEquilibriumTrace(in *EquilibriumTrace) *EquilibriumTrace {
 	}
 	out := *in
 	out.Actions = append([]string(nil), in.Actions...)
-	return &out
-}
-
-func cloneProductionHardeningTrace(in *ProductionHardeningTrace) *ProductionHardeningTrace {
-	if in == nil {
-		return nil
-	}
-	out := *in
-	out.ResourceReservation.Reasons = append([]string(nil), in.ResourceReservation.Reasons...)
-	out.ResourceDecision.Reasons = append([]string(nil), in.ResourceDecision.Reasons...)
-	out.Canary.Reasons = append([]string(nil), in.Canary.Reasons...)
-	out.CanaryDiff.Reasons = append([]string(nil), in.CanaryDiff.Reasons...)
-	out.CanaryDiff.Attribution.Factors = append([]runtimecanary.CausalFactor(nil), in.CanaryDiff.Attribution.Factors...)
-	out.RollbackDecision.Reasons = append([]string(nil), in.RollbackDecision.Reasons...)
-	out.RollbackDecision.FailureClasses = append([]runtimerollback.FailureClass(nil), in.RollbackDecision.FailureClasses...)
-	out.BlockReasons = append([]string(nil), in.BlockReasons...)
 	return &out
 }
 
@@ -3428,15 +2891,14 @@ func (r *Runtime) loadStateLocked() state {
 	var st state
 	b, err := os.ReadFile(filepath.Join(r.dir, stateFile))
 	if err != nil {
-		return state{NoisyRefs: map[string]int{}, Production: normalizeProductionState(ProductionState{})}
+		return state{NoisyRefs: map[string]int{}}
 	}
 	if err := json.Unmarshal(b, &st); err != nil {
-		return state{NoisyRefs: map[string]int{}, Production: normalizeProductionState(ProductionState{})}
+		return state{NoisyRefs: map[string]int{}}
 	}
 	if st.NoisyRefs == nil {
 		st.NoisyRefs = map[string]int{}
 	}
-	st.Production = normalizeProductionState(st.Production)
 	return st
 }
 
