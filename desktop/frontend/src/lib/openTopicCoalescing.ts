@@ -1,24 +1,18 @@
-export type PendingOpenTopicRequest = {
+export type PendingNavigationRequest<T extends object> = T & {
   seq: number;
-  scope: string;
-  workspaceRoot: string;
-  topicId: string;
-  sessionPath?: string;
   resolve: () => void;
 };
 
-export type OpenTopicRequestInput = Omit<PendingOpenTopicRequest, "seq" | "resolve">;
-
-export type OpenTopicCoalescingRefs = {
+export type NavigationCoalescingRefs<T extends object> = {
   seqRef: { current: number };
   runningRef: { current: boolean };
-  pendingRef: { current: PendingOpenTopicRequest | null };
+  pendingRef: { current: PendingNavigationRequest<T> | null };
 };
 
-export function enqueueOpenTopicRequest(
-  refs: OpenTopicCoalescingRefs,
-  input: OpenTopicRequestInput,
-  run: (request: PendingOpenTopicRequest) => Promise<void>,
+export function enqueueNavigationRequest<T extends object>(
+  refs: NavigationCoalescingRefs<T>,
+  input: T,
+  run: (request: PendingNavigationRequest<T>) => Promise<void>,
 ): Promise<void> {
   const seq = refs.seqRef.current + 1;
   refs.seqRef.current = seq;
@@ -27,9 +21,9 @@ export function enqueueOpenTopicRequest(
   const promise = new Promise<void>((res) => {
     resolve = res;
   });
-  const request: PendingOpenTopicRequest = { ...input, seq, resolve };
+  const request: PendingNavigationRequest<T> = { ...input, seq, resolve };
 
-  const start = (next: PendingOpenTopicRequest) => {
+  const start = (next: PendingNavigationRequest<T>) => {
     refs.runningRef.current = true;
     void (async () => {
       try {
@@ -59,4 +53,23 @@ export function enqueueOpenTopicRequest(
 
   start(request);
   return promise;
+}
+
+export type PendingOpenTopicRequest = PendingNavigationRequest<{
+  scope: string;
+  workspaceRoot: string;
+  topicId: string;
+  sessionPath?: string;
+}>;
+
+export type OpenTopicRequestInput = Omit<PendingOpenTopicRequest, "seq" | "resolve">;
+
+export type OpenTopicCoalescingRefs = NavigationCoalescingRefs<OpenTopicRequestInput>;
+
+export function enqueueOpenTopicRequest(
+  refs: OpenTopicCoalescingRefs,
+  input: OpenTopicRequestInput,
+  run: (request: PendingOpenTopicRequest) => Promise<void>,
+): Promise<void> {
+  return enqueueNavigationRequest(refs, input, run);
 }

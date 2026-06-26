@@ -127,7 +127,7 @@ import { useOverlayStore } from "./store/overlays";
 import { hydrateDisplayMode } from "./lib/displayMode";
 import { DEFAULT_STATUS_BAR_ITEMS, normalizeStatusBarItems, type StatusBarItemId } from "./lib/statusBarItems";
 import { sessionActivityTime } from "./lib/session";
-import { enqueueOpenTopicRequest, type PendingOpenTopicRequest } from "./lib/openTopicCoalescing";
+import { enqueueNavigationRequest, type PendingNavigationRequest } from "./lib/openTopicCoalescing";
 import {
   applyTheme,
   clearLegacyThemePreference,
@@ -209,6 +209,12 @@ type SidebarImConnection = {
   allowlistUsers: string[];
   allowlistMatched: boolean;
 };
+type DesktopNavigationInput =
+  | { kind: "topic"; scope: string; workspaceRoot: string; topicId: string; sessionPath?: string }
+  | { kind: "blank"; scope: string; workspaceRoot: string }
+  | { kind: "sidebar-im"; connection: SidebarImConnection }
+  | { kind: "resume-session"; session: SessionMeta };
+type PendingDesktopNavigationRequest = PendingNavigationRequest<DesktopNavigationInput>;
 type SidebarImTopicSource = {
   platform: SidebarImPlatform;
   label: string;
@@ -1663,18 +1669,6 @@ export default function App() {
     return { scope, workspaceRoot: activeWorkspaceRoot };
   }, [activeTab?.scope, activeTab?.workspaceRoot]);
 
-  const openBlankSession = useCallback(async (scope: string, workspaceRoot: string) => {
-    if (singleSurfaceLayout) {
-      await ensureBlankSurface(scope, scope === "project" ? workspaceRoot : "");
-    } else {
-      await ensureBlankTab(scope, scope === "project" ? workspaceRoot : "");
-    }
-    setProjectRevision((value) => value + 1);
-    await refreshTabMetas();
-    setTabRevealSignal((signal) => signal + 1);
-    setTranscriptRevealSignal((signal) => signal + 1);
-  }, [ensureBlankSurface, ensureBlankTab, refreshTabMetas, singleSurfaceLayout]);
-
   useEffect(() => {
     void refreshTabMetas();
     const id = window.setInterval(() => void refreshTabMetas(), 2000);
@@ -2074,13 +2068,6 @@ export default function App() {
     setTabRevealSignal((signal) => signal + 1);
   }, [refreshTabMetas, reorderTabs]);
 
-  const handleNewTab = useCallback(async () => {
-    closeTransientOverlays();
-    setSidebarImDetailConnectionId("");
-    const target = blankSessionTarget();
-    await openBlankSession(target.scope, target.workspaceRoot);
-  }, [blankSessionTarget, closeTransientOverlays, openBlankSession]);
-
   const [rewindSignal, setRewindSignal] = useState(0);
 
   // ── Optimistic rewind ─────────────────────────────────────────────────
@@ -2239,85 +2226,6 @@ export default function App() {
     }
   }, [activeTab?.readOnly, activeTabId, clearContextPending, controllerReady, hydratePlaceholderActive, sendToTab, state.approval, state.ask, state.messageAction, state.running, rewind]);
 
-  const openTopicSeqRef = useRef(0);
-  const openTopicRunningRef = useRef(false);
-  const openTopicPendingRef = useRef<PendingOpenTopicRequest | null>(null);
-  const runOpenTopicRequest = useCallback(async (request: PendingOpenTopicRequest) => {
-    try {
-      let openedTab: TabMeta;
-      if (singleSurfaceLayout) {
-        openedTab = await activateTopic(request.scope, request.workspaceRoot, request.topicId, request.sessionPath || "");
-      } else if (request.sessionPath) {
-        openedTab = await openTopicSession(request.scope, request.workspaceRoot, request.topicId, request.sessionPath);
-      } else if (request.scope === "global") {
-        openedTab = await openGlobalTab(request.topicId);
-      } else {
-        openedTab = await openProjectTab(request.workspaceRoot, request.topicId);
-      }
-      if (request.seq !== openTopicSeqRef.current) return;
-      seedActiveTabMeta(openedTab);
-      // Fire refreshTabMetas in background — transcript data loads independently.
-      void refreshTabMetas();
-      setTabRevealSignal((signal) => signal + 1);
-      setTranscriptRevealSignal((signal) => signal + 1);
-    } catch (err) {
-      if (request.seq !== openTopicSeqRef.current) return;
-      console.warn("topic open failed", err);
-      showToast(t("history.failedOpenSession"), "error");
-      void refreshTabMetas();
-    }
-  }, [activateTopic, openGlobalTab, openProjectTab, openTopicSession, refreshTabMetas, seedActiveTabMeta, showToast, singleSurfaceLayout, t]);
-  const handleOpenTopic = useCallback((scope: string, workspaceRoot: string, topicId: string, sessionPath?: string): Promise<void> => {
-    closeTransientOverlays();
-    setSidebarImDetailConnectionId("");
-    return enqueueOpenTopicRequest(
-      { seqRef: openTopicSeqRef, runningRef: openTopicRunningRef, pendingRef: openTopicPendingRef },
-      { scope, workspaceRoot, topicId, sessionPath },
-      runOpenTopicRequest,
-    );
-  }, [closeTransientOverlays, runOpenTopicRequest]);
-
-  const openSidebarImConnectionSession = useCallback(async (connection: SidebarImConnection) => {
-    const target = sidebarImSessionTarget(connection);
-    if (!target) {
-      showToast(t("sidebar.imWaiting", { name: connection.title }));
-      return;
-    }
-    setSidebarImDetailConnectionId("");
-    try {
-      let openedTab: TabMeta | undefined;
-      if (connection.sessionSource === "auto" && target.kind === "path") {
-        const tab = singleSurfaceLayout
-          ? await ensureBlankSurface(connection.scope, connection.scope === "project" ? connection.workspaceRoot : "")
-          : await ensureBlankTab(connection.scope, connection.scope === "project" ? connection.workspaceRoot : "");
-        openedTab = tab;
-        await openChannelSession(target.value, tab.id);
-      } else if (target.kind === "path") {
-        const tab = singleSurfaceLayout
-          ? await ensureBlankSurface(connection.scope, connection.scope === "project" ? connection.workspaceRoot : "")
-          : await ensureBlankTab(connection.scope, connection.scope === "project" ? connection.workspaceRoot : "");
-        openedTab = tab;
-        await resumeSession(target.value, tab.id);
-      } else if (connection.scope === "project") {
-        openedTab = singleSurfaceLayout
-          ? await activateTopic("project", connection.workspaceRoot, target.value)
-          : await openProjectTab(connection.workspaceRoot, target.value);
-      } else {
-        openedTab = singleSurfaceLayout
-          ? await activateTopic("global", "", target.value)
-          : await openGlobalTab(target.value);
-      }
-      if (openedTab) seedActiveTabMeta(openedTab);
-      await refreshTabMetas();
-      setTabRevealSignal((value) => value + 1);
-      setTranscriptRevealSignal((value) => value + 1);
-      setProjectRevision((value) => value + 1);
-    } catch (err) {
-      console.warn("bot sidebar open failed", err);
-      showToast(t("sidebar.imOpenFailed", { name: connection.title }));
-    }
-  }, [activateTopic, ensureBlankSurface, ensureBlankTab, openChannelSession, openGlobalTab, openProjectTab, refreshTabMetas, resumeSession, seedActiveTabMeta, showToast, singleSurfaceLayout, t]);
-
   // History drawer: project menus can open a scoped saved-session list. Idle row
   // clicks resume; running row clicks only preview through PreviewSession.
   const openProjectHistory = useCallback(async (scope: "global" | "project", workspaceRoot: string) => {
@@ -2349,53 +2257,164 @@ export default function App() {
     );
   }, [listSessions]);
 
-  const onResumeSession = useCallback(
-    async (session: SessionMeta) => {
-      if (state.running && !singleSurfaceLayout) return;
-      const scope = session.scope || (session.workspaceRoot ? "project" : "global");
-      try {
-        let targetTab: TabMeta;
-        if (isChannelSession(session)) {
-          targetTab = singleSurfaceLayout
-            ? await ensureBlankSurface(scope === "project" ? "project" : "global", scope === "project" ? session.workspaceRoot || "" : "")
-            : await ensureBlankTab(scope === "project" ? "project" : "global", scope === "project" ? session.workspaceRoot || "" : "");
-          await openChannelSession(session.path, targetTab.id);
-        } else if (scope === "project" && session.workspaceRoot && session.topicId) {
-          targetTab = singleSurfaceLayout
-            ? await activateTopic("project", session.workspaceRoot, session.topicId, session.path)
-            : await openProjectTab(session.workspaceRoot, session.topicId);
-        } else if (scope === "global" && session.topicId) {
-          targetTab = singleSurfaceLayout
-            ? await activateTopic("global", "", session.topicId, session.path)
-            : await openGlobalTab(session.topicId);
+  const navigationSeqRef = useRef(0);
+  const navigationRunningRef = useRef(false);
+  const navigationPendingRef = useRef<PendingDesktopNavigationRequest | null>(null);
+  const runNavigationRequest = useCallback(async (request: PendingDesktopNavigationRequest) => {
+    const latest = () => request.seq === navigationSeqRef.current;
+    const refreshLatestTabMetas = async (): Promise<TabMeta[]> => {
+      const tabs = asArray(await app.ListTabs().catch(() => [] as TabMeta[]));
+      if (latest()) setTabMetas(tabs);
+      return tabs;
+    };
+    const openTopicTarget = async (scope: string, workspaceRoot: string, topicId: string, sessionPath?: string): Promise<TabMeta> => {
+      if (singleSurfaceLayout) return activateTopic(scope, workspaceRoot, topicId, sessionPath || "");
+      if (sessionPath) return openTopicSession(scope, workspaceRoot, topicId, sessionPath);
+      if (scope === "global") return openGlobalTab(topicId);
+      return openProjectTab(workspaceRoot, topicId);
+    };
+    const openBlankTarget = async (scope: string, workspaceRoot: string): Promise<TabMeta> => {
+      const root = scope === "project" ? workspaceRoot : "";
+      return singleSurfaceLayout ? ensureBlankSurface(scope, root) : ensureBlankTab(scope, root);
+    };
+
+    try {
+      if (request.kind === "topic") {
+        const openedTab = await openTopicTarget(request.scope, request.workspaceRoot, request.topicId, request.sessionPath);
+        if (!latest()) return;
+        seedActiveTabMeta(openedTab);
+        void refreshLatestTabMetas();
+        setTabRevealSignal((signal) => signal + 1);
+        setTranscriptRevealSignal((signal) => signal + 1);
+        return;
+      }
+
+      if (request.kind === "blank") {
+        const openedTab = await openBlankTarget(request.scope, request.workspaceRoot);
+        if (!latest()) return;
+        seedActiveTabMeta(openedTab);
+        setProjectRevision((value) => value + 1);
+        await refreshLatestTabMetas();
+        if (!latest()) return;
+        setTabRevealSignal((signal) => signal + 1);
+        setTranscriptRevealSignal((signal) => signal + 1);
+        return;
+      }
+
+      if (request.kind === "sidebar-im") {
+        const { connection } = request;
+        const target = sidebarImSessionTarget(connection);
+        if (!target) {
+          if (latest()) showToast(t("sidebar.imWaiting", { name: connection.title }));
+          return;
+        }
+        let openedTab: TabMeta | undefined;
+        if (connection.sessionSource === "auto" && target.kind === "path") {
+          openedTab = await openBlankTarget(connection.scope, connection.workspaceRoot);
+          if (!latest()) return;
+          await openChannelSession(target.value, openedTab.id);
+        } else if (target.kind === "path") {
+          openedTab = await openBlankTarget(connection.scope, connection.workspaceRoot);
+          if (!latest()) return;
+          await resumeSession(target.value, openedTab.id);
         } else {
-          throw new Error(scope === "global" && !session.topicId
-            ? t("history.failedOpenSession")
-            : (session.topicId ? "Missing workspaceRoot" : t("history.failedOpenSession")));
+          openedTab = await openTopicTarget(connection.scope, connection.workspaceRoot, target.value);
         }
-        seedActiveTabMeta(targetTab);
-        setHistView(null);
-        if (!isChannelSession(session) && !singleSurfaceLayout) {
-          await resumeSession(session.path, targetTab.id);
-        }
-        // Fire refreshTabMetas in background — transcript data loads independently.
-        void refreshTabMetas();
+        if (!latest()) return;
+        if (openedTab) seedActiveTabMeta(openedTab);
+        await refreshLatestTabMetas();
+        if (!latest()) return;
         setTabRevealSignal((value) => value + 1);
         setTranscriptRevealSignal((value) => value + 1);
-      } catch (err: any) {
-        await refreshHistoryView();
-        if (isMissingSessionError(err)) return;
-        setHistView(null);
-        if (scope === "project" && session.workspaceRoot) {
-          const name = workspaceDisplayName(session.workspaceRoot);
-          showToast(t("history.failedOpenProject", { name, path: session.workspaceRoot }));
-        } else {
-          showToast(err?.message || String(err));
-        }
+        setProjectRevision((value) => value + 1);
+        return;
       }
-    },
-    [activateTopic, ensureBlankSurface, ensureBlankTab, openChannelSession, openGlobalTab, openProjectTab, refreshHistoryView, refreshTabMetas, state.running, resumeSession, seedActiveTabMeta, singleSurfaceLayout, t, showToast],
-  );
+
+      const { session } = request;
+      const scope = session.scope || (session.workspaceRoot ? "project" : "global");
+      let targetTab: TabMeta;
+      if (isChannelSession(session)) {
+        targetTab = await openBlankTarget(scope === "project" ? "project" : "global", scope === "project" ? session.workspaceRoot || "" : "");
+        if (!latest()) return;
+        await openChannelSession(session.path, targetTab.id);
+      } else if (scope === "project" && session.workspaceRoot && session.topicId) {
+        targetTab = await openTopicTarget("project", session.workspaceRoot, session.topicId, session.path);
+      } else if (scope === "global" && session.topicId) {
+        targetTab = await openTopicTarget("global", "", session.topicId, session.path);
+      } else {
+        throw new Error(scope === "global" && !session.topicId
+          ? t("history.failedOpenSession")
+          : (session.topicId ? "Missing workspaceRoot" : t("history.failedOpenSession")));
+      }
+      if (!isChannelSession(session) && !singleSurfaceLayout) {
+        if (!latest()) return;
+        await resumeSession(session.path, targetTab.id);
+      }
+      if (!latest()) return;
+      seedActiveTabMeta(targetTab);
+      setHistView(null);
+      void refreshLatestTabMetas();
+      setTabRevealSignal((value) => value + 1);
+      setTranscriptRevealSignal((value) => value + 1);
+    } catch (err: any) {
+      if (!latest()) return;
+      if (request.kind === "topic" || request.kind === "blank") {
+        console.warn("desktop navigation failed", err);
+        showToast(t("history.failedOpenSession"), "error");
+        void refreshLatestTabMetas();
+        return;
+      }
+      if (request.kind === "sidebar-im") {
+        console.warn("bot sidebar open failed", err);
+        showToast(t("sidebar.imOpenFailed", { name: request.connection.title }));
+        return;
+      }
+      await refreshHistoryView();
+      if (!latest() || isMissingSessionError(err)) return;
+      setHistView(null);
+      const session = request.session;
+      const scope = session.scope || (session.workspaceRoot ? "project" : "global");
+      if (scope === "project" && session.workspaceRoot) {
+        const name = workspaceDisplayName(session.workspaceRoot);
+        showToast(t("history.failedOpenProject", { name, path: session.workspaceRoot }));
+      } else {
+        showToast(err?.message || String(err));
+      }
+    }
+  }, [activateTopic, ensureBlankSurface, ensureBlankTab, openChannelSession, openGlobalTab, openProjectTab, openTopicSession, refreshHistoryView, resumeSession, seedActiveTabMeta, showToast, singleSurfaceLayout, t]);
+
+  const enqueueNavigation = useCallback((input: DesktopNavigationInput): Promise<void> => enqueueNavigationRequest(
+    { seqRef: navigationSeqRef, runningRef: navigationRunningRef, pendingRef: navigationPendingRef },
+    input,
+    runNavigationRequest,
+  ), [runNavigationRequest]);
+
+  const openBlankSession = useCallback((scope: string, workspaceRoot: string): Promise<void> =>
+    enqueueNavigation({ kind: "blank", scope, workspaceRoot: scope === "project" ? workspaceRoot : "" }),
+  [enqueueNavigation]);
+
+  const handleNewTab = useCallback(async () => {
+    closeTransientOverlays();
+    setSidebarImDetailConnectionId("");
+    const target = blankSessionTarget();
+    await openBlankSession(target.scope, target.workspaceRoot);
+  }, [blankSessionTarget, closeTransientOverlays, openBlankSession]);
+
+  const handleOpenTopic = useCallback((scope: string, workspaceRoot: string, topicId: string, sessionPath?: string): Promise<void> => {
+    closeTransientOverlays();
+    setSidebarImDetailConnectionId("");
+    return enqueueNavigation({ kind: "topic", scope, workspaceRoot, topicId, sessionPath });
+  }, [closeTransientOverlays, enqueueNavigation]);
+
+  const openSidebarImConnectionSession = useCallback((connection: SidebarImConnection): Promise<void> => {
+    setSidebarImDetailConnectionId("");
+    return enqueueNavigation({ kind: "sidebar-im", connection });
+  }, [enqueueNavigation]);
+
+  const onResumeSession = useCallback((session: SessionMeta): Promise<void> => {
+    if (state.running && !singleSurfaceLayout) return Promise.resolve();
+    return enqueueNavigation({ kind: "resume-session", session });
+  }, [enqueueNavigation, singleSurfaceLayout, state.running]);
 
   // Command palette: ⌘K / Ctrl+K opens a fuzzy navigator over commands and
   // recent sessions. Sessions are snapshotted on open so the list is stable
