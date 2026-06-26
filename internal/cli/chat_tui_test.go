@@ -10,7 +10,6 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/x/ansi"
 
 	"reasonix/internal/agent"
@@ -24,9 +23,31 @@ import (
 
 type blockingTurnRunner struct{ started chan struct{} }
 
+type stubbornTurnRunner struct {
+	started chan struct{}
+	release chan struct{}
+}
+
 func TestMain(m *testing.M) {
 	old := detectTermuxTerminal
 	detectTermuxTerminal = func() bool { return false }
+
+	// Pin the UI language for the whole cli test binary. Production code
+	// (cli.Run) calls i18n.DetectLanguage("") which resolves the host locale from
+	// the environment (REASONIX_LANG/LC_ALL/LC_MESSAGES/LANG) and installs it as
+	// the global i18n.M. On a non-English dev machine that flips M to e.g.
+	// Chinese, and tests that exercise the CLI entry point (acp_test.go,
+	// cli_test.go) don't restore it — so later tests asserting English UI strings
+	// fail, but only when the whole package runs, not in isolation. Forcing a
+	// deterministic English environment keeps the suite independent of the host
+	// locale (matching CI). Tests that need another language still set it
+	// explicitly via i18n.DetectLanguage(lang) with their own cleanup.
+	os.Unsetenv("REASONIX_LANG")
+	os.Unsetenv("LC_ALL")
+	os.Unsetenv("LC_MESSAGES")
+	os.Setenv("LANG", "en_US.UTF-8")
+	i18n.DetectLanguage("en")
+
 	code := m.Run()
 	detectTermuxTerminal = old
 	os.Exit(code)
@@ -35,6 +56,12 @@ func TestMain(m *testing.M) {
 func (r *blockingTurnRunner) Run(ctx context.Context, _ string) error {
 	close(r.started)
 	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (r *stubbornTurnRunner) Run(ctx context.Context, _ string) error {
+	close(r.started)
+	<-r.release
 	return ctx.Err()
 }
 
@@ -142,6 +169,64 @@ func TestTermuxNativeScrollbackDefaultsToExpandedReasoning(t *testing.T) {
 	got := strings.Join(*m.pendingCommit, "\n")
 	if !strings.Contains(got, "reasoning details") {
 		t.Fatalf("Termux reasoning was not expanded into native scrollback: %q", got)
+	}
+}
+
+// TestCompletionMenuFixedWidth verifies that the completion menu pads every
+// line (items + footer) to m.width so delta rendering always writes exactly the
+// same column count — no trailing characters for \033[K to leave behind.
+func TestCompletionMenuFixedWidth(t *testing.T) {
+	ctrl := control.New(control.Options{})
+	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80)
+	m.width = 80
+	m.completion.active = true
+	m.completion.items = []compItem{
+		{label: "review"},
+		{label: "clear", hint: "start fresh"},
+	}
+	m.completion.sel = 1
+	m.completion.kind = compSlash
+
+	out := m.renderCompletion()
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	// items + footer = 3 lines
+	if len(lines) != 3 {
+		t.Fatalf("completion menu should have 3 lines (2 items + footer), got %d:\n%s", len(lines), out)
+	}
+	for i, line := range lines {
+		if got := ansi.StringWidth(line); got != 80 {
+			t.Errorf("line %d visual width = %d, want 80: %q", i, got, line)
+		}
+	}
+}
+
+// TestCompletionMenuPadsWithNonBreakingSpaces verifies the fixed-width padding
+// is not ordinary ASCII space. Ultraviolet treats trailing ASCII spaces as
+// clearable cells and may emit EL/ECH erase sequences; mintty can leave stale
+// halves of CJK glyphs when those sequences clear Chinese skill descriptions.
+func TestCompletionMenuPadsWithNonBreakingSpaces(t *testing.T) {
+	ctrl := control.New(control.Options{})
+	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80)
+	m.width = 80
+	m.completion.active = true
+	m.completion.items = []compItem{
+		{label: "/土壤", hint: "分析土壤墒情"},
+		{label: "/巡田", hint: "识别病虫害"},
+	}
+	m.completion.sel = 0
+	m.completion.kind = compSlash
+
+	out := m.renderCompletion()
+	for i, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		if got := ansi.StringWidth(line); got != 80 {
+			t.Fatalf("line %d visual width = %d, want 80: %q", i, got, line)
+		}
+		if !strings.HasSuffix(line, "\u00a0") {
+			t.Fatalf("line %d should end with non-breaking padding, got %q", i, line)
+		}
+		if strings.HasSuffix(line, " ") {
+			t.Fatalf("line %d should not end with clearable ASCII space, got %q", i, line)
+		}
 	}
 }
 
@@ -337,7 +422,7 @@ func TestMCPManagerHidesComposerBox(t *testing.T) {
 	ctrl := control.New(control.Options{})
 	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80)
 	m.mcp = &mcpManager{stage: mcpStageList, snapshot: mcpSnapshot{servers: []mcpServerView{
-		{Name: "github", Transport: "stdio", Status: "deferred", Configured: true, Tier: "lazy"},
+		{Name: "github", Transport: "stdio", Status: "deferred", Configured: true, Tier: "background"},
 	}}}
 
 	m0, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -438,14 +523,14 @@ func TestMainManagerFollowsTranscriptWithoutTopPadding(t *testing.T) {
 	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80)
 	m0, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
 	m = m0.(chatTUI)
-	m.wrappedLines = []string{"reasonix chat", "› /mcp"}
+	m.wrappedLines = []string{"reasonix", "› /mcp"}
 
 	out := ansi.Strip(m.renderTranscriptWithMainManager("Manage MCP servers\n1 servers"))
 	lines := strings.Split(out, "\n")
 	if len(lines) < 4 {
 		t.Fatalf("rendered manager area too short:\n%s", out)
 	}
-	if !strings.Contains(lines[0], "reasonix chat") || !strings.Contains(lines[1], "/mcp") {
+	if !strings.Contains(lines[0], "reasonix") || !strings.Contains(lines[1], "/mcp") {
 		t.Fatalf("transcript lines should stay above manager:\n%s", out)
 	}
 	if strings.TrimSpace(lines[2]) != "" {
@@ -453,6 +538,38 @@ func TestMainManagerFollowsTranscriptWithoutTopPadding(t *testing.T) {
 	}
 	if !strings.Contains(lines[3], "Manage MCP servers") {
 		t.Fatalf("manager should follow transcript immediately, got line 3 %q in:\n%s", lines[3], out)
+	}
+}
+
+func TestMarkdownDividerFitsTranscriptContentWidth(t *testing.T) {
+	ctrl := control.New(control.Options{})
+	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80)
+	m0, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
+	m = m0.(chatTUI)
+
+	wantW := transcriptContentWidth(80, false)
+	if m.viewport.Width() != wantW {
+		t.Fatalf("viewport width = %d, want transcript content width %d", m.viewport.Width(), wantW)
+	}
+	rule := strings.TrimRight(m.renderer.Render("---"), "\n")
+	lines := strings.Split(wrapTranscript(rule, m.viewport.Width()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("markdown divider wrapped into %d lines at width %d: %q", len(lines), m.viewport.Width(), lines)
+	}
+	if w := visibleWidth(lines[0]); w != m.viewport.Width() {
+		t.Fatalf("markdown divider width = %d, want %d: %q", w, m.viewport.Width(), lines[0])
+	}
+}
+
+func TestTranscriptContentWidthReservesScrollbarColumn(t *testing.T) {
+	if got := transcriptContentWidth(80, false); got != 79 {
+		t.Fatalf("transcriptContentWidth(80, false) = %d, want 79", got)
+	}
+	if got := transcriptContentWidth(80, true); got != 80 {
+		t.Fatalf("transcriptContentWidth(80, true) = %d, want 80", got)
+	}
+	if got := transcriptContentWidth(0, false); got != 1 {
+		t.Fatalf("transcriptContentWidth(0, false) = %d, want 1", got)
 	}
 }
 
@@ -804,6 +921,7 @@ func isolateUserConfig(t *testing.T) {
 	t.Helper()
 	root := t.TempDir()
 	t.Setenv("HOME", root)
+	t.Setenv("REASONIX_CREDENTIALS_STORE", "file")
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
 	t.Setenv("AppData", filepath.Join(root, "AppData")) // os.UserConfigDir reads AppData on Windows
 	t.Chdir(root)
@@ -934,6 +1052,82 @@ func TestAutoPlanCommandWritesUserConfigNotProjectConfig(t *testing.T) {
 	}
 	if string(projectBody) != "[agent]\nauto_plan = \"off\"\n" {
 		t.Fatalf("/auto-plan should not rewrite project config:\n%s", projectBody)
+	}
+}
+
+func TestReasoningLanguageCommandPersistsAndUpdatesController(t *testing.T) {
+	isolateUserConfig(t)
+
+	ctrl := control.New(control.Options{ReasoningLanguage: "auto"})
+	m := newTestChatTUI()
+	m.ctrl = ctrl
+
+	m.runReasoningLanguageCommand("/reasoning-language zh")
+
+	body, err := os.ReadFile(config.UserConfigPath())
+	if err != nil {
+		t.Fatalf("read saved config: %v", err)
+	}
+	if !strings.Contains(string(body), `reasoning_language = "zh"`) {
+		t.Fatalf("saved config missing reasoning_language=zh:\n%s", body)
+	}
+	composed := ctrl.Compose("hello")
+	if !strings.HasPrefix(composed, "<reasoning-language>") || !strings.Contains(composed, "Simplified Chinese") {
+		t.Fatalf("/reasoning-language zh should affect current controller, got %q", composed)
+	}
+}
+
+func TestReasoningLanguageCommandWritesUserConfigNotProjectConfig(t *testing.T) {
+	isolateUserConfig(t)
+	projectPath := filepath.Join(mustGetwd(t), "reasonix.toml")
+	if err := os.WriteFile(projectPath, []byte("[agent]\nreasoning_language = \"en\"\n"), 0o644); err != nil {
+		t.Fatalf("write project config: %v", err)
+	}
+
+	m := newTestChatTUI()
+	m.ctrl = control.New(control.Options{ReasoningLanguage: "en"})
+	m.runReasoningLanguageCommand("/reasoning-language zh")
+
+	userBody, err := os.ReadFile(config.UserConfigPath())
+	if err != nil {
+		t.Fatalf("read user config: %v", err)
+	}
+	if !strings.Contains(string(userBody), `reasoning_language = "zh"`) {
+		t.Fatalf("user config missing reasoning_language=zh:\n%s", userBody)
+	}
+	projectBody, err := os.ReadFile(projectPath)
+	if err != nil {
+		t.Fatalf("read project config: %v", err)
+	}
+	if string(projectBody) != "[agent]\nreasoning_language = \"en\"\n" {
+		t.Fatalf("/reasoning-language should not rewrite project config:\n%s", projectBody)
+	}
+}
+
+func TestMemoryV5CommandWritesUserConfigNotProjectConfig(t *testing.T) {
+	isolateUserConfig(t)
+	projectPath := filepath.Join(mustGetwd(t), "reasonix.toml")
+	if err := os.WriteFile(projectPath, []byte("[agent]\nmemory_compiler = { enabled = true }\n"), 0o644); err != nil {
+		t.Fatalf("write project config: %v", err)
+	}
+
+	m := newTestChatTUI()
+	m.ctrl = control.New(control.Options{})
+	m.runMemoryV5Command("/memory-v5 off")
+
+	userBody, err := os.ReadFile(config.UserConfigPath())
+	if err != nil {
+		t.Fatalf("read user config: %v", err)
+	}
+	if !strings.Contains(string(userBody), `memory_compiler = { enabled = false }`) {
+		t.Fatalf("user config missing memory_compiler off:\n%s", userBody)
+	}
+	projectBody, err := os.ReadFile(projectPath)
+	if err != nil {
+		t.Fatalf("read project config: %v", err)
+	}
+	if string(projectBody) != "[agent]\nmemory_compiler = { enabled = true }\n" {
+		t.Fatalf("/memory-v5 should not rewrite project config:\n%s", projectBody)
 	}
 }
 
@@ -1241,8 +1435,8 @@ func TestQueueIndicatorHiddenWhenIdle(t *testing.T) {
 }
 
 // TestViewAltScreenFillsHeight proves the switch to alt-screen: View requests
-// the alt buffer + mouse, and the frame is exactly the terminal height (the
-// transcript viewport pads to fill above the pinned bottom region).
+// the alt buffer without mouse reporting, and the frame is exactly the terminal
+// height (the transcript viewport pads to fill above the pinned bottom region).
 func TestViewAltScreenFillsHeight(t *testing.T) {
 	ctrl := control.New(control.Options{})
 	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80)
@@ -1253,8 +1447,8 @@ func TestViewAltScreenFillsHeight(t *testing.T) {
 	if !v.AltScreen {
 		t.Error("View must request alt-screen so resize repaints the whole grid")
 	}
-	if v.MouseMode != tea.MouseModeCellMotion {
-		t.Error("View must enable mouse so the wheel scrolls the transcript")
+	if v.MouseMode != tea.MouseModeNone {
+		t.Error("View must leave terminal mouse selection available by default")
 	}
 	if lines := strings.Count(v.Content, "\n") + 1; lines != 24 {
 		t.Errorf("alt-screen frame = %d lines, want 24 (full terminal height)", lines)
@@ -1356,6 +1550,42 @@ func TestEmptyEnterScrollsToBottom(t *testing.T) {
 	})
 }
 
+// TestForceGotoBottomScrollsWithoutTranscriptChange keeps the force-bottom
+// contract independent from transcript length, width, or dirty-state changes.
+func TestForceGotoBottomScrollsWithoutTranscriptChange(t *testing.T) {
+	ctrl := control.New(control.Options{})
+	ch := make(chan event.Event, 1)
+	notice := agentEventMsg(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: "line"})
+	adv := func(m chatTUI, msg tea.Msg) chatTUI {
+		n, _ := m.Update(msg)
+		return n.(chatTUI)
+	}
+
+	cur := adv(newChatTUI(ctrl, "", ch, 80), tea.WindowSizeMsg{Width: 80, Height: 8})
+	for i := 0; i < 12; i++ {
+		cur = adv(cur, notice)
+	}
+	if !cur.viewport.AtBottom() {
+		t.Fatal("new output while pinned should keep the viewport at the bottom")
+	}
+
+	cur = adv(cur, tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+	if cur.viewport.AtBottom() {
+		t.Fatal("wheel-up should break the bottom pin")
+	}
+
+	cur.forceGotoBottom = true
+	cur.transcriptDirty = false
+	cur = adv(cur, tea.WindowSizeMsg{Width: 80, Height: 8})
+
+	if !cur.viewport.AtBottom() {
+		t.Fatalf("forceGotoBottom should scroll without transcript changes, YOffset=%d", cur.viewport.YOffset())
+	}
+	if cur.forceGotoBottom {
+		t.Fatal("forceGotoBottom should be cleared after scrolling")
+	}
+}
+
 func TestFoldedPasteUsesPlaceholderAndExpandsOnSend(t *testing.T) {
 	m := newTestChatTUI()
 	pasted := "{\n  \"a\": 1,\n  \"b\": 2,\n  \"c\": 3,\n  \"d\": 4\n}"
@@ -1450,6 +1680,27 @@ func TestSlashQuitExit(t *testing.T) {
 	}
 }
 
+func TestSlashMigrateShowsProgress(t *testing.T) {
+	isolateCLIConfigHome(t)
+	m := newTestChatTUI()
+
+	if cmd := m.runSlashCommand("/migrate"); cmd != nil {
+		t.Fatal("/migrate should run locally without returning a command")
+	}
+	out := strings.Join(m.transcript, "\n")
+	for _, want := range []string{
+		"/migrate",
+		"migration rescue: checking legacy config and credentials",
+		"migration rescue: scanning legacy memory",
+		"migration rescue: scanning legacy sessions",
+		"migration rescue complete:",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in transcript:\n%s", want, out)
+		}
+	}
+}
+
 // TestDoubleCtrlCQuit verifies that Ctrl+C while idle requires a double-press
 // within the 1.5s window to actually quit. A single press shows a hint; a
 // second press within the window returns tea.Quit.
@@ -1492,6 +1743,55 @@ func TestDoubleCtrlCQuit(t *testing.T) {
 	// lastCtrlCAt should be refreshed to now.
 	if time.Since(m4.lastCtrlCAt) > time.Second {
 		t.Error("expired Ctrl+C should refresh lastCtrlCAt")
+	}
+}
+
+func TestSecondCtrlCQuitsAfterCancelIsAlreadyRequested(t *testing.T) {
+	r := &stubbornTurnRunner{started: make(chan struct{}), release: make(chan struct{})}
+	ctrl := control.New(control.Options{Runner: r, Sink: event.Discard, SessionDir: t.TempDir(), Label: "test"})
+	ctrl.Send("hi")
+	<-r.started
+	defer close(r.release)
+
+	m := newTestChatTUI()
+	m.ctrl = ctrl
+	m.state = tuiRunning
+	ctrlC := tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
+
+	_, firstCmd := m.Update(ctrlC)
+	if firstCmd != nil {
+		t.Fatal("first Ctrl+C while running should request cancel, not quit")
+	}
+	if st := ctrl.RuntimeStatus(); !st.Running || !st.CancelRequested {
+		t.Fatalf("first Ctrl+C status = %+v, want running cancel requested", st)
+	}
+
+	_, secondCmd := m.Update(ctrlC)
+	if secondCmd == nil {
+		t.Fatal("second Ctrl+C after cancel request should quit")
+	}
+	if msg := secondCmd(); msg != (tea.QuitMsg{}) {
+		t.Fatalf("second Ctrl+C command = %T, want tea.QuitMsg", msg)
+	}
+}
+
+func TestRunningStatusShowsCancelRequested(t *testing.T) {
+	r := &stubbornTurnRunner{started: make(chan struct{}), release: make(chan struct{})}
+	ctrl := control.New(control.Options{Runner: r, Sink: event.Discard, SessionDir: t.TempDir(), Label: "test"})
+	ctrl.Send("hi")
+	<-r.started
+	defer close(r.release)
+
+	m := newTestChatTUI()
+	m.ctrl = ctrl
+	m.state = tuiRunning
+	m.width = 80
+	m.height = 24
+	ctrl.Cancel()
+
+	view := ansi.Strip(m.View().Content)
+	if !strings.Contains(view, "stopping") {
+		t.Fatalf("running status after cancel should show stopping feedback:\n%s", view)
 	}
 }
 
@@ -1559,10 +1859,6 @@ func TestCtrlCClearsThenDoublePressQuits(t *testing.T) {
 // with an active text selection copies the selected text to clipboard instead
 // of arming the double-press quit gesture.
 func TestCtrlCCopySelection(t *testing.T) {
-	var copied string
-	clipboardWriteAll = func(text string) error { copied = text; return nil }
-	defer func() { clipboardWriteAll = clipboard.WriteAll }()
-
 	m := newTestChatTUI()
 	ctrlC := tea.KeyPressMsg{Code: 'c', Mod: 4}
 
@@ -1593,11 +1889,8 @@ func TestCtrlCCopySelection(t *testing.T) {
 		t.Fatal("Ctrl+C on selection should return a cmd (clipboard + finalize)")
 	}
 
-	// Execute the command — it should trigger the clipboard stub.
+	// Execute the command (copyToClipboard → OSC 52).
 	cmd()
-	if copied != "hello" {
-		t.Errorf("clipboard should contain selected text %q, got %q", "hello", copied)
-	}
 
 	// Second Ctrl+C should now arm quit (selection is gone).
 	_, cmd2 := m2.Update(ctrlC)
@@ -1684,10 +1977,6 @@ func TestTruncateSubject(t *testing.T) {
 // branch above the clear-input branch so the user's draft survives. After
 // the copy the user can still press Ctrl+C again to clear the composer.
 func TestCtrlCCopyBeatsClearInput(t *testing.T) {
-	var copied string
-	clipboardWriteAll = func(text string) error { copied = text; return nil }
-	defer func() { clipboardWriteAll = clipboard.WriteAll }()
-
 	m := newTestChatTUI()
 	m.input.SetValue("draft I'm typing") // non-empty composer
 	m.transcript = []string{"selected text"}
@@ -1705,9 +1994,10 @@ func TestCtrlCCopyBeatsClearInput(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected clipboard cmd")
 	}
-	cmd()
-	if copied != "selected" {
-		t.Errorf("clipboard = %q, want %q", copied, "selected")
+	if batch, ok := cmd().(tea.BatchMsg); ok {
+		for _, c := range batch {
+			c()
+		}
 	}
 
 	// Second Ctrl+C (no selection, non-empty composer) clears the draft.

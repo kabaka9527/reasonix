@@ -259,6 +259,38 @@ func TestPreviewSession(t *testing.T) {
 	}
 }
 
+func TestPreviewSessionStripsTransientReasoningLanguageBlock(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	s := NewSession("system")
+	s.Add(provider.Message{Role: provider.RoleUser, Content: "<reasoning-language>\nVisible reasoning/thinking text preference: use Simplified Chinese.\n</reasoning-language>\n\nHelp me debug the auth module"})
+	s.Save(path)
+
+	preview, turns := previewSession(path)
+	if turns != 1 {
+		t.Errorf("turns = %d, want 1", turns)
+	}
+	if preview != "Help me debug the auth module" {
+		t.Errorf("preview = %q, want user prompt", preview)
+	}
+}
+
+func TestPreviewSessionStripsTransientResponseLanguageBlock(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	s := NewSession("system")
+	s.Add(provider.Message{Role: provider.RoleUser, Content: "<response-language>\nFinal answer language preference: use English.\n</response-language>\n\nHelp me debug the auth module"})
+	s.Save(path)
+
+	preview, turns := previewSession(path)
+	if turns != 1 {
+		t.Errorf("turns = %d, want 1", turns)
+	}
+	if preview != "Help me debug the auth module" {
+		t.Errorf("preview = %q, want user prompt", preview)
+	}
+}
+
 func TestPreviewSessionLongMessage(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")

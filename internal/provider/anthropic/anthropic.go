@@ -70,8 +70,10 @@ func New(cfg provider.Config) (provider.Provider, error) {
 		baseURL = defaultBaseURL
 	}
 	keyEnv, _ := cfg.Extra["api_key_env"].(string) // for actionable auth errors
+	keySource, _ := cfg.Extra["api_key_source"].(string)
 	thinking, _ := cfg.Extra["thinking"].(string)
 	effort, _ := cfg.Extra["effort"].(string)
+	vision, _ := cfg.Extra["vision"].(bool)
 	httpClient, err := newHTTPClient(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic: network: %w", err)
@@ -95,10 +97,12 @@ func New(cfg provider.Config) (provider.Provider, error) {
 		name:        name,
 		apiKey:      cfg.APIKey,
 		keyEnv:      keyEnv,
+		keySource:   keySource,
 		baseURL:     root,
 		model:       cfg.Model,
 		thinking:    thinking,
 		effort:      effort,
+		vision:      vision,
 		http:        httpClient, // no overall timeout; lifecycle is ctx-driven
 		idleTimeout: defaultStreamIdleTimeout,
 	}, nil
@@ -113,10 +117,12 @@ type client struct {
 	name        string
 	apiKey      string
 	keyEnv      string // api_key_env name, surfaced in auth errors
+	keySource   string // source of keyEnv, surfaced in auth errors
 	baseURL     string
 	model       string
 	thinking    string // "adaptive" enables extended thinking; "" = off (config-driven)
 	effort      string // output_config.effort: low|medium|high|xhigh|max; "" = provider default
+	vision      bool   // model accepts image input — embed attached images as base64 image blocks
 	http        *http.Client
 	idleTimeout time.Duration // SSE stall watchdog window; defaultStreamIdleTimeout unless a test overrides
 	authed      atomic.Bool   // a request has succeeded — gate transient-401 retry
@@ -128,6 +134,7 @@ func (c *client) sendOpts() provider.SendOptions {
 	return provider.SendOptions{
 		Provider:   c.name,
 		KeyEnv:     c.keyEnv,
+		KeySource:  c.keySource,
 		KeyPresent: c.apiKey != "",
 		RetryAuth:  c.authed.Load(),
 	}
@@ -168,7 +175,7 @@ func (c *client) Stream(ctx context.Context, req provider.Request) (<-chan provi
 	c.authed.Store(true)
 
 	out := make(chan provider.Chunk)
-	go c.readStream(resp, out)
+	go c.readStream(ctx, resp, out)
 	return out, nil
 }
 
@@ -203,6 +210,13 @@ func (c *client) buildRequest(req provider.Request) anthRequest {
 		case provider.RoleUser:
 			if m.Content != "" {
 				appendBlocks("user", contentBlock{Type: "text", Text: m.Content})
+			}
+			if c.vision {
+				for _, url := range m.Images {
+					if mt, data, ok := provider.ParseImageDataURL(url); ok {
+						appendBlocks("user", contentBlock{Type: "image", Source: &imageSource{Type: "base64", MediaType: mt, Data: data}})
+					}
+				}
 			}
 		case provider.RoleTool:
 			content := m.Content
@@ -287,7 +301,7 @@ func (c *client) buildRequest(req provider.Request) anthRequest {
 // and a complete ChunkToolCall when the block closes; usage is assembled from
 // message_start (input/cache) + message_delta (output + stop_reason) and emitted
 // once before ChunkDone.
-func (c *client) readStream(resp *http.Response, out chan<- provider.Chunk) {
+func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<- provider.Chunk) {
 	defer resp.Body.Close()
 	defer close(out)
 
@@ -308,6 +322,9 @@ func (c *client) readStream(resp *http.Response, out chan<- provider.Chunk) {
 		defer idle.Stop()
 		for {
 			select {
+			case <-ctx.Done():
+				resp.Body.Close()
+				return
 			case <-idle.C:
 				stalled.Store(true)
 				resp.Body.Close()
@@ -325,6 +342,10 @@ func (c *client) readStream(resp *http.Response, out chan<- provider.Chunk) {
 			}
 		}
 	}()
+
+	send := func(chunk provider.Chunk) bool {
+		return sendChunk(ctx, out, chunk)
+	}
 
 	tools := map[int]*provider.ToolCall{} // tool_use blocks, keyed by content index
 	var inTok, outTok, cacheCreate, cacheRead int
@@ -352,7 +373,7 @@ func (c *client) readStream(resp *http.Response, out chan<- provider.Chunk) {
 
 		var ev streamEvent
 		if err := json.Unmarshal([]byte(data), &ev); err != nil {
-			out <- provider.Chunk{Type: provider.ChunkError, Err: fmt.Errorf("%s: decode stream: %w", c.name, err)}
+			send(provider.Chunk{Type: provider.ChunkError, Err: fmt.Errorf("%s: decode stream: %w", c.name, err)})
 			return
 		}
 
@@ -368,7 +389,9 @@ func (c *client) readStream(resp *http.Response, out chan<- provider.Chunk) {
 			if ev.ContentBlock != nil && ev.ContentBlock.Type == "tool_use" {
 				tc := &provider.ToolCall{ID: ev.ContentBlock.ID, Name: ev.ContentBlock.Name}
 				tools[ev.Index] = tc
-				out <- provider.Chunk{Type: provider.ChunkToolCallStart, ToolCall: &provider.ToolCall{ID: tc.ID, Name: tc.Name}}
+				if !send(provider.Chunk{Type: provider.ChunkToolCallStart, ToolCall: &provider.ToolCall{ID: tc.ID, Name: tc.Name}}) {
+					return
+				}
 			}
 		case "content_block_delta":
 			if ev.Delta == nil {
@@ -377,15 +400,21 @@ func (c *client) readStream(resp *http.Response, out chan<- provider.Chunk) {
 			switch ev.Delta.Type {
 			case "text_delta":
 				if ev.Delta.Text != "" {
-					out <- provider.Chunk{Type: provider.ChunkText, Text: ev.Delta.Text}
+					if !send(provider.Chunk{Type: provider.ChunkText, Text: ev.Delta.Text}) {
+						return
+					}
 				}
 			case "thinking_delta":
 				if ev.Delta.Thinking != "" {
-					out <- provider.Chunk{Type: provider.ChunkReasoning, Text: ev.Delta.Thinking}
+					if !send(provider.Chunk{Type: provider.ChunkReasoning, Text: ev.Delta.Thinking}) {
+						return
+					}
 				}
 			case "signature_delta":
 				if ev.Delta.Signature != "" {
-					out <- provider.Chunk{Type: provider.ChunkReasoning, Signature: ev.Delta.Signature}
+					if !send(provider.Chunk{Type: provider.ChunkReasoning, Signature: ev.Delta.Signature}) {
+						return
+					}
 				}
 			case "input_json_delta":
 				if tc := tools[ev.Index]; tc != nil {
@@ -394,7 +423,9 @@ func (c *client) readStream(resp *http.Response, out chan<- provider.Chunk) {
 			}
 		case "content_block_stop":
 			if tc := tools[ev.Index]; tc != nil {
-				out <- provider.Chunk{Type: provider.ChunkToolCall, ToolCall: tc}
+				if !send(provider.Chunk{Type: provider.ChunkToolCall, ToolCall: tc}) {
+					return
+				}
 				delete(tools, ev.Index)
 			}
 		case "message_delta":
@@ -412,31 +443,50 @@ func (c *client) readStream(resp *http.Response, out chan<- provider.Chunk) {
 			if ev.Error != nil && ev.Error.Message != "" {
 				msg = ev.Error.Message
 			}
-			out <- provider.Chunk{Type: provider.ChunkError, Err: fmt.Errorf("%s: %s", c.name, msg)}
+			send(provider.Chunk{Type: provider.ChunkError, Err: fmt.Errorf("%s: %s", c.name, msg)})
 			return
 		}
 	}
 
+	if ctx.Err() != nil {
+		return
+	}
 	if stalled.Load() {
-		out <- provider.Chunk{Type: provider.ChunkError, Err: fmt.Errorf("%s: stream stalled — no data for %s, connection likely dropped", c.name, idleTimeout)}
+		send(provider.Chunk{Type: provider.ChunkError, Err: fmt.Errorf("%s: stream stalled — no data for %s, connection likely dropped", c.name, idleTimeout)})
 		return
 	}
 	if err := scanner.Err(); err != nil {
-		out <- provider.Chunk{Type: provider.ChunkError, Err: fmt.Errorf("%s: read stream: %w", c.name, err)}
+		send(provider.Chunk{Type: provider.ChunkError, Err: fmt.Errorf("%s: read stream: %w", c.name, err)})
 		return
 	}
 
 	if haveUsage {
-		out <- provider.Chunk{Type: provider.ChunkUsage, Usage: &provider.Usage{
+		if !send(provider.Chunk{Type: provider.ChunkUsage, Usage: &provider.Usage{
 			PromptTokens:     inTok + cacheCreate + cacheRead,
 			CompletionTokens: outTok,
 			TotalTokens:      inTok + cacheCreate + cacheRead + outTok,
 			CacheHitTokens:   cacheRead,
 			CacheMissTokens:  inTok + cacheCreate, // uncached input + cache writes (billed ≥1×)
 			FinishReason:     mapStopReason(stopReason),
-		}}
+		}}) {
+			return
+		}
 	}
-	out <- provider.Chunk{Type: provider.ChunkDone}
+	send(provider.Chunk{Type: provider.ChunkDone})
+}
+
+func sendChunk(ctx context.Context, out chan<- provider.Chunk, chunk provider.Chunk) bool {
+	select {
+	case out <- chunk:
+		return true
+	default:
+	}
+	select {
+	case <-ctx.Done():
+		return false
+	case out <- chunk:
+		return true
+	}
 }
 
 // mapStopReason translates Anthropic stop reasons to the OpenAI-style finish
@@ -506,7 +556,14 @@ type contentBlock struct {
 	Input        json.RawMessage `json:"input,omitempty"`       // tool_use
 	ToolUseID    string          `json:"tool_use_id,omitempty"` // tool_result
 	Content      string          `json:"content,omitempty"`     // tool_result
+	Source       *imageSource    `json:"source,omitempty"`      // image
 	CacheControl *cacheControl   `json:"cache_control,omitempty"`
+}
+
+type imageSource struct {
+	Type      string `json:"type"` // "base64"
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
 }
 
 type anthTool struct {

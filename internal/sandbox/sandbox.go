@@ -1,7 +1,9 @@
 // Package sandbox wraps a shell command in an OS-level jail so the model's
-// `bash` calls are confined: it may read and write only inside the workspace
-// (plus temp and toolchain caches), with optional forbid-read and forbid-write
-// roots, and reach the network only when allowed.
+// `bash` calls are confined: it may read almost freely but write only inside
+// the writable roots (workspace, configured extras, plus temp and toolchain
+// caches) , with optional forbid-read roots, and reach the network only when
+// allowed. This is the *enforcement* layer beneath the permission rules
+// (*policy*): a permitted command still cannot escape the box.
 //
 // Only macOS (Seatbelt via sandbox-exec) is implemented; on every other OS, or
 // when the OS tooling is missing, Command falls back to running the command

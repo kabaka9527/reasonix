@@ -40,8 +40,11 @@ func Available() bool {
 // seatbeltProfile builds an SBPL profile that allows everything, then denies
 // all file writes and re-allows them only under the write-roots (workspace +
 // temp + caches). Network is denied unless allowed. Forbid-read roots get
-// individual deny-read rules. Reads elsewhere keep working so the toolchain
-// (compilers reading GOROOT, git reading ~/.gitconfig, …) functions.
+// individual deny-read rules. Reads elsewhere are left open so the
+// toolchain (compilers reading GOROOT, git reading ~/.gitconfig, …) keeps
+// working — the boundary this draws is "can't write outside the configured
+// writable roots, and optionally can't talk to the network", which is the Phase
+// 0 blast-radius made to also cover arbitrary shell commands.
 func seatbeltProfile(spec Spec) string {
 	var b strings.Builder
 	b.WriteString("(version 1)\n(allow default)\n(deny file-write*)\n(allow file-write*\n")

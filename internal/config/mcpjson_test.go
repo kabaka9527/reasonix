@@ -47,6 +47,30 @@ func TestLoadMCPJSON(t *testing.T) {
 	}
 }
 
+func TestMCPJSONTrustedReadOnlyToolsRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, mcpJSONFile)
+	if _, err := UpsertMCPJSONPlugin(path, PluginEntry{
+		Name:                 "github",
+		Command:              "npx",
+		Args:                 []string{"-y", "@modelcontextprotocol/server-github"},
+		TrustedReadOnlyTools: []string{"issue_read", "pull_request_read"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadMCPJSON(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("entries = %+v, want one github entry", got)
+	}
+	tools := got[0].TrustedReadOnlyTools
+	if len(tools) != 2 || tools[0] != "issue_read" || tools[1] != "pull_request_read" {
+		t.Fatalf("trusted read-only tools = %+v", tools)
+	}
+}
+
 func TestNormalizePluginCommandLine(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -60,6 +84,13 @@ func TestNormalizePluginCommandLine(t *testing.T) {
 			in:          PluginEntry{Name: "playwright", Command: "npx -y @playwright/mcp"},
 			wantCommand: "npx",
 			wantArgs:    []string{"-y", "@playwright/mcp"},
+			wantChanged: true,
+		},
+		{
+			name:        "custom command pasted with args",
+			in:          PluginEntry{Name: "custom", Command: "custom-mcp --stdio"},
+			wantCommand: "custom-mcp",
+			wantArgs:    []string{"--stdio"},
 			wantChanged: true,
 		},
 		{
@@ -102,6 +133,16 @@ func TestNormalizePluginCommandLine(t *testing.T) {
 				t.Fatalf("args = %v, want %v", got.Args, tc.wantArgs)
 			}
 		})
+	}
+}
+
+func TestParseLegacyMCPSpecSplitsCustomCommandArgs(t *testing.T) {
+	got, ok := parseLegacyMCPSpec("fs=custom-mcp --stdio")
+	if !ok {
+		t.Fatal("parseLegacyMCPSpec returned false")
+	}
+	if got.Name != "fs" || got.Command != "custom-mcp" || strings.Join(got.Args, "\x00") != "--stdio" {
+		t.Fatalf("legacy custom MCP spec = %+v, want name fs command custom-mcp args [--stdio]", got)
 	}
 }
 

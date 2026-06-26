@@ -8,15 +8,12 @@ import (
 )
 
 // redirectCache points config.CacheDir() at a fresh temp dir for the duration
-// of the test by overriding the knobs os.UserConfigDir reads: HOME/XDG_CONFIG_HOME
-// on unix, APPDATA on Windows (without it the tests write the real user cache).
+// of the test (without it the tests write the real user cache).
 // Returns the temp dir so a test can also poke into it (e.g. write a corrupted file).
 func redirectCache(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv("APPDATA", dir)
+	t.Setenv("REASONIX_CACHE_HOME", dir)
 	return dir
 }
 
@@ -87,6 +84,22 @@ func TestCacheInvalidatesOnSpecHashMismatch(t *testing.T) {
 	}
 	if _, ok := LoadCachedSchema(spec.Name, "different-hash"); ok {
 		t.Fatal("LoadCachedSchema: hit despite mismatching expectedHash")
+	}
+}
+
+func TestCacheInvalidatesWhenReadOnlyTrustChanges(t *testing.T) {
+	redirectCache(t)
+	spec := sampleSpec()
+	spec.ReadOnlyToolNames = map[string]bool{"echo": true}
+	spec.ReadOnlyModelToolNames = map[string]bool{"mcp__my-server__search": true}
+	hash := SpecFingerprint(spec)
+	if err := SaveCachedSchema(spec.Name, sampleCachedSchema(hash)); err != nil {
+		t.Fatalf("SaveCachedSchema: %v", err)
+	}
+
+	withoutTrust := sampleSpec()
+	if _, ok := LoadCachedSchema(spec.Name, SpecFingerprint(withoutTrust)); ok {
+		t.Fatal("LoadCachedSchema: hit after trusted read-only config changed")
 	}
 }
 

@@ -54,6 +54,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 		name = "openai"
 	}
 	keyEnv, _ := cfg.Extra["api_key_env"].(string) // for actionable auth errors
+	keySource, _ := cfg.Extra["api_key_source"].(string)
 	effort, _ := cfg.Extra["effort"].(string)
 	effort = strings.ToLower(strings.TrimSpace(effort))
 	if effort == "auto" {
@@ -61,6 +62,12 @@ func New(cfg provider.Config) (provider.Provider, error) {
 	}
 	protocol, _ := cfg.Extra["reasoning_protocol"].(string)
 	protocol = normalizeReasoningProtocol(protocol)
+	vision, _ := cfg.Extra["vision"].(bool)
+	visionDetail, _ := cfg.Extra["vision_detail"].(string)
+	visionDetail = strings.ToLower(strings.TrimSpace(visionDetail))
+	if visionDetail != "low" && visionDetail != "high" {
+		visionDetail = "" // auto — omit the field
+	}
 	deepseek := protocol == "deepseek" || (protocol == "" && IsDeepSeek(cfg.BaseURL))
 	minimax := protocol == "" && IsMiniMax(cfg.BaseURL)
 	switch {
@@ -104,16 +111,19 @@ func New(cfg provider.Config) (provider.Provider, error) {
 		return nil, fmt.Errorf("openai: network: %w", err)
 	}
 	return &client{
-		name:        name,
-		apiKey:      cfg.APIKey,
-		keyEnv:      keyEnv,
-		baseURL:     strings.TrimRight(cfg.BaseURL, "/"),
-		model:       cfg.Model,
-		deepseek:    deepseek,
-		minimax:     minimax,
-		effort:      effort,
-		http:        httpClient,
-		idleTimeout: defaultStreamIdleTimeout,
+		name:         name,
+		apiKey:       cfg.APIKey,
+		keyEnv:       keyEnv,
+		keySource:    keySource,
+		baseURL:      strings.TrimRight(cfg.BaseURL, "/"),
+		model:        cfg.Model,
+		deepseek:     deepseek,
+		minimax:      minimax,
+		vision:       vision,
+		visionDetail: visionDetail,
+		effort:       effort,
+		http:         httpClient,
+		idleTimeout:  defaultStreamIdleTimeout,
 	}, nil
 }
 
@@ -128,17 +138,20 @@ func newHTTPClient(cfg provider.Config) (*http.Client, error) {
 }
 
 type client struct {
-	name        string
-	apiKey      string
-	keyEnv      string // api_key_env name, surfaced in auth errors
-	baseURL     string
-	model       string
-	http        *http.Client
-	deepseek    bool
-	minimax     bool          // true for api.minimaxi.com — emits MiniMax-M3's thinking knob instead of reasoning_effort
-	effort      string        // reasoning_effort for OpenAI; thinking.type for MiniMax; "" = auto/provider default
-	idleTimeout time.Duration // SSE stall watchdog window; defaultStreamIdleTimeout unless a test overrides
-	authed      atomic.Bool   // a request has succeeded — gate transient-401 retry
+	name         string
+	apiKey       string
+	keyEnv       string // api_key_env name, surfaced in auth errors
+	keySource    string // source of keyEnv, surfaced in auth errors
+	baseURL      string
+	model        string
+	http         *http.Client
+	deepseek     bool
+	minimax      bool          // true for api.minimaxi.com — emits MiniMax-M3's thinking knob instead of reasoning_effort
+	vision       bool          // model accepts image input — embed attached images as image_url parts
+	visionDetail string        // image_url detail hint (low|high); "" = auto/omit
+	effort       string        // reasoning_effort for OpenAI; thinking.type for MiniMax; "" = auto/provider default
+	idleTimeout  time.Duration // SSE stall watchdog window; defaultStreamIdleTimeout unless a test overrides
+	authed       atomic.Bool   // a request has succeeded — gate transient-401 retry
 }
 
 func (c *client) Name() string { return c.name }
@@ -147,6 +160,7 @@ func (c *client) sendOpts() provider.SendOptions {
 	return provider.SendOptions{
 		Provider:   c.name,
 		KeyEnv:     c.keyEnv,
+		KeySource:  c.keySource,
 		KeyPresent: c.apiKey != "",
 		RetryAuth:  c.authed.Load(),
 	}
@@ -186,7 +200,9 @@ func (c *client) Stream(ctx context.Context, req provider.Request) (<-chan provi
 			return nil, err
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+		if c.apiKey != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+		}
 		httpReq.Header.Set("Accept", "text/event-stream")
 		return httpReq, nil
 	}
@@ -218,23 +234,37 @@ func (c *client) streamWithReconnect(ctx context.Context, resp *http.Response, n
 			return
 		}
 		if !provider.IsConnReset(err) {
-			out <- provider.Chunk{Type: provider.ChunkError, Err: err}
+			sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkError, Err: err})
 			return
 		}
 		if emitted {
-			out <- provider.Chunk{Type: provider.ChunkError, Err: &provider.StreamInterruptedError{Err: err}}
+			sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkError, Err: &provider.StreamInterruptedError{Err: err}})
 			return
 		}
 		if attempt >= maxStreamReconnects {
-			out <- provider.Chunk{Type: provider.ChunkError, Err: err}
+			sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkError, Err: err})
 			return
 		}
 		next, rerr := provider.SendWithRetry(ctx, c.http, c.sendOpts(), newReq)
 		if rerr != nil {
-			out <- provider.Chunk{Type: provider.ChunkError, Err: rerr}
+			sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkError, Err: rerr})
 			return
 		}
 		resp = next
+	}
+}
+
+func sendChunk(ctx context.Context, out chan<- provider.Chunk, chunk provider.Chunk) bool {
+	select {
+	case out <- chunk:
+		return true
+	default:
+	}
+	select {
+	case <-ctx.Done():
+		return false
+	case out <- chunk:
+		return true
 	}
 }
 
@@ -262,9 +292,11 @@ func (c *client) buildRequest(req provider.Request) chatRequest {
 			wire.Function.Arguments = tc.Arguments
 			cm.ToolCalls = append(cm.ToolCalls, wire)
 		}
-		if m.Role != provider.RoleAssistant || len(cm.ToolCalls) == 0 || m.Content != "" {
-			content := m.Content
-			cm.Content = &content
+		switch {
+		case c.vision && m.Role == provider.RoleUser && len(m.Images) > 0:
+			cm.Content = imageContentParts(m.Content, m.Images, c.visionDetail)
+		case m.Role != provider.RoleAssistant || len(cm.ToolCalls) == 0 || m.Content != "":
+			cm.Content = m.Content
 		}
 		msgs[i] = cm
 	}
@@ -393,7 +425,9 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 			u := normaliseUsage(sr.Usage)
 			u.FinishReason = lastFinishReason
 			emitted = true
-			out <- provider.Chunk{Type: provider.ChunkUsage, Usage: u}
+			if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkUsage, Usage: u}) {
+				return emitted, ctx.Err()
+			}
 		}
 		if len(sr.Choices) == 0 {
 			continue
@@ -402,17 +436,23 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 		delta := sr.Choices[0].Delta
 		if delta.ReasoningContent != "" {
 			emitted = true
-			out <- provider.Chunk{Type: provider.ChunkReasoning, Text: delta.ReasoningContent}
+			if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkReasoning, Text: delta.ReasoningContent}) {
+				return emitted, ctx.Err()
+			}
 		}
 		if delta.Content != "" {
 			r, txt := think.push(delta.Content)
 			if r != "" {
 				emitted = true
-				out <- provider.Chunk{Type: provider.ChunkReasoning, Text: r}
+				if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkReasoning, Text: r}) {
+					return emitted, ctx.Err()
+				}
 			}
 			if txt != "" {
 				emitted = true
-				out <- provider.Chunk{Type: provider.ChunkText, Text: txt}
+				if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkText, Text: txt}) {
+					return emitted, ctx.Err()
+				}
 			}
 		}
 		for _, tc := range delta.ToolCalls {
@@ -435,11 +475,16 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 			if !started[tc.Index] && cur.Name != "" {
 				started[tc.Index] = true
 				emitted = true
-				out <- provider.Chunk{Type: provider.ChunkToolCallStart, ToolCall: &provider.ToolCall{ID: cur.ID, Name: cur.Name}}
+				if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkToolCallStart, ToolCall: &provider.ToolCall{ID: cur.ID, Name: cur.Name}}) {
+					return emitted, ctx.Err()
+				}
 			}
 		}
 	}
 
+	if err := ctx.Err(); err != nil {
+		return emitted, err
+	}
 	if stalled.Load() {
 		return emitted, fmt.Errorf("%s: stream stalled — no data for %s, connection likely dropped", c.name, idleTimeout)
 	}
@@ -455,10 +500,14 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 
 	if r, txt := think.flush(); r != "" || txt != "" {
 		if r != "" {
-			out <- provider.Chunk{Type: provider.ChunkReasoning, Text: r}
+			if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkReasoning, Text: r}) {
+				return emitted, ctx.Err()
+			}
 		}
 		if txt != "" {
-			out <- provider.Chunk{Type: provider.ChunkText, Text: txt}
+			if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkText, Text: txt}) {
+				return emitted, ctx.Err()
+			}
 		}
 	}
 
@@ -471,9 +520,13 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 			// an empty tool_call_id collapses multi-tool turns downstream.
 			tc.ID = fmt.Sprintf("call_%d", idx)
 		}
-		out <- provider.Chunk{Type: provider.ChunkToolCall, ToolCall: tc}
+		if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkToolCall, ToolCall: tc}) {
+			return emitted, ctx.Err()
+		}
 	}
-	out <- provider.Chunk{Type: provider.ChunkDone}
+	if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkDone}) {
+		return emitted, ctx.Err()
+	}
 	return emitted, nil
 }
 
@@ -531,14 +584,36 @@ type chatMessage struct {
 	Role string `json:"role"`
 	// content is always present (never omitted): DeepSeek's strict deserializer
 	// rejects a message missing the field. A pure tool_calls assistant turn
-	// serializes as null (OpenAI-spec, and what strict clones expect); every
-	// other role/message serializes as a string, empty included — null is
-	// rejected by some backends for a tool message.
-	Content          *string        `json:"content"`
+	// serializes as null (nil here); a string for every other text message
+	// (empty included — null is rejected by some backends for a tool message);
+	// and a []chatContentPart array for a vision user turn carrying images.
+	Content          any            `json:"content"`
 	ReasoningContent string         `json:"reasoning_content,omitempty"`
 	ToolCalls        []chatToolCall `json:"tool_calls,omitempty"`
 	ToolCallID       string         `json:"tool_call_id,omitempty"`
 	Name             string         `json:"name,omitempty"`
+}
+
+type chatContentPart struct {
+	Type     string        `json:"type"`
+	Text     string        `json:"text,omitempty"`
+	ImageURL *chatImageURL `json:"image_url,omitempty"`
+}
+
+type chatImageURL struct {
+	URL    string `json:"url"`
+	Detail string `json:"detail,omitempty"`
+}
+
+func imageContentParts(text string, images []string, detail string) []chatContentPart {
+	parts := make([]chatContentPart, 0, len(images)+1)
+	if text != "" {
+		parts = append(parts, chatContentPart{Type: "text", Text: text})
+	}
+	for _, url := range images {
+		parts = append(parts, chatContentPart{Type: "image_url", ImageURL: &chatImageURL{URL: url, Detail: detail}})
+	}
+	return parts
 }
 
 type chatTool struct {
@@ -548,17 +623,17 @@ type chatTool struct {
 
 type chatFunction struct {
 	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	Parameters  json.RawMessage `json:"parameters"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters,omitempty"`
 }
 
 type chatToolCall struct {
-	Index    int    `json:"index"`
+	Index    int    `json:"index,omitempty"`
 	ID       string `json:"id,omitempty"`
 	Type     string `json:"type,omitempty"`
 	Function struct {
-		Name      string `json:"name,omitempty"`
-		Arguments string `json:"arguments,omitempty"`
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
 	} `json:"function"`
 }
 

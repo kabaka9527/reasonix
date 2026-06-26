@@ -122,6 +122,11 @@ func TestReceiptFromToolCallExtractsEvidenceFields(t *testing.T) {
 	if !read.Read || len(read.Paths) != 1 {
 		t.Fatalf("read receipt not extracted: %+v", read)
 	}
+
+	glob := ReceiptFromToolCall("glob", json.RawMessage(`{"pattern":"**/*.go"}`), true, true)
+	if !glob.Read {
+		t.Fatalf("generic read-only tool should be treated as read context: %+v", glob)
+	}
 }
 
 func TestReceiptFromToolCallExtractsTodoWriteItems(t *testing.T) {
@@ -150,6 +155,38 @@ func TestReceiptFromToolCallExtractsCompleteStep(t *testing.T) {
 
 	if receipt.Step != "Add parser" {
 		t.Fatalf("complete_step step = %q", receipt.Step)
+	}
+	if !receipt.StepProof {
+		t.Fatalf("complete_step evidence proof not extracted: %+v", receipt)
+	}
+	if receipt.Read {
+		t.Fatalf("complete_step should not be treated as read-only context: %+v", receipt)
+	}
+
+	missingResult := ReceiptFromToolCall("complete_step", json.RawMessage(`{
+		"step":"Add parser",
+		"evidence":[{"kind":"manual","summary":"checked manually"}]
+	}`), false, true)
+	if missingResult.StepProof {
+		t.Fatalf("complete_step without result should not count as proof: %+v", missingResult)
+	}
+
+	missingCommand := ReceiptFromToolCall("complete_step", json.RawMessage(`{
+		"step":"Add parser",
+		"result":"parser added",
+		"evidence":[{"kind":"verification","summary":"checked manually"}]
+	}`), false, true)
+	if missingCommand.StepProof {
+		t.Fatalf("verification evidence without command should not count as proof: %+v", missingCommand)
+	}
+
+	emptyProof := ReceiptFromToolCall("complete_step", json.RawMessage(`{
+		"step":"Add parser",
+		"result":"parser added",
+		"evidence":[]
+	}`), false, true)
+	if emptyProof.StepProof {
+		t.Fatalf("empty complete_step evidence should not count as proof: %+v", emptyProof)
 	}
 }
 
@@ -279,7 +316,7 @@ func TestLedgerRequiresCompleteStepForNewCompletedTodos(t *testing.T) {
 		t.Fatal("expected prior todo_write baseline after failed complete_step")
 	}
 	if len(missing) != 1 || missing[0].Content != "Add parser" {
-		t.Fatalf("failed complete_step should not authorize completion, missing = %+v", missing)
+		t.Fatalf("failed complete_step without proof-bearing recovery should not authorize completion, missing = %+v", missing)
 	}
 
 	ledger.Record(Receipt{ToolName: "complete_step", Success: true, Step: "Add parser"})

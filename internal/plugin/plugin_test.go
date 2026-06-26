@@ -95,6 +95,137 @@ func TestSpecReadOnlyToolNamesMarksUnhintedToolsReadOnly(t *testing.T) {
 	}
 }
 
+func TestSpecReadOnlyModelToolNamesMarksVisibleToolsTrusted(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	spec := Spec{
+		Name:    "mock",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestHelperProcess", "--"},
+		Env:     map[string]string{"GO_WANT_HELPER_PROCESS": "1"},
+		ReadOnlyModelToolNames: map[string]bool{
+			"mcp__mock__echo": true,
+		},
+	}
+
+	host, tools, err := StartAll(ctx, []Spec{spec})
+	if err != nil {
+		t.Fatalf("StartAll: %v", err)
+	}
+	defer host.Close()
+
+	byName := map[string]tool.Tool{}
+	for _, tl := range tools {
+		byName[tl.Name()] = tl
+	}
+	echo := byName["mcp__mock__echo"]
+	if echo == nil {
+		t.Fatalf("mcp__mock__echo missing from %v", byName)
+	}
+	if !echo.ReadOnly() {
+		t.Fatal("model-visible read-only override did not mark echo tool read-only")
+	}
+	if u, ok := echo.(tool.PlanModeUntrustedReadOnly); ok && u.PlanModeUntrustedReadOnly() {
+		t.Fatal("model-visible read-only override should be trusted in plan mode")
+	}
+	zed := byName["mcp__mock__zed"]
+	if zed == nil {
+		t.Fatalf("mcp__mock__zed missing from %v", byName)
+	}
+	if zed.ReadOnly() {
+		t.Fatal("model-visible read-only override should not mark non-listed tools read-only")
+	}
+}
+
+func TestApplyKnownReadOnlyOverridesMarksCodeGraphReadTools(t *testing.T) {
+	got := ApplyKnownReadOnlyOverrides(Spec{Name: "codegraph", ReadOnlyToolNames: map[string]bool{"custom": true}})
+	for _, name := range []string{"custom", "codegraph_context", "codegraph_search", "context", "search"} {
+		if !got.ReadOnlyToolNames[name] {
+			t.Fatalf("codegraph read-only override missing %q: %+v", name, got.ReadOnlyToolNames)
+		}
+	}
+
+	other := ApplyKnownReadOnlyOverrides(Spec{Name: "not-codegraph"})
+	if other.ReadOnlyToolNames["codegraph_context"] {
+		t.Fatalf("non-codegraph spec should not receive codegraph overrides: %+v", other.ReadOnlyToolNames)
+	}
+}
+
+func TestApplyKnownOverridesPinsCodeGraphStdioToWorkspace(t *testing.T) {
+	got := ApplyKnownOverrides(Spec{Name: "codegraph"}, "/workspace")
+	if got.Dir != "/workspace" {
+		t.Fatalf("codegraph stdio Dir = %q, want workspace root", got.Dir)
+	}
+	if !got.ReadOnlyToolNames["codegraph_search"] {
+		t.Fatalf("codegraph read-only override missing: %+v", got.ReadOnlyToolNames)
+	}
+	if got.Env[codeGraphDaemonIdleTimeoutEnv] != codeGraphDaemonIdleTimeoutDefaultMS {
+		t.Fatalf("codegraph daemon idle timeout env = %q, want %s; env=%v", got.Env[codeGraphDaemonIdleTimeoutEnv], codeGraphDaemonIdleTimeoutDefaultMS, got.Env)
+	}
+
+	preset := ApplyKnownOverrides(Spec{Name: "codegraph", Dir: "/custom"}, "/workspace")
+	if preset.Dir != "/custom" {
+		t.Fatalf("existing Dir should be preserved, got %q", preset.Dir)
+	}
+
+	httpSpec := ApplyKnownOverrides(Spec{Name: "codegraph", Type: "http"}, "/workspace")
+	if httpSpec.Dir != "" {
+		t.Fatalf("http codegraph should not receive stdio Dir, got %q", httpSpec.Dir)
+	}
+	if _, ok := httpSpec.Env[codeGraphDaemonIdleTimeoutEnv]; ok {
+		t.Fatalf("http codegraph should not receive daemon idle env, got %+v", httpSpec.Env)
+	}
+
+	other := ApplyKnownOverrides(Spec{Name: "other"}, "/workspace")
+	if other.Dir != "" {
+		t.Fatalf("non-codegraph should not receive Dir, got %q", other.Dir)
+	}
+	if _, ok := other.Env[codeGraphDaemonIdleTimeoutEnv]; ok {
+		t.Fatalf("non-codegraph should not receive daemon idle env, got %+v", other.Env)
+	}
+}
+
+func TestApplyKnownOverridesPinsCodebaseMemoryToWorkspace(t *testing.T) {
+	got := ApplyKnownOverrides(Spec{Name: "codebase-memory-mcp"}, "/workspace")
+	if got.Dir != "/workspace" {
+		t.Fatalf("codebase-memory-mcp stdio Dir = %q, want workspace root", got.Dir)
+	}
+	if !got.LowPriority {
+		t.Fatalf("codebase-memory-mcp should run at low priority")
+	}
+
+	preset := ApplyKnownOverrides(Spec{Name: "codebase-memory-mcp", Dir: "/custom"}, "/workspace")
+	if preset.Dir != "/custom" {
+		t.Fatalf("existing Dir should be preserved, got %q", preset.Dir)
+	}
+
+	httpSpec := ApplyKnownOverrides(Spec{Name: "codebase-memory-mcp", Type: "http"}, "/workspace")
+	if httpSpec.Dir != "" {
+		t.Fatalf("http codebase-memory-mcp should not receive stdio Dir, got %q", httpSpec.Dir)
+	}
+
+	npxSpec := ApplyKnownOverrides(Spec{
+		Name:    "custom",
+		Command: "npx",
+		Args:    []string{"-y", "codebase-memory-mcp@latest"},
+	}, "/workspace")
+	if npxSpec.Dir != "/workspace" || !npxSpec.LowPriority {
+		t.Fatalf("npx codebase-memory-mcp override missing: %+v", npxSpec)
+	}
+}
+
+func TestApplyKnownOverridesPreservesConfiguredCodeGraphDaemonIdleTimeout(t *testing.T) {
+	got := ApplyKnownOverrides(Spec{
+		Name: "codegraph",
+		Env:  map[string]string{codeGraphDaemonIdleTimeoutEnv: "30000"},
+	}, "/workspace")
+
+	if got.Env[codeGraphDaemonIdleTimeoutEnv] != "30000" {
+		t.Fatalf("configured codegraph daemon idle timeout was overwritten: %+v", got.Env)
+	}
+}
+
 func TestStartAvailableKeepsGoodServers(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -639,5 +770,64 @@ func TestHelperProcess(t *testing.T) {
 		resp := map[string]any{"jsonrpc": "2.0", "id": *req.ID, "result": result}
 		b, _ := json.Marshal(resp)
 		os.Stdout.Write(append(b, '\n'))
+	}
+}
+
+// TestReadOnlyTrustDoesNotChangeModelVisibleSchema locks the cache invariant
+// behind the MCP trust controls: marking a tool trusted read-only changes its
+// execution/approval flags (ReadOnly / PlanModeUntrustedReadOnly) but must not
+// alter the model-visible tool name or input schema. If trust leaked into the
+// provider-visible tool list/schema, every trust toggle would break the stable
+// prompt prefix and drop the prompt-cache hit rate.
+func TestReadOnlyTrustDoesNotChangeModelVisibleSchema(t *testing.T) {
+	startMockEcho := func(spec Spec) (*Host, map[string]tool.Tool) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		t.Cleanup(cancel)
+		spec.Name = "mock"
+		spec.Command = os.Args[0]
+		spec.Args = []string{"-test.run=TestHelperProcess", "--"}
+		spec.Env = map[string]string{"GO_WANT_HELPER_PROCESS": "1"}
+		host, tools, err := StartAll(ctx, []Spec{spec})
+		if err != nil {
+			t.Fatalf("StartAll: %v", err)
+		}
+		t.Cleanup(func() { host.Close() })
+		byName := map[string]tool.Tool{}
+		for _, tl := range tools {
+			byName[tl.Name()] = tl
+		}
+		return host, byName
+	}
+
+	_, untrusted := startMockEcho(Spec{})
+	_, trusted := startMockEcho(Spec{ReadOnlyModelToolNames: map[string]bool{"mcp__mock__echo": true}})
+
+	base, ok := untrusted["mcp__mock__echo"]
+	if !ok {
+		t.Fatalf("mcp__mock__echo missing from untrusted tools %v", untrusted)
+	}
+	trustedEcho, ok := trusted["mcp__mock__echo"]
+	if !ok {
+		t.Fatalf("mcp__mock__echo missing from trusted tools %v", trusted)
+	}
+
+	// The model-visible surface (name + schema bytes) must be byte-identical.
+	if base.Name() != trustedEcho.Name() {
+		t.Fatalf("trust changed model-visible tool name: %q vs %q", base.Name(), trustedEcho.Name())
+	}
+	if got, want := string(trustedEcho.Schema()), string(base.Schema()); got != want {
+		t.Fatalf("trust changed model-visible schema bytes:\n trusted=%s\n   base=%s", got, want)
+	}
+
+	// Trust only flips the execution/approval flags.
+	if base.ReadOnly() {
+		t.Fatal("untrusted echo should not be read-only without a hint")
+	}
+	if !trustedEcho.ReadOnly() {
+		t.Fatal("trusted echo should be marked read-only")
+	}
+	if u, ok := trustedEcho.(tool.PlanModeUntrustedReadOnly); ok && u.PlanModeUntrustedReadOnly() {
+		t.Fatal("trusted echo should be trusted in plan mode")
 	}
 }

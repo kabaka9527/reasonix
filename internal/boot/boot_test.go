@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -21,7 +20,6 @@ import (
 
 	"reasonix/internal/agent"
 	"reasonix/internal/agent/testutil"
-	"reasonix/internal/builtinmcp"
 	"reasonix/internal/config"
 	"reasonix/internal/event"
 	"reasonix/internal/memory"
@@ -37,6 +35,18 @@ import (
 	_ "reasonix/internal/provider/openai"
 )
 
+func TestAgentKeepPolicyFromConfig(t *testing.T) {
+	if got := agentKeepPolicy(nil); got != agent.KeepErrors {
+		t.Fatalf("nil keep policy = %v, want KeepErrors", got)
+	}
+	if got := agentKeepPolicy([]string{}); got != 0 {
+		t.Fatalf("empty keep policy = %v, want 0", got)
+	}
+	if got := agentKeepPolicy([]string{"errors", "user_marked"}); got != agent.KeepErrors|agent.KeepUserMarked {
+		t.Fatalf("combined keep policy = %v, want errors|user_marked", got)
+	}
+}
+
 // TestBuildFoldsProjectMemoryIntoSystemPrompt is the end-to-end proof of the
 // cache-first wiring: a project REASONIX.md is discovered at boot and folded
 // into the session's system message (the cached prefix), and the `remember`
@@ -47,9 +57,6 @@ func TestBuildFoldsProjectMemoryIntoSystemPrompt(t *testing.T) {
 
 	writeFile(t, dir, "reasonix.toml", `
 default_model = "test-model"
-
-[codegraph]
-enabled = false
 
 [agent]
 system_prompt = "BASE SYSTEM PROMPT"
@@ -88,7 +95,7 @@ api_key_env = "REASONIX_TEST_KEY_UNSET"
 	}
 }
 
-func TestBuildRegistersUsableHistoryAndMemoryRetrievalTools(t *testing.T) {
+func TestBuildRunsCleanupPendingReconciler(t *testing.T) {
 	isolateConfigHome(t)
 	dir := robustTempDir(t)
 	t.Chdir(dir)
@@ -96,8 +103,44 @@ func TestBuildRegistersUsableHistoryAndMemoryRetrievalTools(t *testing.T) {
 	writeFile(t, dir, "reasonix.toml", `
 default_model = "test-model"
 
-[codegraph]
-enabled = false
+[agent]
+system_prompt = "BASE"
+
+[[providers]]
+name = "test-model"
+kind = "openai"
+base_url = "https://example.invalid"
+model = "x"
+api_key_env = "REASONIX_TEST_KEY_UNSET"
+`)
+	sessionDir := filepath.Join(t.TempDir(), "sessions")
+	called := false
+	ctrl, err := Build(context.Background(), Options{
+		SessionDir: sessionDir,
+		CleanupPendingReconciler: func(got string) error {
+			called = true
+			if filepath.Clean(got) != filepath.Clean(sessionDir) {
+				t.Fatalf("reconciler dir = %q, want %q", got, sessionDir)
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer ctrl.Close()
+	if !called {
+		t.Fatal("cleanup-pending reconciler was not called")
+	}
+}
+
+func TestBuildRegistersUsableHistoryAndMemoryRetrievalTools(t *testing.T) {
+	isolateConfigHome(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+
+	writeFile(t, dir, "reasonix.toml", `
+default_model = "test-model"
 
 [agent]
 system_prompt = "BASE"
@@ -263,6 +306,15 @@ func requestHasTool(req provider.Request, name string) bool {
 	return false
 }
 
+func requestToolSchemaContains(req provider.Request, name, want string) bool {
+	for _, schema := range req.Tools {
+		if schema.Name == name {
+			return strings.Contains(string(schema.Parameters), want)
+		}
+	}
+	return false
+}
+
 func requestHasToolPrefix(req provider.Request, prefix string) bool {
 	for _, schema := range req.Tools {
 		if strings.HasPrefix(schema.Name, prefix) {
@@ -330,9 +382,6 @@ func TestBuildSubagentSkillFailedContinuationPersistsTranscript(t *testing.T) {
 	writeFile(t, dir, "reasonix.toml", `
 default_model = "test-model"
 
-[codegraph]
-enabled = false
-
 [agent]
 system_prompt = "BASE"
 
@@ -380,6 +429,191 @@ model = "x"
 	}
 }
 
+func TestBuildSubagentStoreHonorsSessionDirOverride(t *testing.T) {
+	isolateConfigHome(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+
+	registerBootSubagentTestProvider()
+	prov := &bootSubagentTestProvider{}
+	setBootSubagentTestProvider(t, prov)
+	writeFile(t, dir, "reasonix.toml", `
+default_model = "test-model"
+
+[agent]
+system_prompt = "BASE"
+
+[[providers]]
+name = "test-model"
+kind = "boot-subagent-test"
+model = "x"
+`)
+
+	sessionDir := filepath.Join(t.TempDir(), "desktop-workspace-sessions")
+	ctrl, err := Build(context.Background(), Options{Sink: event.Discard, SessionDir: sessionDir})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer ctrl.Close()
+	sessionPath := agent.NewSessionPath(ctrl.SessionDir(), ctrl.Label())
+	ctrl.SetSessionPath(sessionPath)
+
+	if err := ctrl.Run(context.Background(), "first review"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	ref := subagentRefFromHistory(t, ctrl.History())
+
+	overrideStore := agent.NewSubagentStore(filepath.Join(sessionDir, "subagents"))
+	meta, err := overrideStore.LoadMeta(ref)
+	if err != nil {
+		t.Fatalf("LoadMeta from override dir: %v", err)
+	}
+	if meta.ParentSession != agent.BranchID(sessionPath) {
+		t.Fatalf("parent session = %q, want %q", meta.ParentSession, agent.BranchID(sessionPath))
+	}
+	if _, err := os.Stat(filepath.Join(config.SessionDir(), "subagents", ref+".meta.json")); !os.IsNotExist(err) {
+		t.Fatalf("subagent metadata should not be written to global session dir, stat err = %v", err)
+	}
+}
+
+func TestBuildSubagentSkillUsesLiveReasoningLanguage(t *testing.T) {
+	isolateConfigHome(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+
+	registerBootSubagentTestProvider()
+	prov := &bootSubagentTestProvider{}
+	setBootSubagentTestProvider(t, prov)
+	writeFile(t, dir, "reasonix.toml", `
+default_model = "test-model"
+
+[agent]
+system_prompt = "BASE"
+reasoning_language = "zh"
+
+[[providers]]
+name = "test-model"
+kind = "boot-subagent-test"
+model = "x"
+`)
+
+	ctrl, err := Build(context.Background(), Options{Sink: event.Discard})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer ctrl.Close()
+	ctrl.SetReasoningLanguage("auto")
+
+	if err := ctrl.Run(context.Background(), "first review"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	reqs := prov.requestsSnapshot()
+	if len(reqs) < 2 {
+		t.Fatalf("provider requests = %d, want parent request plus skill subagent request", len(reqs))
+	}
+	if got := bootLastUser(reqs[1]); strings.Contains(got, "<reasoning-language>") {
+		t.Fatalf("skill subagent kept stale boot-time reasoning language after live auto update: %q", got)
+	}
+	if got := bootLastUser(reqs[1]); got != "first skill task" {
+		t.Fatalf("skill subagent user prompt = %q, want first skill task", got)
+	}
+}
+
+func TestBuildUsesConfiguredLanguageForResponsePreference(t *testing.T) {
+	isolateConfigHome(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+
+	registerBootSubagentTestProvider()
+	prov := &bootSubagentTestProvider{}
+	setBootSubagentTestProvider(t, prov)
+	writeFile(t, dir, "reasonix.toml", `
+default_model = "test-model"
+language = "en"
+
+[agent]
+system_prompt = "BASE"
+
+[[providers]]
+name = "test-model"
+kind = "boot-subagent-test"
+model = "x"
+`)
+
+	ctrl, err := Build(context.Background(), Options{Sink: event.Discard})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer ctrl.Close()
+
+	if err := ctrl.Run(context.Background(), "first review"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	reqs := prov.requestsSnapshot()
+	if len(reqs) == 0 {
+		t.Fatal("provider requests = 0, want at least one")
+	}
+	if got := bootLastUser(reqs[0]); !strings.Contains(got, "<response-language>") || !strings.Contains(got, "use English") {
+		t.Fatalf("first user turn = %q, want English response preference", got)
+	}
+}
+
+func TestBuildSubagentSkillGetsForegroundOnlyBash(t *testing.T) {
+	isolateConfigHome(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+
+	registerBootSubagentTestProvider()
+	prov := &bootSubagentTestProvider{}
+	setBootSubagentTestProvider(t, prov)
+	writeFile(t, dir, "reasonix.toml", `
+default_model = "test-model"
+
+[agent]
+system_prompt = "BASE"
+
+[[providers]]
+name = "test-model"
+kind = "boot-subagent-test"
+model = "x"
+`)
+
+	ctrl, err := Build(context.Background(), Options{Sink: event.Discard})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer ctrl.Close()
+	ctrl.SetSessionPath(agent.NewSessionPath(ctrl.SessionDir(), ctrl.Label()))
+
+	if err := ctrl.Run(context.Background(), "first review"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	reqs := prov.requestsSnapshot()
+	if len(reqs) < 2 {
+		t.Fatalf("provider requests = %d, want parent request plus skill subagent request", len(reqs))
+	}
+	parentReq, subReq := reqs[0], reqs[1]
+	for _, want := range []string{"task", "bash", "wait", "bash_output", "kill_shell"} {
+		if !requestHasTool(parentReq, want) {
+			t.Fatalf("parent request missing %q; tools=%v", want, toolSchemaNames(parentReq.Tools))
+		}
+	}
+	if !requestToolSchemaContains(parentReq, "bash", "run_in_background") {
+		t.Fatalf("parent bash schema should include run_in_background")
+	}
+	for _, hidden := range []string{"task", "run_skill", "read_only_skill", "read_skill", "install_skill", "install_source", "explore", "research", "review", "security_review", "wait", "bash_output", "kill_shell"} {
+		if requestHasTool(subReq, hidden) {
+			t.Fatalf("skill subagent request should hide %q; tools=%v", hidden, toolSchemaNames(subReq.Tools))
+		}
+	}
+	if !requestHasTool(subReq, "bash") {
+		t.Fatalf("skill subagent request should keep foreground bash; tools=%v", toolSchemaNames(subReq.Tools))
+	}
+	if requestToolSchemaContains(subReq, "bash", "run_in_background") {
+		t.Fatalf("skill subagent bash schema should not include run_in_background")
+	}
+}
+
 const bootSubagentTestProviderKind = "boot-subagent-test"
 
 var (
@@ -419,6 +653,7 @@ type bootSubagentTestProvider struct {
 	mu          sync.Mutex
 	calls       int
 	continueRef string
+	requests    []provider.Request
 }
 
 func (p *bootSubagentTestProvider) Name() string { return "boot-subagent-test" }
@@ -429,11 +664,12 @@ func (p *bootSubagentTestProvider) setContinueRef(ref string) {
 	p.continueRef = ref
 }
 
-func (p *bootSubagentTestProvider) Stream(context.Context, provider.Request) (<-chan provider.Chunk, error) {
+func (p *bootSubagentTestProvider) Stream(_ context.Context, req provider.Request) (<-chan provider.Chunk, error) {
 	p.mu.Lock()
 	call := p.calls
 	p.calls++
 	ref := p.continueRef
+	p.requests = append(p.requests, req)
 	p.mu.Unlock()
 
 	var chunks []provider.Chunk
@@ -460,6 +696,23 @@ func (p *bootSubagentTestProvider) Stream(context.Context, provider.Request) (<-
 	}
 	close(ch)
 	return ch, nil
+}
+
+func (p *bootSubagentTestProvider) requestsSnapshot() []provider.Request {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]provider.Request, len(p.requests))
+	copy(out, p.requests)
+	return out
+}
+
+func bootLastUser(req provider.Request) string {
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		if req.Messages[i].Role == provider.RoleUser {
+			return req.Messages[i].Content
+		}
+	}
+	return ""
 }
 
 func subagentRefFromHistory(t *testing.T, msgs []provider.Message) string {
@@ -492,9 +745,6 @@ func TestBuildHeadlessRunRunsTaskSubagentWithoutSessionPath(t *testing.T) {
 	setHeadlessTaskTestProvider(t, prov)
 	writeFile(t, dir, "reasonix.toml", `
 default_model = "test-model"
-
-[codegraph]
-enabled = false
 
 [agent]
 system_prompt = "BASE"
@@ -690,9 +940,6 @@ func TestBuildHonorsSessionDirOverride(t *testing.T) {
 	writeFile(t, dir, "reasonix.toml", `
 default_model = "test-model"
 
-[codegraph]
-enabled = false
-
 [[providers]]
 name = "test-model"
 kind = "openai"
@@ -724,9 +971,6 @@ func TestBuildDiscoversSkills(t *testing.T) {
 	t.Chdir(dir)
 	writeFile(t, dir, "reasonix.toml", `
 default_model = "test-model"
-
-[codegraph]
-enabled = false
 
 [agent]
 system_prompt = "BASE"
@@ -776,9 +1020,6 @@ func TestBuildTokenFullMatchesDefaultRequestPrefix(t *testing.T) {
 	writeFile(t, dir, "reasonix.toml", `
 default_model = "test-model"
 
-[codegraph]
-enabled = false
-
 [agent]
 system_prompt = "BASE"
 
@@ -823,9 +1064,6 @@ func TestBuildTokenEconomyStartsWithLeanToolSurface(t *testing.T) {
 	writeFile(t, dir, "reasonix.toml", `
 default_model = "test-model"
 
-[codegraph]
-enabled = false
-
 [agent]
 system_prompt = "BASE"
 
@@ -857,6 +1095,7 @@ command = "reasonix-missing-mockmcp"
 		"ask",
 		"bash",
 		"bash_output",
+		"code_index",
 		"complete_step",
 		"connect_tool_source",
 		"edit_file",
@@ -865,10 +1104,13 @@ command = "reasonix-missing-mockmcp"
 		"grep",
 		"history",
 		"kill_shell",
+		"list_sessions",
 		"ls",
 		"memory",
+		"move_file",
 		"multi_edit",
 		"read_file",
+		"read_session",
 		"remember",
 		"slash_command",
 		"todo_write",
@@ -884,7 +1126,7 @@ command = "reasonix-missing-mockmcp"
 		}
 	}
 	for _, forbidden := range []string{
-		"web_fetch", "task", "run_skill", "read_skill", "install_skill", "install_source",
+		"web_fetch", "task", "read_only_task", "read_only_skill", "run_skill", "read_skill", "install_skill", "install_source",
 		"explore", "research", "review", "security_review",
 		"lsp_definition", "lsp_references", "lsp_hover", "lsp_diagnostics",
 	} {
@@ -919,9 +1161,6 @@ func TestBuildTokenEconomyConnectsWebFetchOnDemand(t *testing.T) {
 	setBootTokenProfileTestProvider(t, prov)
 	writeFile(t, dir, "reasonix.toml", `
 default_model = "test-model"
-
-[codegraph]
-enabled = false
 
 [agent]
 system_prompt = "BASE"
@@ -968,9 +1207,6 @@ func TestBuildTokenEconomyPlanModeCanConnectWebFetch(t *testing.T) {
 	writeFile(t, dir, "reasonix.toml", `
 default_model = "test-model"
 
-[codegraph]
-enabled = false
-
 [agent]
 system_prompt = "BASE"
 
@@ -1003,6 +1239,436 @@ model = "x"
 	}
 }
 
+func TestBuildTokenEconomyPlanModeCanConnectReadOnlyTask(t *testing.T) {
+	isolateConfigHome(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+
+	registerBootTokenProfileTestProvider()
+	prov := testutil.NewMock("token-economy",
+		testutil.Turn{ToolCalls: []provider.ToolCall{
+			{ID: "source-1", Name: "connect_tool_source", Arguments: `{"source":"read_only_subagent"}`},
+		}},
+		testutil.Turn{ToolCalls: []provider.ToolCall{
+			{ID: "readonly-1", Name: "read_only_task", Arguments: `{"prompt":"inspect safely"}`},
+		}},
+		testutil.Turn{Text: "read-only findings"},
+		testutil.Turn{Text: "done"},
+	)
+	setBootTokenProfileTestProvider(t, prov)
+	writeFile(t, dir, "reasonix.toml", `
+default_model = "test-model"
+
+[agent]
+system_prompt = "BASE"
+
+[[providers]]
+name = "test-model"
+kind = "boot-token-profile-test"
+model = "x"
+`)
+
+	ctrl, err := Build(context.Background(), Options{Sink: event.Discard, TokenMode: TokenModeEconomy})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer ctrl.Close()
+	ctrl.SetPlanMode(true)
+	if err := ctrl.Run(context.Background(), "connect read-only subagent while planning"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	reqs := prov.Requests()
+	if len(reqs) != 4 {
+		t.Fatalf("requests = %d, want 4", len(reqs))
+	}
+	if !requestHasTool(reqs[1], "read_only_task") {
+		t.Fatalf("second request should expose read_only_task in plan economy mode; tools=%v", toolSchemaNames(reqs[1].Tools))
+	}
+	if requestHasTool(reqs[1], "task") {
+		t.Fatalf("read_only_task source should not expose writer-capable task; tools=%v", toolSchemaNames(reqs[1].Tools))
+	}
+	subReq := reqs[2]
+	if !requestHasTool(subReq, "bash") || !requestHasTool(subReq, "read_file") {
+		t.Fatalf("read_only_task child request should keep read-only research tools; tools=%v", toolSchemaNames(subReq.Tools))
+	}
+	if requestToolSchemaContains(subReq, "bash", "run_in_background") {
+		t.Fatalf("read_only_task child bash schema should not advertise run_in_background")
+	}
+	for _, forbidden := range []string{
+		"connect_tool_source", "task", "read_only_task", "parallel_tasks",
+		"install_source", "run_skill", "read_only_skill", "read_skill", "install_skill", "remember", "forget",
+		"write_file", "edit_file", "multi_edit", "move_file", "complete_step",
+	} {
+		if requestHasTool(subReq, forbidden) {
+			t.Fatalf("read_only_task child request should hide %q; tools=%v", forbidden, toolSchemaNames(subReq.Tools))
+		}
+	}
+	for _, msg := range ctrl.History() {
+		if msg.Role == provider.RoleTool && msg.Name == "connect_tool_source" && strings.Contains(msg.Content, "blocked:") {
+			t.Fatalf("connect_tool_source should not block read_only_task in plan mode, got:\n%s", msg.Content)
+		}
+	}
+}
+
+func TestBuildTokenEconomyPlanModeCanConnectReadOnlySkill(t *testing.T) {
+	isolateConfigHome(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+
+	registerBootTokenProfileTestProvider()
+	prov := testutil.NewMock("token-economy",
+		testutil.Turn{ToolCalls: []provider.ToolCall{
+			{ID: "source-1", Name: "connect_tool_source", Arguments: `{"source":"read_only_skill"}`},
+		}},
+		testutil.Turn{ToolCalls: []provider.ToolCall{
+			{ID: "skill-1", Name: "read_only_skill", Arguments: `{"name":"readonlydig","arguments":"inspect safely"}`},
+		}},
+		testutil.Turn{Text: "skill findings"},
+		testutil.Turn{Text: "done"},
+	)
+	setBootTokenProfileTestProvider(t, prov)
+	writeFile(t, dir, "reasonix.toml", `
+default_model = "test-model"
+
+[agent]
+system_prompt = "BASE"
+
+[[providers]]
+name = "test-model"
+kind = "boot-token-profile-test"
+model = "x"
+`)
+	writeFile(t, dir, ".reasonix/skills/readonlydig/SKILL.md", `---
+description: read-only dig
+runAs: subagent
+allowed-tools: read_file, bash, write_file, connect_tool_source, read_only_skill
+---
+READ ONLY SKILL BODY`)
+
+	ctrl, err := Build(context.Background(), Options{Sink: event.Discard, TokenMode: TokenModeEconomy})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer ctrl.Close()
+	ctrl.SetPlanMode(true)
+	if err := ctrl.Run(context.Background(), "connect read-only skill while planning"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	reqs := prov.Requests()
+	if len(reqs) != 4 {
+		t.Fatalf("requests = %d, want 4", len(reqs))
+	}
+	if !requestHasTool(reqs[1], "read_only_skill") {
+		t.Fatalf("second request should expose read_only_skill in plan economy mode; tools=%v", toolSchemaNames(reqs[1].Tools))
+	}
+	for _, forbidden := range []string{"run_skill", "read_skill", "install_skill", "task", "review", "install_source"} {
+		if requestHasTool(reqs[1], forbidden) {
+			t.Fatalf("read_only_skill source should not expose %q; tools=%v", forbidden, toolSchemaNames(reqs[1].Tools))
+		}
+	}
+	subReq := reqs[2]
+	if !strings.Contains(systemMessage(subReq.Messages), "READ ONLY SKILL BODY") {
+		t.Fatalf("read_only_skill child should use the skill body as system prompt:\n%s", systemMessage(subReq.Messages))
+	}
+	if !requestHasTool(subReq, "bash") || !requestHasTool(subReq, "read_file") {
+		t.Fatalf("read_only_skill child request should keep read-only research tools; tools=%v", toolSchemaNames(subReq.Tools))
+	}
+	if requestToolSchemaContains(subReq, "bash", "run_in_background") {
+		t.Fatalf("read_only_skill child bash schema should not advertise run_in_background")
+	}
+	for _, forbidden := range []string{
+		"connect_tool_source", "task", "read_only_task", "read_only_skill", "parallel_tasks",
+		"install_source", "run_skill", "read_skill", "install_skill", "remember", "forget",
+		"write_file", "edit_file", "multi_edit", "move_file", "complete_step",
+	} {
+		if requestHasTool(subReq, forbidden) {
+			t.Fatalf("read_only_skill child request should hide %q; tools=%v", forbidden, toolSchemaNames(subReq.Tools))
+		}
+	}
+	var toolOutput string
+	for _, msg := range ctrl.History() {
+		if msg.Role == provider.RoleTool && msg.Name == "connect_tool_source" {
+			toolOutput += msg.Content
+			if strings.Contains(msg.Content, "blocked:") {
+				t.Fatalf("connect_tool_source should not block read_only_skill in plan mode, got:\n%s", msg.Content)
+			}
+		}
+	}
+	if !strings.Contains(toolOutput, "readonlydig") || !strings.Contains(toolOutput, "# Skills") {
+		t.Fatalf("read_only_skill source result should include the skill index, got:\n%s", toolOutput)
+	}
+}
+
+func TestBuildTokenEconomyPlanModeCanConnectAllowedMCPSource(t *testing.T) {
+	isolateConfigHome(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+
+	registerBootTokenProfileTestProvider()
+	prov := testutil.NewMock("token-economy",
+		testutil.Turn{ToolCalls: []provider.ToolCall{
+			{ID: "source-1", Name: "connect_tool_source", Arguments: `{"source":"mcp","name":"mockmcp"}`},
+		}},
+		testutil.Turn{Text: "done"},
+	)
+	setBootTokenProfileTestProvider(t, prov)
+	writeFile(t, dir, "reasonix.toml", fmt.Sprintf(`
+default_model = "test-model"
+
+[agent]
+system_prompt = "BASE"
+plan_mode_allowed_tools = ["mcp__mockmcp__echo"]
+
+[[providers]]
+name = "test-model"
+kind = "boot-token-profile-test"
+model = "x"
+
+[[plugins]]
+name = "mockmcp"
+command = %q
+args = ["-test.run=TestHelperProcess", "--"]
+env = { GO_WANT_HELPER_PROCESS = "1" }
+`, os.Args[0]))
+
+	ctrl, err := Build(context.Background(), Options{Sink: event.Discard, TokenMode: TokenModeEconomy})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer ctrl.Close()
+	ctrl.SetPlanMode(true)
+	if err := ctrl.Run(context.Background(), "connect allowed mcp while planning"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	reqs := prov.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("requests = %d, want 2", len(reqs))
+	}
+	if !requestHasTool(reqs[1], "mcp__mockmcp__echo") {
+		t.Fatalf("second request should expose allowed MCP source in plan economy mode; tools=%v", toolSchemaNames(reqs[1].Tools))
+	}
+	for _, msg := range ctrl.History() {
+		if msg.Role == provider.RoleTool && msg.Name == "connect_tool_source" {
+			if strings.Contains(msg.Content, "blocked:") {
+				t.Fatalf("connect_tool_source should not block allowed MCP in plan mode, got:\n%s", msg.Content)
+			}
+			if !strings.Contains(msg.Content, `enabled MCP server "mockmcp" tools: mcp__mockmcp__echo`) {
+				t.Fatalf("connect_tool_source should report enabled MCP tools, got:\n%s", msg.Content)
+			}
+		}
+	}
+}
+
+func TestBuildTokenEconomyPlanModeCanConnectTrustedReadOnlyMCPSource(t *testing.T) {
+	isolateConfigHome(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+
+	registerBootTokenProfileTestProvider()
+	prov := testutil.NewMock("token-economy",
+		testutil.Turn{ToolCalls: []provider.ToolCall{
+			{ID: "source-1", Name: "connect_tool_source", Arguments: `{"source":"mcp","name":"mockmcp"}`},
+		}},
+		testutil.Turn{Text: "done"},
+	)
+	setBootTokenProfileTestProvider(t, prov)
+	writeFile(t, dir, "reasonix.toml", fmt.Sprintf(`
+default_model = "test-model"
+
+[agent]
+system_prompt = "BASE"
+
+[[providers]]
+name = "test-model"
+kind = "boot-token-profile-test"
+model = "x"
+
+[[plugins]]
+name = "mockmcp"
+command = %q
+args = ["-test.run=TestHelperProcess", "--"]
+env = { GO_WANT_HELPER_PROCESS = "1" }
+trusted_read_only_tools = ["echo"]
+`, os.Args[0]))
+
+	ctrl, err := Build(context.Background(), Options{Sink: event.Discard, TokenMode: TokenModeEconomy})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer ctrl.Close()
+	ctrl.SetPlanMode(true)
+	if err := ctrl.Run(context.Background(), "connect trusted mcp while planning"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	reqs := prov.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("requests = %d, want 2", len(reqs))
+	}
+	if !requestHasTool(reqs[1], "mcp__mockmcp__echo") {
+		t.Fatalf("second request should expose trusted MCP source in plan economy mode; tools=%v", toolSchemaNames(reqs[1].Tools))
+	}
+	for _, msg := range ctrl.History() {
+		if msg.Role == provider.RoleTool && msg.Name == "connect_tool_source" && strings.Contains(msg.Content, "blocked:") {
+			t.Fatalf("connect_tool_source should not block trusted MCP in plan mode, got:\n%s", msg.Content)
+		}
+	}
+}
+
+func TestPlanModeAllowsMCPServerRequiresConcreteToolName(t *testing.T) {
+	if planModeAllowsMCPServer([]string{"mcp__mockmcp__"}, "mockmcp") {
+		t.Fatal("bare MCP namespace prefix should not allow a server in plan mode")
+	}
+	if !planModeAllowsMCPServer([]string{"mcp__mockmcp__echo"}, "mockmcp") {
+		t.Fatal("concrete MCP tool name should allow its server in plan mode")
+	}
+}
+
+func TestBuildTokenEconomyPlanModeBlocksSourcesWithPolicy(t *testing.T) {
+	tests := []struct {
+		source          string
+		args            string
+		forbiddenTools  []string
+		forbiddenPrefix string
+	}{
+		{
+			source:         "task",
+			args:           `{"source":"task"}`,
+			forbiddenTools: []string{"task"},
+		},
+		{
+			source:         "install_source",
+			args:           `{"source":"install_source"}`,
+			forbiddenTools: []string{"install_source"},
+		},
+		{
+			source: "skills",
+			args:   `{"source":"skills"}`,
+			forbiddenTools: []string{
+				"run_skill", "read_only_skill", "read_skill", "install_skill",
+				"explore", "research", "review", "security_review",
+			},
+		},
+		{
+			source:          "mcp",
+			args:            `{"source":"mcp","name":"mockmcp"}`,
+			forbiddenPrefix: "mcp__mockmcp",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.source, func(t *testing.T) {
+			isolateConfigHome(t)
+			dir := robustTempDir(t)
+			t.Chdir(dir)
+
+			registerBootTokenProfileTestProvider()
+			prov := testutil.NewMock("token-economy",
+				testutil.Turn{ToolCalls: []provider.ToolCall{
+					{ID: "source-1", Name: "connect_tool_source", Arguments: tt.args},
+				}},
+				testutil.Turn{Text: "done"},
+			)
+			setBootTokenProfileTestProvider(t, prov)
+			writeFile(t, dir, "reasonix.toml", `
+default_model = "test-model"
+
+[agent]
+system_prompt = "BASE"
+
+[[providers]]
+name = "test-model"
+kind = "boot-token-profile-test"
+model = "x"
+
+[[plugins]]
+name = "mockmcp"
+command = "reasonix-missing-mockmcp"
+`)
+
+			ctrl, err := Build(context.Background(), Options{Sink: event.Discard, TokenMode: TokenModeEconomy})
+			if err != nil {
+				t.Fatalf("Build: %v", err)
+			}
+			defer ctrl.Close()
+			ctrl.SetPlanMode(true)
+			if err := ctrl.Run(context.Background(), "connect blocked source while planning"); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+
+			reqs := prov.Requests()
+			if len(reqs) != 2 {
+				t.Fatalf("requests = %d, want 2", len(reqs))
+			}
+			var toolOutput string
+			for _, msg := range ctrl.History() {
+				if msg.Role == provider.RoleTool && msg.Name == "connect_tool_source" {
+					toolOutput += msg.Content
+				}
+			}
+			if strings.TrimSpace(toolOutput) == "" {
+				t.Fatalf("connect_tool_source(%s) returned empty tool output", tt.source)
+			}
+			if !strings.Contains(toolOutput, "blocked:") || !strings.Contains(toolOutput, "plan mode") {
+				t.Fatalf("connect_tool_source(%s) output = %q, want visible plan-mode block", tt.source, toolOutput)
+			}
+			for _, forbidden := range tt.forbiddenTools {
+				if requestHasTool(reqs[1], forbidden) {
+					t.Fatalf("blocked source %s should not expose %q; tools=%v", tt.source, forbidden, toolSchemaNames(reqs[1].Tools))
+				}
+			}
+			if tt.forbiddenPrefix != "" && requestHasToolPrefix(reqs[1], tt.forbiddenPrefix) {
+				t.Fatalf("blocked source %s should not expose tools with prefix %q; tools=%v", tt.source, tt.forbiddenPrefix, toolSchemaNames(reqs[1].Tools))
+			}
+		})
+	}
+}
+
+func TestBuildWarnsIgnoredPlanModeAllowedTools(t *testing.T) {
+	isolateConfigHome(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+
+	registerBootTokenProfileTestProvider()
+	prov := testutil.NewMock("plan-mode-allowed-tools", testutil.Turn{Text: "done"})
+	setBootTokenProfileTestProvider(t, prov)
+	writeFile(t, dir, "reasonix.toml", `
+default_model = "test-model"
+
+[agent]
+system_prompt = "BASE"
+plan_mode_allowed_tools = ["bash", "custom_reader"]
+
+[[providers]]
+name = "test-model"
+kind = "boot-token-profile-test"
+model = "x"
+`)
+
+	var notices []event.Event
+	sink := event.FuncSink(func(e event.Event) {
+		if e.Kind == event.Notice {
+			notices = append(notices, e)
+		}
+	})
+
+	ctrl, err := Build(context.Background(), Options{Sink: sink})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer ctrl.Close()
+
+	for _, notice := range notices {
+		if notice.Level == event.LevelWarn && strings.Contains(notice.Text, "plan_mode_allowed_tools") && strings.Contains(notice.Text, "bash") {
+			if strings.Contains(notice.Text, "custom_reader") {
+				t.Fatalf("warning should name ignored entries only, got %q", notice.Text)
+			}
+			return
+		}
+	}
+	t.Fatalf("missing ignored plan_mode_allowed_tools warning; got %+v", notices)
+}
+
 func TestBuildTokenEconomyWebFetchConnectorHonorsDisabledBuiltin(t *testing.T) {
 	isolateConfigHome(t)
 	dir := robustTempDir(t)
@@ -1021,9 +1687,6 @@ default_model = "test-model"
 
 [tools]
 enabled = ["read_file", "grep"]
-
-[codegraph]
-enabled = false
 
 [agent]
 system_prompt = "BASE"
@@ -1076,9 +1739,6 @@ func TestBuildTokenEconomyConnectsSkillsOnDemand(t *testing.T) {
 	writeFile(t, dir, "reasonix.toml", `
 default_model = "test-model"
 
-[codegraph]
-enabled = false
-
 [agent]
 system_prompt = "BASE"
 
@@ -1101,7 +1761,7 @@ model = "x"
 	if len(reqs) != 2 {
 		t.Fatalf("requests = %d, want 2", len(reqs))
 	}
-	for _, name := range []string{"run_skill", "read_skill", "explore"} {
+	for _, name := range []string{"run_skill", "read_only_skill", "read_skill", "explore"} {
 		if requestHasTool(reqs[0], name) {
 			t.Fatalf("first request should hide %q; tools=%v", name, toolSchemaNames(reqs[0].Tools))
 		}
@@ -1130,6 +1790,7 @@ func TestAddBuiltinsWithWorkspaceRootKeepsSessionTools(t *testing.T) {
 		"bash_output",
 		"kill_shell",
 		"wait",
+		"move_file",
 		"notebook_edit",
 	} {
 		if _, ok := reg.Get(name); !ok {
@@ -1146,9 +1807,6 @@ func TestBuildOmitsDisabledSkillsFromPromptAndRuntimeList(t *testing.T) {
 	t.Chdir(dir)
 	writeFile(t, dir, "reasonix.toml", `
 default_model = "test-model"
-
-[codegraph]
-enabled = false
 
 [agent]
 system_prompt = "BASE"
@@ -1203,9 +1861,6 @@ func TestBuildOmitsExcludedSkillRootsFromPromptAndRuntimeList(t *testing.T) {
 	writeFile(t, dir, "reasonix.toml", fmt.Sprintf(`
 default_model = "test-model"
 
-[codegraph]
-enabled = false
-
 [agent]
 system_prompt = "BASE"
 
@@ -1245,12 +1900,13 @@ api_key_env = "REASONIX_TEST_KEY_UNSET"
 // prefix is untouched by the memory feature.
 func TestBuildWithoutMemoryLeavesPromptUnchanged(t *testing.T) {
 	dir := robustTempDir(t)
+	home := robustTempDir(t)
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("AppData", filepath.Join(home, "AppData"))
 	t.Chdir(dir)
 	writeFile(t, dir, "reasonix.toml", `
 default_model = "test-model"
-
-[codegraph]
-enabled = false
 
 [agent]
 system_prompt = "JUST THE BASE"
@@ -1280,7 +1936,9 @@ api_key_env = "REASONIX_TEST_KEY_UNSET"
 		base = sys[:i]
 	}
 	// The language policy is always appended at boot; strip it so this assertion
-	// is purely about whether project/ancestor memory leaked into the base.
+	// is purely about whether project/ancestor memory leaked into the base. The
+	// user-decision policy is another fixed boot policy and is stripped for the
+	// same reason.
 	base = stripLanguagePolicy(base)
 	if base != "JUST THE BASE" {
 		t.Fatalf("expected untouched base prompt, got:\n%s", sys)
@@ -1292,9 +1950,6 @@ func TestBuildLanguagePolicyIsAppended(t *testing.T) {
 	t.Chdir(dir)
 	writeFile(t, dir, "reasonix.toml", `
 default_model = "test-model"
-
-[codegraph]
-enabled = false
 
 [agent]
 system_prompt = "BASE"
@@ -1319,6 +1974,41 @@ api_key_env = "REASONIX_TEST_KEY_UNSET"
 	}
 }
 
+func TestBuildAppendsUserDecisionPolicyToCustomSystemPrompt(t *testing.T) {
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+	writeFile(t, dir, "reasonix.toml", `
+default_model = "test-model"
+
+[agent]
+system_prompt = "BASE"
+
+[[providers]]
+name = "test-model"
+kind = "openai"
+base_url = "https://example.invalid"
+model = "x"
+api_key_env = "REASONIX_TEST_KEY_UNSET"
+`)
+
+	ctrl, err := Build(context.Background(), Options{})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer ctrl.Close()
+
+	sys := systemMessage(ctrl.History())
+	for _, want := range []string{
+		"User-owned choices",
+		"call the ask tool",
+		"Do not ask in prose",
+	} {
+		if !strings.Contains(sys, want) {
+			t.Fatalf("user decision policy missing %q from custom system prompt:\n%s", want, sys)
+		}
+	}
+}
+
 func systemMessage(msgs []provider.Message) string {
 	for _, m := range msgs {
 		if m.Role == provider.RoleSystem {
@@ -1332,6 +2022,7 @@ func stripLanguagePolicy(s string) string {
 	s = strings.TrimSpace(s)
 	for _, policy := range []string{
 		config.LanguagePolicy,
+		config.UserDecisionPolicy,
 	} {
 		s = strings.TrimSpace(strings.TrimSuffix(s, policy))
 	}
@@ -1492,13 +2183,14 @@ func TestBuildMigratesLegacyConfigEndToEnd(t *testing.T) {
 	t.Setenv("USERPROFILE", home)                               // os.UserHomeDir on Windows
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config")) // os.UserConfigDir on Linux
 	t.Setenv("AppData", filepath.Join(home, "AppData"))         // os.UserConfigDir on Windows
-	t.Setenv("DEEPSEEK_API_KEY", "")                            // track for cleanup; migration os.Setenv's it live
+	t.Setenv("REASONIX_CREDENTIALS_STORE", "file")
+	t.Setenv("DEEPSEEK_API_KEY", "") // track for cleanup; migration os.Setenv's it live
 
 	proj := robustTempDir(t)
 	t.Chdir(proj)
-	// codegraph off keeps Build offline; it merges over the migrated user config
-	// without dropping the migrated plugins.
-	writeFile(t, proj, "reasonix.toml", "[codegraph]\nenabled = false\n")
+	// Project config merges over the migrated user config without dropping the
+	// migrated plugins.
+	writeFile(t, proj, "reasonix.toml", "")
 	writeFile(t, filepath.Join(home, ".reasonix"), "config.json",
 		`{"apiKey":"sk-e2e","lang":"zh","mcpServers":{"fs":{"command":"npx","args":["-y","server-fs"]}}}`)
 	writeFile(t, filepath.Join(home, ".reasonix", "sessions"), "chat-1.events.jsonl",
@@ -1571,9 +2263,13 @@ func TestBuildMigratesLegacySessionsFromConfigSessionDir(t *testing.T) {
 	t.Setenv("AppData", filepath.Join(home, "AppData"))
 
 	proj := robustTempDir(t)
-	writeFile(t, proj, "reasonix.toml", "[codegraph]\nenabled = false\n")
+	writeFile(t, proj, "reasonix.toml", "")
 
-	legacyDir := config.SessionDir()
+	legacyConfig := config.LegacyUserConfigPath()
+	if legacyConfig == "" {
+		t.Skip("legacy OS config path matches primary path on this platform")
+	}
+	legacyDir := filepath.Join(filepath.Dir(legacyConfig), "sessions")
 	writeFile(t, legacyDir, "custom-root.events.jsonl",
 		`{"type":"user.message","id":1,"ts":"t","turn":0,"text":"hello from redirected config root"}`+"\n"+
 			`{"type":"model.final","id":2,"ts":"t","turn":0,"content":"hi from redirected root","toolCalls":[],"usage":{},"costUsd":0}`+"\n")
@@ -1617,6 +2313,57 @@ func TestBuildMigratesLegacySessionsFromConfigSessionDir(t *testing.T) {
 	}
 }
 
+func TestBuildMigratesLegacyXDGAndProjectSessions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("legacy XDG paths are Unix-only")
+	}
+	home := robustTempDir(t)
+	xdg := filepath.Join(home, "xdg-config")
+	reasonixHome := filepath.Join(home, "rx-home")
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	t.Setenv("REASONIX_HOME", reasonixHome)
+
+	proj := robustTempDir(t)
+	writeFile(t, proj, "reasonix.toml", "[codegraph]\nenabled = false\n")
+
+	legacyRoot := filepath.Join(xdg, "reasonix")
+	writeFile(t, filepath.Join(legacyRoot, "sessions"), "xdg-flat.events.jsonl",
+		`{"type":"user.message","id":1,"ts":"t","turn":0,"text":"hello from xdg"}`+"\n"+
+			`{"type":"model.final","id":2,"ts":"t","turn":0,"content":"hi from xdg","toolCalls":[],"usage":{},"costUsd":0}`+"\n")
+
+	slug := config.WorkspaceSlug(proj)
+	legacyProjectDir := filepath.Join(legacyRoot, "projects", slug, "sessions")
+	session := agent.NewSession("")
+	session.Add(provider.Message{Role: provider.RoleUser, Content: "hello from old project session"})
+	if err := session.Save(filepath.Join(legacyProjectDir, "project-chat.jsonl")); err != nil {
+		t.Fatalf("save legacy project session: %v", err)
+	}
+
+	ctrl, err := Build(context.Background(), Options{WorkspaceRoot: proj})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer ctrl.Close()
+
+	flatData, err := os.ReadFile(filepath.Join(config.SessionDir(), "xdg-flat.jsonl"))
+	if err != nil {
+		t.Fatalf("legacy XDG flat session not imported: %v", err)
+	}
+	if !strings.Contains(string(flatData), "hello from xdg") {
+		t.Fatalf("legacy XDG flat session missing content:\n%s", flatData)
+	}
+	projectPath := filepath.Join(config.MemoryUserDir(), "projects", slug, "sessions", "project-chat.jsonl")
+	projectData, err := os.ReadFile(projectPath)
+	if err != nil {
+		t.Fatalf("legacy project session not imported to %s: %v", projectPath, err)
+	}
+	if !strings.Contains(string(projectData), "hello from old project session") {
+		t.Fatalf("legacy project session missing content:\n%s", projectData)
+	}
+}
+
 // isolateConfigHome redirects os.UserConfigDir() (and the cache subtree under
 // it) at a per-test temp dir by overriding the env vars Go's stdlib reads —
 // HOME on darwin, XDG_CONFIG_HOME on linux. Without this, Build's plugin path
@@ -1628,15 +2375,14 @@ func isolateConfigHome(t *testing.T) string {
 	dir := robustTempDir(t)
 	t.Setenv("HOME", dir)
 	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("REASONIX_CREDENTIALS_STORE", "file")
 	return dir
 }
 
 // TestPartitionByTier pins the bucket assignment contract that the rest of
-// boot.go's plugin orchestration depends on: each tier string maps to its own
-// slice, the original order inside a tier is preserved (so /mcp status and
-// stats land deterministically), an empty/missing tier defaults to background
-// (connects after session start without blocking chat), and unknown non-empty
-// values fall back to lazy so a typo never forces unwanted background connects.
+// boot.go's plugin orchestration depends on: eager keeps its blocking startup
+// slice, while empty, background, legacy lazy, and unknown tiers all warm up in
+// the background.
 func TestPartitionByTier(t *testing.T) {
 	entries := []config.PluginEntry{
 		{Name: "e1", Tier: "eager"},
@@ -1645,30 +2391,99 @@ func TestPartitionByTier(t *testing.T) {
 		{Name: "default", Tier: ""}, // empty defaults to background
 	}
 
-	eager, lazy, bg := partitionByTier(entries)
+	eager, bg := partitionByTier(entries)
 
 	if len(eager) != 1 || eager[0].Name != "e1" {
 		t.Fatalf("eager bucket = %+v, want [e1]", eager)
 	}
-	if len(bg) != 2 || bg[0].Name != "b1" || bg[1].Name != "default" {
-		t.Fatalf("background bucket = %+v, want [b1, default] preserving input order", bg)
-	}
-	if len(lazy) != 1 || lazy[0].Name != "l1" {
-		t.Fatalf("lazy bucket = %+v, want [l1]", lazy)
+	if len(bg) != 3 || bg[0].Name != "l1" || bg[1].Name != "b1" || bg[2].Name != "default" {
+		t.Fatalf("background bucket = %+v, want [l1, b1, default] preserving input order", bg)
 	}
 }
 
-func TestBuiltInMCPsYieldToExtraPluginNames(t *testing.T) {
-	got := builtinmcp.AppendEnabled(nil, nil, []string{"time", "context7"}, pluginSpecNames([]plugin.Spec{{Name: "time"}})...)
-	if len(got) != 1 || got[0].Name != "context7" {
-		t.Fatalf("built-in MCP entries with extra time = %+v, want only context7", got)
+func TestPluginSpecsTrustKnownCodeGraphReadTools(t *testing.T) {
+	specs := PluginSpecs([]config.PluginEntry{{Name: "codegraph"}})
+	if len(specs) != 1 {
+		t.Fatalf("PluginSpecs returned %d specs, want 1", len(specs))
+	}
+	for _, name := range []string{"codegraph_context", "codegraph_search", "context", "search"} {
+		if !specs[0].ReadOnlyToolNames[name] {
+			t.Fatalf("codegraph spec missing read-only override for %q: %+v", name, specs[0].ReadOnlyToolNames)
+		}
 	}
 }
 
-func TestBuiltInMCPDefaultsEnableOnlyTime(t *testing.T) {
-	got := builtinmcp.AppendEnabled(nil, nil, config.Default().BuiltInMCP.EnabledNames())
-	if len(got) != 1 || got[0].Name != "time" {
-		t.Fatalf("default built-in MCP entries = %+v, want only time", got)
+func TestPluginSpecsTrustConfiguredReadOnlyTools(t *testing.T) {
+	specs := PluginSpecs([]config.PluginEntry{{
+		Name:                 "github",
+		TrustedReadOnlyTools: []string{"issue_read", " pull_request_read ", ""},
+	}})
+	if len(specs) != 1 {
+		t.Fatalf("PluginSpecs returned %d specs, want 1", len(specs))
+	}
+	for _, name := range []string{"issue_read", "pull_request_read"} {
+		if !specs[0].ReadOnlyToolNames[name] {
+			t.Fatalf("configured trusted read-only tool %q missing: %+v", name, specs[0].ReadOnlyToolNames)
+		}
+	}
+	if specs[0].ReadOnlyToolNames[""] {
+		t.Fatalf("empty trusted read-only tool name should be ignored: %+v", specs[0].ReadOnlyToolNames)
+	}
+}
+
+func TestPluginSpecsTrustPlanModeAllowedMCPTools(t *testing.T) {
+	specs := PluginSpecsForRootWithPlanModeAllowedTools(
+		[]config.PluginEntry{{Name: "github"}, {Name: "linear"}},
+		"",
+		[]string{
+			"mcp__github__issue_read",
+			"mcp__linear__issue_read",
+			"mcp__github__",
+			"read_file",
+			"mcp__other__issue_read",
+		},
+	)
+	if len(specs) != 2 {
+		t.Fatalf("PluginSpecsForRootWithPlanModeAllowedTools returned %d specs, want 2", len(specs))
+	}
+	if !specs[0].ReadOnlyModelToolNames["mcp__github__issue_read"] {
+		t.Fatalf("github allowed MCP tool missing from model trust map: %+v", specs[0].ReadOnlyModelToolNames)
+	}
+	if specs[0].ReadOnlyModelToolNames["mcp__github__"] || specs[0].ReadOnlyModelToolNames["mcp__other__issue_read"] {
+		t.Fatalf("github trust map accepted non-concrete or other-server tools: %+v", specs[0].ReadOnlyModelToolNames)
+	}
+	if !specs[1].ReadOnlyModelToolNames["mcp__linear__issue_read"] {
+		t.Fatalf("linear allowed MCP tool missing from model trust map: %+v", specs[1].ReadOnlyModelToolNames)
+	}
+}
+
+func TestPluginSpecsForRootPinsCodeGraphToWorkspace(t *testing.T) {
+	specs := PluginSpecsForRoot([]config.PluginEntry{{Name: "codegraph"}}, "/workspace")
+	if len(specs) != 1 {
+		t.Fatalf("PluginSpecsForRoot returned %d specs, want 1", len(specs))
+	}
+	if specs[0].Dir != "/workspace" {
+		t.Fatalf("codegraph Dir = %q, want workspace root", specs[0].Dir)
+	}
+}
+
+func TestPluginSpecsForRootDoesNotPinHTTPCodeGraph(t *testing.T) {
+	specs := PluginSpecsForRoot([]config.PluginEntry{{Name: "codegraph", Type: "http", URL: "https://example.com/mcp"}}, "/workspace")
+	if len(specs) != 1 {
+		t.Fatalf("PluginSpecsForRoot returned %d specs, want 1", len(specs))
+	}
+	if specs[0].Dir != "" {
+		t.Fatalf("http codegraph Dir = %q, want empty", specs[0].Dir)
+	}
+}
+
+func TestPluginSpecsDoNotTrustCodeGraphToolsForOtherServers(t *testing.T) {
+	specs := PluginSpecs([]config.PluginEntry{{Name: "not-codegraph"}})
+	if len(specs) != 1 {
+		t.Fatalf("PluginSpecs returned %d specs, want 1", len(specs))
+	}
+	if specs[0].ReadOnlyToolNames["codegraph_context"] {
+		t.Fatalf("non-codegraph spec should not receive codegraph read-only overrides: %+v", specs[0].ReadOnlyToolNames)
 	}
 }
 
@@ -1679,9 +2494,6 @@ func TestBuildMigratesLegacyEagerTierToBackground(t *testing.T) {
 
 	writeFile(t, dir, "reasonix.toml", `
 default_model = "test-model"
-
-[codegraph]
-enabled = false
 
 [agent]
 system_prompt = "BASE"
@@ -1728,9 +2540,6 @@ func TestBuildMigratesLegacyLazyTierToBackground(t *testing.T) {
 	writeFile(t, dir, "reasonix.toml", `
 default_model = "test-model"
 
-[codegraph]
-enabled = false
-
 [agent]
 system_prompt = "BASE"
 
@@ -1768,116 +2577,6 @@ tier = "lazy"
 	}
 }
 
-func TestBuildColdCodegraphStartsInBackground(t *testing.T) {
-	isolateConfigHome(t)
-	dir := robustTempDir(t)
-	t.Chdir(dir)
-	launcher := writeCodegraphHelper(t, dir)
-	t.Setenv("GO_WANT_HELPER_PROCESS", "1")
-
-	writeFile(t, dir, "reasonix.toml", fmt.Sprintf(`
-default_model = "test-model"
-
-[codegraph]
-enabled = true
-path = %q
-tier = "background"
-
-[agent]
-system_prompt = "BASE"
-
-[[providers]]
-name = "test-model"
-kind = "openai"
-base_url = "https://example.invalid"
-model = "x"
-api_key_env = "REASONIX_TEST_KEY_UNSET"
-`, launcher))
-
-	var notices []event.Event
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	ctrl, err := Build(ctx, Options{
-		Sink: event.FuncSink(func(e event.Event) {
-			if e.Kind == event.Notice {
-				notices = append(notices, e)
-			}
-		}),
-	})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	defer ctrl.Close()
-
-	if got := ctrl.Host().Failures(); len(got) != 0 {
-		t.Fatalf("Host.Failures() = %+v, want empty for cold built-in codegraph background startup", got)
-	}
-	codegraphDir := filepath.Join(dir, ".codegraph")
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, err := os.Stat(codegraphDir); err == nil {
-			break
-		} else if time.Now().After(deadline) {
-			t.Fatalf("cold codegraph init did not create .codegraph/: %v", err)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	foundNotice := false
-	for _, n := range notices {
-		if strings.Contains(n.Text, "preparing code-intelligence tools in the background") {
-			foundNotice = true
-			break
-		}
-	}
-	if !foundNotice {
-		t.Fatalf("missing background warmup notice; got %+v", notices)
-	}
-}
-
-func TestBuildWarmCodegraphIgnoresLegacyEagerTier(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fake launcher is a POSIX-sh script")
-	}
-	isolateConfigHome(t)
-	dir := robustTempDir(t)
-	t.Chdir(dir)
-	if err := os.Mkdir(filepath.Join(dir, ".codegraph"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	launcher := filepath.Join(dir, "slow-codegraph")
-	writeFile(t, dir, "slow-codegraph", "#!/bin/sh\nif [ \"$1\" = serve ]; then sleep 5; fi\n")
-	if err := os.Chmod(launcher, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	writeFile(t, dir, "reasonix.toml", fmt.Sprintf(`
-default_model = "test-model"
-
-[codegraph]
-enabled = true
-path = %q
-tier = "eager"
-
-[agent]
-system_prompt = "BASE"
-
-[[providers]]
-name = "test-model"
-kind = "openai"
-base_url = "https://example.invalid"
-model = "x"
-api_key_env = "REASONIX_TEST_KEY_UNSET"
-`, launcher))
-
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
-	ctrl, err := Build(ctx, Options{})
-	if err != nil {
-		t.Fatalf("Build should not block on warm codegraph with legacy eager tier: %v", err)
-	}
-	defer ctrl.Close()
-}
-
 func TestBuildDefaultsToNearestGitRoot(t *testing.T) {
 	isolateConfigHome(t)
 	root := robustTempDir(t)
@@ -1890,9 +2589,6 @@ func TestBuildDefaultsToNearestGitRoot(t *testing.T) {
 	}
 	writeFile(t, root, "reasonix.toml", `
 default_model = "root-model"
-
-[codegraph]
-enabled = false
 
 [agent]
 system_prompt = "BASE"
@@ -1929,9 +2625,6 @@ func TestBuildMigratesLegacyEagerBeforeStatsDemotion(t *testing.T) {
 
 	writeFile(t, dir, "reasonix.toml", `
 default_model = "test-model"
-
-[codegraph]
-enabled = false
 
 [agent]
 system_prompt = "BASE"
@@ -1971,13 +2664,13 @@ tier = "eager"
 
 	foundDemoteNotice := false
 	for _, n := range notices {
-		if strings.Contains(n.Text, "demoting to lazy") {
+		if strings.Contains(n.Text, "lazy") {
 			foundDemoteNotice = true
 			break
 		}
 	}
 	if foundDemoteNotice {
-		t.Fatalf("legacy tier should be migrated before demotion logic; got notices %+v", notices)
+		t.Fatalf("demotion notice should not mention legacy lazy tier; got notices %+v", notices)
 	}
 }
 
@@ -2058,78 +2751,4 @@ func TestHelperProcess(t *testing.T) {
 		b, _ := json.Marshal(resp)
 		os.Stdout.Write(append(b, '\n'))
 	}
-}
-
-func writeCodegraphHelper(t *testing.T, dir string) string {
-	t.Helper()
-	path := filepath.Join(dir, "codegraph-helper")
-	if runtime.GOOS == "windows" {
-		path += ".exe"
-	}
-	src := filepath.Join(dir, "codegraph-helper.go")
-	if err := os.WriteFile(src, []byte(`package main
-
-import (
-	"bufio"
-	"bytes"
-	"encoding/json"
-	"os"
-	"path/filepath"
-)
-
-func main() {
-	if len(os.Args) >= 3 && os.Args[1] == "init" {
-		_ = os.MkdirAll(filepath.Join(os.Args[2], ".codegraph"), 0o755)
-		return
-	}
-
-	in := bufio.NewReader(os.Stdin)
-	for {
-		line, err := in.ReadBytes('\n')
-		if err != nil {
-			return
-		}
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 {
-			continue
-		}
-
-		var req struct {
-			ID     *int            `+"`json:\"id\"`"+`
-			Method string          `+"`json:\"method\"`"+`
-			Params json.RawMessage `+"`json:\"params\"`"+`
-		}
-		if err := json.Unmarshal(line, &req); err != nil || req.ID == nil {
-			continue
-		}
-
-		var result any
-		switch req.Method {
-		case "initialize":
-			result = map[string]any{
-				"protocolVersion": "2024-11-05",
-				"serverInfo":      map[string]any{"name": "codegraph", "version": "0"},
-				"capabilities":    map[string]any{},
-			}
-		case "tools/list":
-			result = map[string]any{"tools": []map[string]any{{
-				"name":        "search",
-				"description": "Search symbols.",
-				"inputSchema": map[string]any{"type": "object"},
-			}}}
-		}
-
-		resp := map[string]any{"jsonrpc": "2.0", "id": *req.ID, "result": result}
-		b, _ := json.Marshal(resp)
-		_, _ = os.Stdout.Write(append(b, '\n'))
-	}
-}
-`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command("go", "build", "-o", path, src)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build codegraph helper: %v\n%s", err, out)
-	}
-	return path
 }

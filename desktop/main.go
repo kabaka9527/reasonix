@@ -9,6 +9,7 @@ package main
 import (
 	"embed"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/wailsapp/wails/v2"
@@ -17,8 +18,6 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/linux"
 	"github.com/wailsapp/wails/v2/pkg/options/mac"
 	"github.com/wailsapp/wails/v2/pkg/options/windows"
-
-	"reasonix/internal/builtinmcp"
 
 	// Blank imports wire compile-time built-ins into their registries, exactly as
 	// cmd/reasonix does — boot.Build resolves providers/tools from these registries.
@@ -45,7 +44,23 @@ var version = "dev"
 // tracks the opt-in pre-release line and never crosses over to stable.
 var channel = "stable"
 
-const disableWebview2GPUEnv = "REASONIX_DESKTOP_DISABLE_WEBVIEW2_GPU"
+// macSelfUpdate is injected as "true" only for Developer ID signed + notarized
+// macOS release builds. Local/ad-hoc macOS builds keep the manual download path.
+var macSelfUpdate = "false"
+
+const (
+	disableWebview2GPUEnv  = "REASONIX_DESKTOP_DISABLE_WEBVIEW2_GPU"
+	linuxDRIRenderNodeGlob = "/dev/dri/renderD*"
+)
+
+func macSelfUpdateAllowed() bool {
+	switch strings.ToLower(strings.TrimSpace(macSelfUpdate)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
 
 func windowsWebview2GPUDisabled() bool {
 	if raw, ok := os.LookupEnv(disableWebview2GPUEnv); ok {
@@ -59,11 +74,21 @@ func windowsWebview2GPUDisabled() bool {
 	return channel == "canary"
 }
 
-func main() {
-	if len(os.Args) > 1 && os.Args[1] == "builtin-mcp" {
-		os.Exit(builtinmcp.RunCommand(os.Args[2:], os.Stdin, os.Stdout, os.Stderr, version))
+func linuxWebviewGpuPolicy(pattern string) linux.WebviewGpuPolicy {
+	matches, err := filepath.Glob(pattern)
+	if err == nil {
+		for _, path := range matches {
+			f, err := os.OpenFile(path, os.O_RDWR, 0)
+			if err == nil {
+				_ = f.Close()
+				return linux.WebviewGpuPolicyOnDemand
+			}
+		}
 	}
+	return linux.WebviewGpuPolicyNever
+}
 
+func main() {
 	app := NewApp()
 
 	// Restore saved window size, or fall back to the default.
@@ -126,9 +151,10 @@ func main() {
 			// WebKitGTK GPU compositing is inconsistent across distros/drivers and
 			// is the one real cross-platform rough edge for a Go+webview stack:
 			// "always" can yield blank or flickering webviews on some setups, so
-			// we let the webview decide on demand. Users still hitting artifacts
-			// can fall back to WEBKIT_DISABLE_COMPOSITING_MODE=1 (see README).
-			WebviewGpuPolicy: linux.WebviewGpuPolicyOnDemand,
+			// we let the webview decide on demand when a render node is usable, and
+			// disable acceleration when remote/software-rendered sessions cannot
+			// access /dev/dri.
+			WebviewGpuPolicy: linuxWebviewGpuPolicy(linuxDRIRenderNodeGlob),
 		},
 	})
 	if err != nil {

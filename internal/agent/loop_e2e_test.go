@@ -8,6 +8,7 @@ import (
 
 	"reasonix/internal/agent/testutil"
 	"reasonix/internal/event"
+	"reasonix/internal/memorycompiler"
 	"reasonix/internal/provider"
 	"reasonix/internal/tool"
 )
@@ -51,6 +52,111 @@ func TestRunMultiToolRoundEmptyIDsSurvivePairing(t *testing.T) {
 	}
 	if !strings.Contains(results[0], "alpha") || !strings.Contains(results[1], "beta") {
 		t.Errorf("results lost their identity: %v", results)
+	}
+}
+
+func TestRunUsesMemoryCompilerContractAsUserTurn(t *testing.T) {
+	rt := memorycompiler.New(t.TempDir())
+	_, seed := rt.StartTurn(context.Background(), "fix a bug", nil)
+	seed.RecordToolResults([]memorycompiler.ToolRecord{
+		{Name: "bash", Error: "exit status 1"},
+		{Name: "bash", Error: "exit status 1"},
+	})
+	seed.Finish(nil)
+
+	mp := testutil.NewMock("m", testutil.Turn{Text: "done"})
+	a := New(mp, echoRegistry(), NewSession(""), Options{MemoryCompiler: rt}, event.Discard)
+	if err := a.Run(context.Background(), "continue work"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	reqs := mp.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("requests = %d, want 1", len(reqs))
+	}
+	var user provider.Message
+	for _, msg := range reqs[0].Messages {
+		if msg.Role == provider.RoleUser {
+			user = msg
+		}
+	}
+	if !strings.HasPrefix(user.Content, "<memory-compiler-execution>") {
+		t.Fatalf("user turn was not replaced by compiled contract:\n%s", user.Content)
+	}
+	if strings.HasPrefix(user.Content, "continue work\n\n") {
+		t.Fatalf("compiled contract was appended as a sidecar instead of replacing the turn:\n%s", user.Content)
+	}
+	if !strings.Contains(user.Content, `"source_event":"continue work"`) {
+		t.Fatalf("compiled contract lost the source event:\n%s", user.Content)
+	}
+}
+
+func TestRunCompilesMemoryGoalFromRawInputBeforeReasoningLanguage(t *testing.T) {
+	rt := memorycompiler.New(t.TempDir())
+	_, seed := rt.StartTurn(context.Background(), "fix a bug", nil)
+	seed.RecordToolResults([]memorycompiler.ToolRecord{
+		{Name: "bash", Error: "exit status 1"},
+		{Name: "bash", Error: "exit status 1"},
+	})
+	seed.Finish(nil)
+
+	mp := testutil.NewMock("m", testutil.Turn{Text: "done"})
+	a := New(mp, echoRegistry(), NewSession(""), Options{MemoryCompiler: rt}, event.Discard)
+	a.SetReasoningLanguage("zh")
+	if err := a.Run(context.Background(), "fix another bug"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	req := mp.Requests()[0]
+	user := req.Messages[len(req.Messages)-1]
+	if !strings.Contains(user.Content, `"source_event":"fix another bug"`) {
+		t.Fatalf("compiled contract did not keep raw source event:\n%s", user.Content)
+	}
+	if strings.Contains(user.Content, `"source_event":"<reasoning-language>`) {
+		t.Fatalf("reasoning language wrapper leaked into source event:\n%s", user.Content)
+	}
+	if !strings.Contains(user.Content, "<reasoning-language>") {
+		t.Fatalf("reasoning language wrapper should still apply to final provider input:\n%s", user.Content)
+	}
+}
+
+func TestRunCompilesMemorySourceFromUnexpandedContext(t *testing.T) {
+	rt := memorycompiler.New(t.TempDir())
+	_, seed := rt.StartTurn(context.Background(), "fix a bug", nil)
+	seed.RecordToolResults([]memorycompiler.ToolRecord{
+		{Name: "bash", Error: "exit status 1"},
+		{Name: "bash", Error: "exit status 1"},
+	})
+	seed.Finish(nil)
+
+	expanded := "Referenced context:\n\n<file path=\"auth.go\">\npackage main\nconst secret = true\n</file>\n\nfix @auth.go"
+	raw := "fix @auth.go"
+	mp := testutil.NewMock("m", testutil.Turn{Text: "done"})
+	var stats []event.MemoryCompilerStats
+	sink := event.FuncSink(func(e event.Event) {
+		if e.Kind == event.MemoryCompilerStatsEvent && e.MemoryCompiler != nil {
+			stats = append(stats, *e.MemoryCompiler)
+		}
+	})
+	a := New(mp, echoRegistry(), NewSession(""), Options{MemoryCompiler: rt}, sink)
+	ctx := WithMemoryCompilerSourceInput(context.Background(), raw)
+	if err := a.Run(ctx, expanded); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	req := mp.Requests()[0]
+	user := req.Messages[len(req.Messages)-1]
+	if !strings.Contains(user.Content, `"source_event":"fix @auth.go"`) {
+		t.Fatalf("compiled contract did not use raw source event:\n%s", user.Content)
+	}
+	if strings.Contains(user.Content, "Referenced context:") || strings.Contains(user.Content, "const secret") {
+		t.Fatalf("expanded reference context leaked into Memory v5 contract:\n%s", user.Content)
+	}
+	if len(stats) != 1 {
+		t.Fatalf("memory compiler stats events = %d, want 1", len(stats))
+	}
+	if !stats[0].Injected || stats[0].CompiledTokens == 0 || stats[0].MemoryReferences == 0 {
+		t.Fatalf("memory compiler stats did not quantify injected memory: %+v", stats[0])
 	}
 }
 
@@ -119,6 +225,41 @@ func TestRunRecoversInterruptedStreamAfterPartialText(t *testing.T) {
 	retries := sink.kinds(event.Retrying)
 	if len(retries) != 1 || retries[0].RetryAttempt != 1 || retries[0].RetryMax != maxStreamRecoveries {
 		t.Fatalf("retry events = %+v, want one stream recovery retry", retries)
+	}
+}
+
+func TestRunRecoversRepeatedInterruptedStreams(t *testing.T) {
+	interrupted := &provider.StreamInterruptedError{Err: errors.New("deepseek-flash: read stream: unexpected EOF")}
+	mp := testutil.NewMock("m",
+		testutil.Turn{Text: "first ", ChunkError: interrupted},
+		testutil.Turn{Text: "second ", ChunkError: interrupted},
+		testutil.Turn{Text: "done"},
+	)
+	sink := &recordSink{}
+	a := New(mp, echoRegistry(), NewSession(""), Options{}, sink)
+
+	if err := a.Run(context.Background(), "go"); err != nil {
+		t.Fatalf("Run should recover repeated interrupted streams, got %v", err)
+	}
+	if mp.CallCount() != 3 {
+		t.Fatalf("provider calls = %d, want 3", mp.CallCount())
+	}
+
+	var streamed strings.Builder
+	for _, e := range sink.kinds(event.Text) {
+		streamed.WriteString(e.Text)
+	}
+	if streamed.String() != "first second done" {
+		t.Fatalf("streamed text = %q, want repeated partials plus final text", streamed.String())
+	}
+	retries := sink.kinds(event.Retrying)
+	if len(retries) != 2 || retries[0].RetryAttempt != 1 || retries[1].RetryAttempt != 2 {
+		t.Fatalf("retry events = %+v, want attempts 1 and 2", retries)
+	}
+	for _, retry := range retries {
+		if retry.RetryMax != maxStreamRecoveries {
+			t.Fatalf("retry max = %d, want %d", retry.RetryMax, maxStreamRecoveries)
+		}
 	}
 }
 

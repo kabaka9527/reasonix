@@ -43,7 +43,7 @@ type Messages struct {
 	// `reasonix init` — points to the in-session /init skill + setup
 	InitHint       string
 	StepSetKeyHint string // step 2 desc — env var hint
-	StepChatDesc   string // reasonix chat step desc
+	StepChatDesc   string // interactive session step desc
 	StepRunDesc    string // reasonix run step desc
 	HelpFooter     string // dim footer linking to reasonix help
 
@@ -73,6 +73,7 @@ type Messages struct {
 	ChatStatusThinkingFmt       string // "%s thinking… (%ds · <cancel hint>)" — %s = spinner, %d = elapsed s
 	ChatToolWorkingFmt          string // "%s working · %ds" under a running tool — %s = spinner, %d = elapsed s
 	ChatStatusRetryingFmt       string // "%s retrying (%d/%d)…" — %s = spinner, %d/%d = attempt/max
+	ChatStatusCancellingFmt     string // "%s stopping… (%ds · Ctrl+C exits)" — %s = spinner, %d = elapsed s
 	ChatStatusIdle              string // shortcuts hint when idle
 	ChatStatusYoloIdle          string // shortcuts hint when idle in YOLO/bypass mode
 	ChatStatusCycleHint         string // plan-toggle shortcut hint shown when no modal prompt owns the status row
@@ -160,6 +161,7 @@ type Messages struct {
 	CmdRename       string // /rename
 	CmdModel        string // /model
 	CmdMemory       string // /memory
+	CmdMigrate      string // /migrate
 	CmdGoal         string // /goal
 	CmdRemember     string // /remember
 	CmdForget       string // /forget
@@ -171,10 +173,13 @@ type Messages struct {
 	CmdLanguage     string // /language
 	CmdSkill        string // /skills
 	CmdVerbose      string // /verbose
+	CmdReloadCmd    string // /reload-cmd
 	CmdDiffFold     string // /diff-fold
 	CmdSandbox      string // /sandbox
 	CmdEffort       string // /effort
 	CmdAutoPlan     string // /auto-plan
+	CmdReasonLang   string // /reasoning-language
+	CmdMemoryV5     string // /memory-v5
 	CmdHelp         string // /help
 	CmdTodo         string // /todo
 	CmdQuit         string // /quit (also accepts /exit as hidden alias)
@@ -456,6 +461,9 @@ func envCandidates() []string {
 
 func setLanguage(tag string) string {
 	switch tag {
+	case "zh-tw", "zh-TW":
+		M = ChineseTraditional
+		return "zh-TW"
 	case "zh":
 		M = Chinese
 		return "zh"
@@ -470,8 +478,12 @@ func setLanguage(tag string) string {
 // unrecognised input so DetectLanguage can fall through to the next candidate.
 func normalize(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.ReplaceAll(s, "_", "-") // zh_TW.UTF-8 → zh-tw.utf-8 (POSIX locales use underscores)
 	if s == "" {
 		return ""
+	}
+	if strings.HasPrefix(s, "zh-tw") || strings.HasPrefix(s, "zh-hant") || strings.Contains(s, "chinese traditional") || strings.Contains(s, "繁體") {
+		return "zh-TW"
 	}
 	if strings.HasPrefix(s, "zh") || strings.Contains(s, "chinese") || strings.Contains(s, "中文") {
 		return "zh"
