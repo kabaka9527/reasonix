@@ -261,7 +261,7 @@ func buildCompressionReport(st state, tr ExecutionTrace, learning SystemLearning
 		TruthLocksDecayed: len(memory.TruthLockDecay),
 		AlignmentStatus:   alignment.Status,
 	}
-	total := causal.TotalEdges + len(tr.ToolResults) + len(st.Nodes) + len(st.Edges) + len(st.ControlReports)
+	total := causal.TotalEdges + len(tr.ToolResults) + len(st.Nodes) + len(st.Edges)
 	retained := causal.RetainedEdges + len(memory.AnchorNodes) + len(control.TopSignals) + len(execution.KeyFindings)
 	ratio := 1.0
 	if total > 0 {
@@ -444,7 +444,7 @@ func compressControlGraph(st state, policy ControlPolicy) ControlGraphCompressio
 	return ControlGraphCompression{
 		Mode:               policy.Mode,
 		Controller:         policy.Controller,
-		ReportsFolded:      len(st.ControlReports),
+		ReportsFolded:      0,
 		StabilityBand:      scoreBand(policy.SystemStabilityScore),
 		OscillationBand:    scoreBand(policy.OscillationIndex),
 		EquilibriumState:   policy.EquilibriumState,

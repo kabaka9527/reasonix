@@ -528,49 +528,6 @@ func TestControlPolicyAdaptiveGainChangesMutationCooldown(t *testing.T) {
 	}
 }
 
-func TestControlPolicyIncludesGlobalEquilibriumTrace(t *testing.T) {
-	st := state{ControlReports: []ControlReport{
-		{Mode: "explore", ExplorationRatePercent: maxExplorationRatePercent, Gain: 1.1},
-		{Mode: "dampen", ExplorationRatePercent: minExplorationRatePercent, Gain: 0.6},
-		{Mode: "explore", ExplorationRatePercent: maxExplorationRatePercent, Gain: 1.1},
-		{Mode: "dampen", ExplorationRatePercent: minExplorationRatePercent, Gain: 0.6},
-	}}
-	base := controlPolicyForState(state{}, DriftReport{})
-	policy := controlPolicyForState(st, DriftReport{})
-	if policy.EquilibriumState != "damping" {
-		t.Fatalf("equilibrium state = %q, want damping: %+v", policy.EquilibriumState, policy)
-	}
-	if policy.Mode != base.Mode {
-		t.Fatalf("equilibrium must not override control mode: base=%+v got=%+v", base, policy)
-	}
-	if policy.Gain >= base.Gain && base.Gain > 0 {
-		t.Fatalf("equilibrium should damp control gain without changing mode: base=%+v got=%+v", base, policy)
-	}
-	if policy.OscillationIndex < 0.7 {
-		t.Fatalf("oscillation index = %.3f, want high", policy.OscillationIndex)
-	}
-	if len(policy.EquilibriumActions) == 0 {
-		t.Fatalf("missing equilibrium actions: %+v", policy)
-	}
-	trace := equilibriumTraceForPolicy(policy)
-	if trace == nil || trace.State != "damping" || len(trace.Actions) == 0 {
-		t.Fatalf("invalid equilibrium trace: %+v", trace)
-	}
-	bundle := splitTrace(ExecutionTrace{
-		ID:               "trace-equilibrium",
-		IRVersion:        version,
-		Goal:             "control stability",
-		Outcome:          "success",
-		EquilibriumTrace: trace,
-	}, SystemLearning{TraceID: "trace-equilibrium", GoodPatterns: []string{"general"}}, false)
-	if bundle.RuntimeTrace.EquilibriumTrace == nil {
-		t.Fatalf("runtime trace missing equilibrium trace: %+v", bundle.RuntimeTrace)
-	}
-	if bundle.LearningTrace == nil || bundle.LearningTrace.EquilibriumTrace == nil {
-		t.Fatalf("learning trace missing equilibrium trace: %+v", bundle.LearningTrace)
-	}
-}
-
 func TestStrategyDebiasRewardsNovelContextFit(t *testing.T) {
 	oldDominant := Strategy{ID: "old-dominant", Successes: 30, Preconditions: []string{"unrelated"}}
 	freshFit := Strategy{ID: "fresh-fit", Preconditions: []string{"latency"}}

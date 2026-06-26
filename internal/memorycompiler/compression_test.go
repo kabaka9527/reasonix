@@ -81,10 +81,9 @@ func TestCausalCompressionSummarizesStateAndRetainsImportantMemory(t *testing.T)
 		})
 	}
 	st := state{
-		Nodes:          nodes,
-		Edges:          []MemoryEdge{{From: "truth-old", To: "trace-1", Relation: "supports"}},
-		ControlReports: []ControlReport{{TraceID: "previous", Mode: "balanced"}},
-		NoisyRefs:      map[string]int{},
+		Nodes:     nodes,
+		Edges:     []MemoryEdge{{From: "truth-old", To: "trace-1", Relation: "supports"}},
+		NoisyRefs: map[string]int{},
 	}
 	tr := ExecutionTrace{
 		ID:           "trace-compression-state",
