@@ -6,7 +6,8 @@ import (
 	"sort"
 	"strings"
 	"unicode"
-	"unicode/utf8"
+
+	"reasonix/internal/shellsafe"
 )
 
 // Marker is the model-facing plan-mode instruction block. It rides in the user
@@ -105,17 +106,6 @@ var planSafeReadOnly = map[string]bool{
 	"web_fetch":   true,
 	"bash_output": true, // observes an already-running job's buffered output; no new side effect
 	"wait":        true, // observes job status; cannot start, preserve, or kill processes
-}
-
-var bashMetachars = []string{"&&", "||", ">>", "<<", "$(", "\x60", ";", "|", ">", "<", "&", "\n", "\r"}
-
-var safeBashCommands = []string{
-	"git status", "git diff", "git log", "git show",
-	"git ls-files", "git grep", "git blame",
-	"ls", "cat", "grep", "find", "head", "tail", "pwd",
-	"echo", "wc", "which", "type", "uname", "hostname",
-	"go version", "go list", "go doc", "go vet",
-	"node -v", "npm list", "python --version",
 }
 
 var findWriteArgs = map[string]bool{
@@ -314,93 +304,86 @@ func decideBash(args json.RawMessage) Decision {
 		}
 	}
 	cmd := strings.TrimSpace(p.Command)
-	lower := strings.ToLower(cmd)
 
-	for _, mc := range bashMetachars {
-		if strings.Contains(lower, mc) {
-			return Decision{
-				Blocked: true,
-				Message: fmt.Sprintf("blocked: bash command in plan mode must not contain shell operators (%q). Use separate calls for chained commands.", mc),
-			}
+	if shellsafe.ContainsShellSyntax(cmd) {
+		return Decision{
+			Blocked: true,
+			Message: "blocked: bash command in plan mode must not contain shell operators. Use separate calls for chained commands.",
 		}
 	}
 
-	for _, safe := range safeBashCommands {
-		if !bashMatchesSafePrefix(lower, safe) {
-			continue
+	base, sub, ok := shellsafe.CommandIsReadOnly(cmd)
+	if !ok {
+		return Decision{
+			Blocked: true,
+			Message: fmt.Sprintf("blocked: bash commands in plan mode must be read-only. %q is not a known read-only command. Use read-only tools for exploration, then exit plan mode to run this command.", cmd),
 		}
-		arg, err := unsafeSafeCommandArg(cmd, safe)
-		if err != "" {
-			return Decision{
-				Blocked: true,
-				Message: fmt.Sprintf("blocked: bash command in plan mode has malformed shell quoting (%s). Use a simple read-only command while planning.", err),
-			}
-		}
-		if arg != "" {
-			return Decision{
-				Blocked: true,
-				Message: fmt.Sprintf("blocked: bash command in plan mode uses a write-capable argument (%q). Use a read-only command while planning.", arg),
-			}
-		}
-		return Decision{}
 	}
-
-	return Decision{
-		Blocked: true,
-		Message: fmt.Sprintf("blocked: bash commands in plan mode must be read-only. %q is not in the safe command list. Use read-only tools for exploration, then exit plan mode to run this command.", cmd),
+	if arg, malformed := unsafePlanModeArg(cmd, base, sub); malformed != "" {
+		return Decision{
+			Blocked: true,
+			Message: fmt.Sprintf("blocked: bash command in plan mode has malformed shell quoting (%s). Use a simple read-only command while planning.", malformed),
+		}
+	} else if arg != "" {
+		return Decision{
+			Blocked: true,
+			Message: fmt.Sprintf("blocked: bash command in plan mode uses a write-capable argument (%q). Use a read-only command while planning.", arg),
+		}
 	}
+	return Decision{}
 }
 
-func bashMatchesSafePrefix(lower, safe string) bool {
-	if !strings.HasPrefix(lower, safe) {
-		return false
-	}
-	if len(lower) == len(safe) {
-		return true
-	}
-	r, _ := utf8.DecodeRuneInString(lower[len(safe):])
-	return unicode.IsSpace(r)
-}
-
-func unsafeSafeCommandArg(cmd, safe string) (string, string) {
+// unsafePlanModeArg applies plan-mode's stricter, quote-aware argument check on
+// top of the shared read-only command classification: a write-capable flag on
+// an otherwise read-only command (git --output, git grep --open-files-in-pager,
+// find -exec, go list -mod=mod, …) is refused while planning even though the
+// base command is read-only. Returns the offending arg, or a malformed-quoting
+// description. Plan mode is intentionally stricter here than permission's
+// auto-approve arg check.
+func unsafePlanModeArg(cmd, base, sub string) (arg, malformed string) {
 	fields, err := shellFields(cmd)
 	if err != "" {
 		return "", err
 	}
-	base := strings.Fields(safe)
-	if len(fields) <= len(base) {
+	skip := 1
+	if sub != "" {
+		skip = 2
+	}
+	if len(fields) <= skip {
 		return "", ""
 	}
-	args := fields[len(base):]
+	args := fields[skip:]
 	lowerArgs := make([]string, len(args))
-	for i, arg := range args {
-		lowerArgs[i] = strings.ToLower(arg)
+	for i, a := range args {
+		lowerArgs[i] = strings.ToLower(a)
 	}
-	if strings.HasPrefix(safe, "git ") {
-		for _, arg := range lowerArgs {
-			if arg == "--output" || strings.HasPrefix(arg, "--output=") || arg == "--ext-diff" {
-				return arg, ""
+	switch base {
+	case "git":
+		for i, la := range lowerArgs {
+			if la == "--output" || strings.HasPrefix(la, "--output=") || la == "--ext-diff" {
+				return args[i], ""
 			}
 		}
-	}
-	switch safe {
-	case "git grep":
-		for i, arg := range args {
-			lowerArg := lowerArgs[i]
-			if arg == "-O" || strings.HasPrefix(arg, "-O") || strings.HasPrefix(lowerArg, "--open-files-in-pager") {
-				return arg, ""
+		if sub == "grep" {
+			for i, a := range args {
+				la := lowerArgs[i]
+				if a == "-O" || strings.HasPrefix(a, "-O") || strings.HasPrefix(la, "--open-files-in-pager") {
+					return a, ""
+				}
 			}
 		}
 	case "find":
-		for _, arg := range lowerArgs {
-			if findWriteArgs[arg] {
-				return arg, ""
+		for i, la := range lowerArgs {
+			if findWriteArgs[la] {
+				return args[i], ""
 			}
 		}
-	case "go list", "go vet":
-		for _, arg := range lowerArgs {
-			if goWriteOrExecArgs[arg] || strings.HasPrefix(arg, "-mod=mod") || strings.HasPrefix(arg, "-modfile=") || strings.HasPrefix(arg, "-toolexec=") || strings.HasPrefix(arg, "-vettool=") {
-				return arg, ""
+	case "go":
+		if sub == "list" || sub == "vet" {
+			for i, la := range lowerArgs {
+				if goWriteOrExecArgs[la] || strings.HasPrefix(la, "-mod=mod") || strings.HasPrefix(la, "-modfile=") || strings.HasPrefix(la, "-toolexec=") || strings.HasPrefix(la, "-vettool=") {
+					return args[i], ""
+				}
 			}
 		}
 	}
