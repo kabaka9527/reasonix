@@ -239,7 +239,7 @@ func (a *App) detachSessionRuntime(tab *WorkspaceTab) bool {
 		return false
 	}
 	if tab.sink != nil {
-		tab.sink.ctx = nil
+		tab.sink.clearContext()
 	}
 	a.mu.Lock()
 	a.ensureDetachedSessionsLocked()
@@ -299,7 +299,11 @@ func (a *App) detachRuntimeForReplacement(tab *WorkspaceTab) bool {
 	}
 	if detached.sink != nil {
 		detached.sink.tabID = detached.ID
-		detached.sink.ctx = nil
+		// clearContext (locked nil + drain the queued emitter), not a bare
+		// ctx=nil: the latter both data-races s.ctx and leaves already-queued
+		// events to flush onto the rebound tab after this session is backgrounded
+		// (#5352 — stale "AI 不断输出" on the now-visible session).
+		detached.sink.clearContext()
 	}
 
 	a.mu.Lock()
@@ -321,7 +325,7 @@ func applyRuntimeTab(target, source *WorkspaceTab, key string, wailsCtx context.
 	if source.sink != nil {
 		source.sink.tabID = target.ID
 		source.sink.app = app
-		source.sink.ctx = wailsCtx
+		source.sink.setContext(wailsCtx)
 	}
 
 	target.Ctrl = source.Ctrl
