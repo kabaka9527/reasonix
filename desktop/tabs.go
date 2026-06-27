@@ -5066,7 +5066,7 @@ func currentTabCollaborationMode(tab *WorkspaceTab) string {
 	if tab == nil {
 		return "normal"
 	}
-	if tab.Ctrl != nil && tab.Ctrl.PlanMode() {
+	if tabModeHasPlan(currentTabMode(tab)) {
 		return "plan"
 	}
 	if strings.TrimSpace(currentTabGoal(tab)) != "" && currentTabGoalStatus(tab) == control.GoalStatusRunning {
