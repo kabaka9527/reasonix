@@ -1110,7 +1110,7 @@ func (a *App) clearActiveSessionRuntime(tab *WorkspaceTab, oldCtrl control.Sessi
 	oldSink := tab.sink
 	if oldSink != nil {
 		oldSink.tabID = detachedRuntimeTabID(oldPath)
-		oldSink.ctx = nil
+		oldSink.clearContext()
 	}
 	if oldCtrl.RuntimeStatus().Cancellable {
 		oldCtrl.Cancel()
@@ -1150,7 +1150,7 @@ func (a *App) clearActiveSessionRuntime(tab *WorkspaceTab, oldCtrl control.Sessi
 		}
 		if oldSink != nil {
 			oldSink.tabID = tab.ID
-			oldSink.ctx = a.ctx
+			oldSink.setContext(a.ctx)
 		}
 		return err
 	}
@@ -1871,7 +1871,7 @@ func tabMatchesSession(tab *WorkspaceTab, dir, sessionPath string) bool {
 func (a *App) prepareRemovedSessionRuntimes(removed []removedSessionRuntime) error {
 	for _, item := range removed {
 		if item.sink != nil {
-			item.sink.ctx = nil
+			item.sink.clearContext()
 		}
 		if item.ctrl == nil {
 			continue
