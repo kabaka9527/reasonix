@@ -445,6 +445,7 @@ export function normalizeToolApprovalMode(
   if (normalized === "auto" || normalized === "yolo" || normalized === "ask") return normalized as ToolApprovalMode;
   if (legacyAutoApproveTools || (legacyMode && modeHasAutoApproveTools(legacyMode))) return "yolo";
   if (fallbackMode === "auto" && normalized === "") return "auto";
+  if (fallbackMode === "yolo" && normalized === "") return "yolo";
   return "ask";
 }
 

@@ -2604,7 +2604,7 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
                         type="button"
                         className={selectedConnectionToolApprovalMode === mode ? "provider-add-segmented__item provider-add-segmented__item--active" : "provider-add-segmented__item"}
                         disabled={busy}
-                        onClick={() => void persistConnection(selectedConnection.id, { toolApprovalMode: mode as BotConnectionToolApprovalMode })}
+                        onClick={() => void app.SetBotConnectionToolApprovalMode(selectedConnection.id, mode)}
                       >
                         {t(`settings.botToolApprovalMode.${mode || "inherit"}` as DictKey)}
                       </button>

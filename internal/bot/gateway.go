@@ -1089,3 +1089,24 @@ func normalizeAskSelection(q event.AskQuestion, raw string) []string {
 	}
 	return out
 }
+
+// UpdateConnectionToolApprovalMode updates the in-memory tool approval mode for
+// a single bot connection without restarting the gateway. Existing sessions
+// are notified so the new posture takes effect immediately.
+func (gw *BotGateway) UpdateConnectionToolApprovalMode(connID, mode string) {
+	mode = normalizeBotToolApprovalMode(mode)
+	gw.mu.Lock()
+	if gw.cfg.ConnectionChannels == nil {
+		gw.cfg.ConnectionChannels = make(map[string]ChannelConfig)
+	}
+	ch := gw.cfg.ConnectionChannels[connID]
+	ch.ToolApprovalMode = mode
+	gw.cfg.ConnectionChannels[connID] = ch
+	// Update every active session that belongs to this connection.
+	for key, state := range gw.controllers {
+		if strings.HasPrefix(key, connID+":") || key == connID {
+			state.ctrl.SetToolApprovalMode(mode)
+		}
+	}
+	gw.mu.Unlock()
+}
