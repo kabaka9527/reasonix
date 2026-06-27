@@ -2,9 +2,12 @@ package control
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"reasonix/internal/agent"
+	"reasonix/internal/event"
+	"reasonix/internal/evidence"
 	"reasonix/internal/jobs"
 )
 
@@ -193,5 +196,37 @@ func (o *turnOrchestrator) advanceGoalAfterTurn() bool {
 	if res.notice != "" {
 		c.notice(res.notice)
 	}
+	if res.notice == goalCompleteNotice && c.executor != nil {
+		c.completeRemainingGoalTodos()
+	}
 	return res.cont
+}
+
+// completeRemainingGoalTodos force-completes any remaining incomplete canonical
+// todos when the goal FSM transitions to completed and emits a synthetic
+// todo_write event so the frontend panel reflects the final state. Handles the
+// second [goal:complete] override (non-strict) where the model does not mark
+// each todo individually.
+func (c *Controller) completeRemainingGoalTodos() {
+	todos := c.executor.CanonicalTodoState()
+	if len(evidence.IncompleteTodos(todos)) == 0 {
+		return
+	}
+	for i := range todos {
+		todos[i].Status = "completed"
+	}
+	args, err := json.Marshal(map[string]any{"todos": todos})
+	if err != nil {
+		return
+	}
+	t := event.Tool{ID: "goal-final", Name: "todo_write", Args: string(args), ReadOnly: true}
+	c.sink.Emit(event.Event{Kind: event.ToolDispatch, Tool: t})
+	t.Output = "goal completed"
+	c.sink.Emit(event.Event{Kind: event.ToolResult, Tool: t})
+	c.executor.ReplaceTodoState(todos)
+	// Persist the completed todo state so a session reload does not revert
+	// to the old incomplete list — the synthetic todo_write events are not
+	// part of the session transcript and rebuildTodoState would otherwise
+	// reconstruct the stale pre-completion state.
+	c.goals.persistWithTodos(todos)
 }
