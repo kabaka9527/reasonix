@@ -4873,29 +4873,29 @@ func unixMilliOrZero(t time.Time) int64 {
 
 // ContextPanelInfo is the right-side panel's data for one tab.
 type ContextPanelInfo struct {
-	UsedTokens       int                         `json:"usedTokens"`
-	WindowTokens     int                         `json:"windowTokens"`
-	PromptTokens     int                         `json:"promptTokens"`
-	CompletionTokens int                         `json:"completionTokens"`
-	TotalTokens      int                         `json:"totalTokens"`
-	ReasoningTokens  int                         `json:"reasoningTokens"`
-	CacheHitTokens   int                         `json:"cacheHitTokens"`
-	CacheMissTokens  int                         `json:"cacheMissTokens"`
+	UsedTokens       int `json:"usedTokens"`
+	WindowTokens     int `json:"windowTokens"`
+	PromptTokens     int `json:"promptTokens"`
+	CompletionTokens int `json:"completionTokens"`
+	TotalTokens      int `json:"totalTokens"`
+	ReasoningTokens  int `json:"reasoningTokens"`
+	CacheHitTokens   int `json:"cacheHitTokens"`
+	CacheMissTokens  int `json:"cacheMissTokens"`
 	// Session-cumulative token counts (from telemetry, atomic snapshot).
 	// Separate from the per-turn fields above so existing consumers (status bar
 	// turn tokens, donut chart) are unaffected.
-	SessionCacheHitTokens      int  `json:"sessionCacheHitTokens"`
-	SessionCacheMissTokens     int  `json:"sessionCacheMissTokens"`
-	SessionCompletionTokens    int  `json:"sessionCompletionTokens"`
-	RequestCount     int                         `json:"requestCount"`
-	ElapsedMs        int64                       `json:"elapsedMs"`
-	SessionCost      float64                     `json:"sessionCost"`
-	SessionCurrency  string                      `json:"sessionCurrency,omitempty"`
-	SessionCostUsd   float64                     `json:"sessionCostUsd,omitempty"`
-	Sources          map[string]usageSourceStats `json:"sources,omitempty"`
-	Mock             bool                        `json:"mock,omitempty"`
-	ReadFiles        []readFileRecord            `json:"readFiles"`
-	ChangedFiles     []ChangedFileInfo           `json:"changedFiles"`
+	SessionCacheHitTokens   int                         `json:"sessionCacheHitTokens"`
+	SessionCacheMissTokens  int                         `json:"sessionCacheMissTokens"`
+	SessionCompletionTokens int                         `json:"sessionCompletionTokens"`
+	RequestCount            int                         `json:"requestCount"`
+	ElapsedMs               int64                       `json:"elapsedMs"`
+	SessionCost             float64                     `json:"sessionCost"`
+	SessionCurrency         string                      `json:"sessionCurrency,omitempty"`
+	SessionCostUsd          float64                     `json:"sessionCostUsd,omitempty"`
+	Sources                 map[string]usageSourceStats `json:"sources,omitempty"`
+	Mock                    bool                        `json:"mock,omitempty"`
+	ReadFiles               []readFileRecord            `json:"readFiles"`
+	ChangedFiles            []ChangedFileInfo           `json:"changedFiles"`
 }
 
 type ChangedFileInfo struct {
