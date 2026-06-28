@@ -3361,6 +3361,8 @@ func historyToolSubject(name, args string) string {
 		subject = historyArgString(a, "url")
 	case "task":
 		subject = firstNonEmpty(historyArgString(a, "description"), historyArgString(a, "prompt"))
+	case "run_skill":
+		subject = historyArgString(a, "name")
 	case "move_file":
 		src := historyArgString(a, "source_path")
 		dst := historyArgString(a, "destination_path")

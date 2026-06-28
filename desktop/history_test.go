@@ -278,6 +278,28 @@ func TestHistoryMessagesArchiveCompletedToolPayloads(t *testing.T) {
 	}
 }
 
+func TestHistoryMessagesKeepRunSkillSubjectWhenArchived(t *testing.T) {
+	args := `{"name":"code-reviewer","arguments":"review this branch"}`
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{
+			ID: "call_skill", Name: "run_skill", Arguments: args,
+		}}},
+		{Role: provider.RoleTool, Name: "run_skill", ToolCallID: "call_skill", Content: "Skill completed"},
+	}
+
+	got := historyMessages(msgs, func(content string) string { return content })
+	if len(got) != 2 {
+		t.Fatalf("history length = %d, want 2", len(got))
+	}
+	call := got[0].ToolCalls[0]
+	if !call.ArgumentsArchived || call.Arguments != "" {
+		t.Fatalf("run_skill arguments should be archived after completion: %+v", call)
+	}
+	if call.Subject != "code-reviewer" {
+		t.Fatalf("run_skill subject = %q, want code-reviewer", call.Subject)
+	}
+}
+
 func TestHistoryMessagesKeepToolFileDiffMetadata(t *testing.T) {
 	diff := "@@ -27 +27 @@\n-func save():\n+func save_file():\n"
 	msgs := []provider.Message{
