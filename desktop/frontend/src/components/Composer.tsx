@@ -1333,7 +1333,9 @@ export function Composer({
   };
 
   const onFileDropCapture = (e: DragEvent<HTMLDivElement>) => {
-    if (hasWorkspaceReferenceDrag(e.dataTransfer) || !hasFileDrag(e.dataTransfer) || !hasPathlessFileDrop(e.dataTransfer)) return;
+    if (hasWorkspaceReferenceDrag(e.dataTransfer) || !hasFileDrag(e.dataTransfer)) return;
+    e.preventDefault();
+    if (!hasPathlessFileDrop(e.dataTransfer)) return;
     const files = Array.from(e.dataTransfer.files);
     if (files.length === 0) return;
     stopNativeFileDrop(e);

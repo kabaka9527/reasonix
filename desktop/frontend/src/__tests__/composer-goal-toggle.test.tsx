@@ -172,6 +172,24 @@ function dispatchPasteFile(textarea: HTMLTextAreaElement, file: File) {
   textarea.dispatchEvent(event);
 }
 
+function nativeFileDropEvent(): Event {
+  const drop = new window.Event("drop", { bubbles: true, cancelable: true });
+  Object.defineProperty(drop, "dataTransfer", {
+    configurable: true,
+    value: {
+      types: ["Files"],
+      files: [{}],
+      items: [
+        {
+          kind: "file",
+          webkitGetAsEntry: () => ({ isFile: true }),
+        },
+      ],
+    },
+  });
+  return drop;
+}
+
 async function waitFor(label: string, predicate: () => boolean) {
   for (let attempt = 0; attempt < 20; attempt += 1) {
     await act(async () => {
@@ -452,20 +470,7 @@ console.log("\ncomposer goal toggle");
   const composer = document.querySelector(".composer") as HTMLElement | null;
   if (!composer) throw new Error("composer did not render");
 
-  const drop = new window.Event("drop", { bubbles: true, cancelable: true });
-  Object.defineProperty(drop, "dataTransfer", {
-    configurable: true,
-    value: {
-      types: ["Files"],
-      files: [{}],
-      items: [
-        {
-          kind: "file",
-          webkitGetAsEntry: () => ({ isFile: true }),
-        },
-      ],
-    },
-  });
+  const drop = nativeFileDropEvent();
   await act(async () => {
     composer.dispatchEvent(drop);
     await flushTimers();
@@ -474,6 +479,25 @@ console.log("\ncomposer goal toggle");
 
   await act(async () => {
     dropNavRoot.unmount();
+  });
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
+  const { root: dropWrapRoot } = await renderComposer();
+  const wrap = document.querySelector(".composer-wrap") as HTMLElement | null;
+  if (!wrap) throw new Error("composer wrap did not render");
+
+  const drop = nativeFileDropEvent();
+  await act(async () => {
+    wrap.dispatchEvent(drop);
+    await flushTimers();
+  });
+  ok(drop.defaultPrevented, "outer native file drop target prevents browser image navigation");
+
+  await act(async () => {
+    dropWrapRoot.unmount();
   });
   dom.window.close();
 }
