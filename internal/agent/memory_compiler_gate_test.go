@@ -48,3 +48,29 @@ func TestShouldStartMemoryCompilerRejectsHostControlText(t *testing.T) {
 		}
 	}
 }
+
+func TestShouldInjectMemoryCompilerContractForInputRequiresActionableTask(t *testing.T) {
+	cases := []struct {
+		input string
+		want  bool
+	}{
+		{input: "hello", want: false},
+		{input: "hi", want: false},
+		{input: "你好", want: false},
+		{input: "nihao", want: false},
+		{input: "thanks", want: false},
+		{input: "ok", want: false},
+		{input: "fix the bug", want: true},
+		{input: "create file nihao", want: true},
+		{input: "review this diff", want: true},
+		{input: "run tests", want: true},
+		{input: "帮我修复这个 bug", want: true},
+		{input: "继续处理这个 issue", want: true},
+		{input: "fix @auth.go", want: true},
+	}
+	for _, tc := range cases {
+		if got := shouldInjectMemoryCompilerContractForInput(tc.input); got != tc.want {
+			t.Fatalf("shouldInjectMemoryCompilerContractForInput(%q) = %v, want %v", tc.input, got, tc.want)
+		}
+	}
+}

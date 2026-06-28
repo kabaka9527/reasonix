@@ -419,6 +419,32 @@ func shouldStartMemoryCompiler(input string) bool {
 	return !strings.HasPrefix(trimmed, "<")
 }
 
+func shouldInjectMemoryCompilerContractForInput(input string) bool {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return false
+	}
+	normalized := strings.ToLower(strings.Trim(trimmed, " \t\r\n.!?。！？,，;；:："))
+	switch normalized {
+	case "", "hello", "hi", "hey", "你好", "您好", "nihao", "thanks", "thank you", "谢谢", "ok", "okay", "好的", "嗯":
+		return false
+	}
+	actionNeedles := []string{
+		"fix", "debug", "repair", "resolve", "reproduce",
+		"create", "add", "write", "edit", "update", "change", "delete", "remove", "rename",
+		"review", "inspect", "analyze", "check", "test", "run", "build", "implement", "refactor",
+		"continue work", "continue the", "continue this",
+		"修复", "调试", "解决", "复现", "创建", "新建", "添加", "编写", "编辑", "修改", "更新",
+		"删除", "移除", "重命名", "评审", "检查", "分析", "测试", "运行", "构建", "实现", "重构", "继续处理",
+	}
+	for _, needle := range actionNeedles {
+		if strings.Contains(normalized, needle) {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *Agent) tryMarkMemoryCompilerInjected(now time.Time) bool {
 	if a == nil {
 		return false
@@ -772,7 +798,9 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 	input = a.withTurnPreferences(rawInput)
 	if memCompiler := a.memoryCompilerRuntime(); memCompiler != nil && !MemoryCompilerSkipFromContext(ctx) && shouldStartMemoryCompiler(memoryCompilerInput) {
 		if compiledInput, turn := memCompiler.StartTurn(ctx, memoryCompilerInput, a.session.Snapshot()); turn != nil {
-			injected := strings.TrimSpace(compiledInput) != "" && a.tryMarkMemoryCompilerInjected(time.Now())
+			injected := strings.TrimSpace(compiledInput) != "" &&
+				shouldInjectMemoryCompilerContractForInput(memoryCompilerInput) &&
+				a.tryMarkMemoryCompilerInjected(time.Now())
 			if !injected {
 				turn.SuppressInjection()
 			}

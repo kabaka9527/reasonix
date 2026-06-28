@@ -201,6 +201,47 @@ func TestRunCompilesMemorySourceFromUnexpandedContext(t *testing.T) {
 	}
 }
 
+func TestRunDoesNotInjectMemoryCompilerContractForGreeting(t *testing.T) {
+	rt := memorycompiler.New(t.TempDir())
+	_, seed := rt.StartTurn(context.Background(), "fix a bug", nil)
+	seed.RecordToolResults([]memorycompiler.ToolRecord{
+		{Name: "bash", Error: "exit status 1"},
+		{Name: "bash", Error: "exit status 1"},
+	})
+	seed.Finish(nil)
+
+	mp := testutil.NewMock("m", testutil.Turn{Text: "hi"})
+	var stats []event.MemoryCompilerStats
+	sink := event.FuncSink(func(e event.Event) {
+		if e.Kind == event.MemoryCompilerStatsEvent && e.MemoryCompiler != nil {
+			stats = append(stats, *e.MemoryCompiler)
+		}
+	})
+	a := New(mp, echoRegistry(), NewSession(""), Options{MemoryCompiler: rt}, sink)
+
+	if err := a.Run(context.Background(), "hello"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	reqs := mp.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("requests = %d, want 1", len(reqs))
+	}
+	user := lastUserMessageFromRequest(t, reqs[0])
+	if strings.Contains(user.Content, "<memory-compiler-execution>") {
+		t.Fatalf("greeting was replaced by Memory v5 contract:\n%s", user.Content)
+	}
+	if user.Content != "hello" {
+		t.Fatalf("greeting should stay raw user input, got:\n%s", user.Content)
+	}
+	if len(stats) != 1 {
+		t.Fatalf("memory compiler stats events = %d, want 1", len(stats))
+	}
+	if stats[0].Injected || !stats[0].UsefulIR || stats[0].CompiledTokens != 0 {
+		t.Fatalf("greeting should keep useful Memory v5 observation without prompt injection: %+v", stats[0])
+	}
+}
+
 func TestRunThrottlesMemoryCompilerInjectionButKeepsLearning(t *testing.T) {
 	rt := memorycompiler.New(t.TempDir())
 	_, seed := rt.StartTurn(context.Background(), "fix a bug", nil)
@@ -223,10 +264,10 @@ func TestRunThrottlesMemoryCompilerInjectionButKeepsLearning(t *testing.T) {
 	})
 	a := New(mp, echoRegistry(), NewSession(""), Options{MemoryCompiler: rt}, sink)
 
-	if err := a.Run(context.Background(), "first prompt"); err != nil {
+	if err := a.Run(context.Background(), "fix first prompt"); err != nil {
 		t.Fatalf("first Run: %v", err)
 	}
-	if err := a.Run(context.Background(), "second prompt"); err != nil {
+	if err := a.Run(context.Background(), "fix second prompt"); err != nil {
 		t.Fatalf("second Run: %v", err)
 	}
 
@@ -242,7 +283,7 @@ func TestRunThrottlesMemoryCompilerInjectionButKeepsLearning(t *testing.T) {
 	if strings.Contains(secondUser.Content, "<memory-compiler-execution>") {
 		t.Fatalf("second quick turn should not inject Memory v5 contract:\n%s", secondUser.Content)
 	}
-	if secondUser.Content != "second prompt" {
+	if secondUser.Content != "fix second prompt" {
 		t.Fatalf("second quick turn should preserve raw user input, got:\n%s", secondUser.Content)
 	}
 	if len(stats) != 2 {
