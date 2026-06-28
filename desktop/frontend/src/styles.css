@@ -3167,6 +3167,10 @@ a[href] {
   border-color: var(--accent-soft);
   background: var(--bg-elev);
 }
+.warm-collapse:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
 .warm-turn {
   max-width: var(--maxw);
   margin: 6px auto;

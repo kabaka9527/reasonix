@@ -88,10 +88,14 @@ async function renderComposer(props: Partial<Parameters<typeof Composer>[0]> = {
   const calls: {
     send: string[];
     submit: (string | undefined)[];
+    cancel: number;
+    clearGoal: number;
     setCollaborationMode: CollaborationMode[];
   } = {
     send: [],
     submit: [],
+    cancel: 0,
+    clearGoal: 0,
     setCollaborationMode: [],
   };
   let currentProps: Parameters<typeof Composer>[0] = {
@@ -106,13 +110,18 @@ async function renderComposer(props: Partial<Parameters<typeof Composer>[0]> = {
       calls.send.push(displayText);
       calls.submit.push(submitText);
     },
-    onCancel: () => undefined,
+    onCancel: () => {
+      calls.cancel += 1;
+      return undefined;
+    },
     onCycleMode: () => {},
     onSetMode: () => {},
     onSetCollaborationMode: (mode) => calls.setCollaborationMode.push(mode),
     onSetToolApprovalMode: () => {},
     onToggleYoloApprovalMode: () => {},
-    onClearGoal: () => {},
+    onClearGoal: () => {
+      calls.clearGoal += 1;
+    },
     onSwitchModel: () => {},
     onSetEffort: () => {},
     onSetTokenMode: () => {},
@@ -204,6 +213,32 @@ console.log("\ncomposer goal toggle");
   eq(calls.send.length, 0, "enabling goal mode with a draft does not send");
   eq(calls.setCollaborationMode.join(","), "goal", "enabling goal mode switches only the collaboration axis");
   eq(textarea.value, "ship the release notes", "enabling goal mode preserves the draft text");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
+  const { root, calls } = await renderComposer({
+    running: true,
+    collaborationMode: "goal",
+    goal: "finish the migration",
+    turnStartAt: Date.now(),
+  });
+
+  const stopButton = document.querySelector(".composer-runstatus__stop") as HTMLButtonElement | null;
+  if (!stopButton) throw new Error("composer stop button did not render");
+
+  await act(async () => {
+    stopButton.click();
+    await flushTimers();
+  });
+
+  eq(calls.cancel, 1, "goal-mode stop cancels the running turn");
+  eq(calls.clearGoal, 1, "goal-mode stop clears the active goal");
 
   await act(async () => {
     root.unmount();

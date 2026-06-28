@@ -818,6 +818,7 @@ export default function App() {
     restoreSession,
     purgeTrashedSession,
     renameSession,
+    loadOlderHistory,
     refreshMeta,
     pickWorkspace,
     switchWorkspace,
@@ -3255,6 +3256,10 @@ export default function App() {
                 rewindSignal={rewindSignal}
                 revealSignal={transcriptRevealSignal}
                 hydrating={transcriptHydrating}
+                hasOlderHistory={state.historyHasOlder && !rewindState}
+                olderHistoryCount={state.historyStartTurn}
+                loadingOlderHistory={state.historyOlderLoading}
+                onLoadOlderHistory={() => activeTabId && loadOlderHistory(activeTabId)}
               />
             )}
           </main>

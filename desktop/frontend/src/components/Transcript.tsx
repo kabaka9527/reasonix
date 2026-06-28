@@ -95,6 +95,10 @@ export function Transcript({
   rewindSignal = 0,
   revealSignal = 0,
   hydrating = false,
+  hasOlderHistory = false,
+  olderHistoryCount = 0,
+  loadingOlderHistory = false,
+  onLoadOlderHistory,
 }: {
   items: Item[];
   live?: LiveStream;
@@ -114,6 +118,10 @@ export function Transcript({
   rewindSignal?: number;
   revealSignal?: number;
   hydrating?: boolean;
+  hasOlderHistory?: boolean;
+  olderHistoryCount?: number;
+  loadingOlderHistory?: boolean;
+  onLoadOlderHistory?: () => void;
 }) {
   const t = useT();
   const {
@@ -124,7 +132,7 @@ export function Transcript({
     smoothScrollTo,
     scrollToBottomAfterLayout,
     trackQuestions,
-    repinIfWasPinned,
+    scheduleRepinIfWasPinned,
     resizeFrame,
     lastClientHeight,
     lastFooterHeight,
@@ -200,11 +208,12 @@ export function Transcript({
     const el = scrollRef.current;
     if (!el || typeof ResizeObserver === "undefined") return;
     lastClientHeight.current = el.clientHeight;
-    const observer = new ResizeObserver(() => {
-      const previous = lastClientHeight.current ?? el.clientHeight;
-      lastClientHeight.current = el.clientHeight;
+    const observer = new ResizeObserver((entries) => {
+      const height = entries[0]?.contentRect.height ?? el.clientHeight;
+      const previous = lastClientHeight.current ?? height;
+      lastClientHeight.current = height;
       if (items.length === 0) return;
-      repinIfWasPinned(el.clientHeight - previous);
+      scheduleRepinIfWasPinned(height - previous);
     });
     observer.observe(el);
     return () => {
@@ -214,7 +223,7 @@ export function Transcript({
         resizeFrame.current = null;
       }
     };
-  }, [items.length]);
+  }, [items.length, scheduleRepinIfWasPinned]);
 
   // Footer height changes → smooth scroll repin with GSAP.
   useEffect(() => {
@@ -223,8 +232,8 @@ export function Transcript({
     const previous = lastFooterHeight.current ?? footerHeight;
     lastFooterHeight.current = footerHeight;
     if (items.length === 0) return;
-    repinIfWasPinned(previous - footerHeight);
-  }, [footerHeight, items.length]);
+    scheduleRepinIfWasPinned(previous - footerHeight);
+  }, [footerHeight, items.length, scheduleRepinIfWasPinned]);
 
   // After a non-fork rewind, scroll to the last user message (the
   // rewound-to point) so the user knows where they are.
@@ -630,6 +639,16 @@ export function Transcript({
         {empty && !hydrating && <Welcome onPrompt={onPrompt} variant={welcomeVariant} />}
 
         <LiveStreamContext.Provider value={live}>
+          {hasOlderHistory && (
+            <button
+              type="button"
+              className="warm-collapse"
+              onClick={onLoadOlderHistory}
+              disabled={loadingOlderHistory}
+            >
+              {loadingOlderHistory ? t("common.loading") : t("transcript.showEarlierHistory", { n: olderHistoryCount })}
+            </button>
+          )}
           {turnGroups.length > HOT_TURNS && (
             <WarmZone
               turnGroups={turnGroups}

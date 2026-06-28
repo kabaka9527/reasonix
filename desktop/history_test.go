@@ -120,6 +120,112 @@ func TestHistoryMessagesCarryCheckpointTurnsAcrossHiddenSyntheticUsers(t *testin
 	}
 }
 
+func TestHistoryPageFromMessagesWindowsByUserTurn(t *testing.T) {
+	messages := []HistoryMessage{
+		{Role: "notice", Content: "session restored"},
+		{Role: "user", Content: "first"},
+		{Role: "assistant", Content: "one"},
+		{Role: "tool", ToolName: "bash", Content: "tool one"},
+		{Role: "user", Content: "second"},
+		{Role: "assistant", Content: "two"},
+		{Role: "user", Content: "third"},
+		{Role: "assistant", Content: "three"},
+	}
+
+	latest := historyPageFromMessages(messages, 0, 2)
+	if latest.StartTurn != 1 || latest.EndTurn != 3 || latest.TotalTurns != 3 || !latest.HasOlder {
+		t.Fatalf("latest page metadata = %+v, want turns 1-3/3 hasOlder", latest)
+	}
+	if len(latest.Messages) != 4 || latest.Messages[0].Content != "second" || latest.Messages[3].Content != "three" {
+		t.Fatalf("latest page messages = %+v, want second and third turns", latest.Messages)
+	}
+
+	older := historyPageFromMessages(messages, latest.StartTurn, 2)
+	if older.StartTurn != 0 || older.EndTurn != 1 || older.TotalTurns != 3 || older.HasOlder {
+		t.Fatalf("older page metadata = %+v, want turns 0-1/3 no older", older)
+	}
+	if len(older.Messages) != 4 || older.Messages[0].Content != "session restored" || older.Messages[1].Content != "first" {
+		t.Fatalf("older page messages = %+v, want prelude and first turn", older.Messages)
+	}
+}
+
+func TestHistoryPageFromProviderMessagesWindowsVisibleUsers(t *testing.T) {
+	msgs := []provider.Message{
+		{Role: provider.RoleSystem, Content: "sys"},
+		{Role: provider.RoleUser, Content: "first"},
+		{Role: provider.RoleAssistant, Content: "one"},
+		{Role: provider.RoleUser, Content: "Continue pursuing the active goal. If it is complete, provide the concise final result."},
+		{Role: provider.RoleAssistant, Content: "hidden continuation"},
+		{Role: provider.RoleUser, Content: "second"},
+		{Role: provider.RoleAssistant, Content: "two"},
+		{Role: provider.RoleUser, Content: agent.MidTurnSteerPrefix + "\nupdate the plan"},
+		{Role: provider.RoleUser, Content: "third"},
+		{Role: provider.RoleAssistant, Content: "three"},
+	}
+
+	latest := historyPageFromProviderMessages(
+		msgs,
+		func(content string) string { return content },
+		nil,
+		map[int]int{1: 0, 5: 2, 8: 3},
+		0,
+		2,
+	)
+	if latest.StartTurn != 1 || latest.EndTurn != 3 || latest.TotalTurns != 3 || !latest.HasOlder {
+		t.Fatalf("latest page metadata = %+v, want turns 1-3/3 hasOlder", latest)
+	}
+	if len(latest.Messages) != 5 {
+		t.Fatalf("latest page length = %d, want 5: %+v", len(latest.Messages), latest.Messages)
+	}
+	if latest.Messages[0].Role != "user" || latest.Messages[0].Content != "second" {
+		t.Fatalf("first latest message = %+v, want second user", latest.Messages[0])
+	}
+	if latest.Messages[0].CheckpointTurn == nil || *latest.Messages[0].CheckpointTurn != 2 {
+		t.Fatalf("second user checkpoint = %v, want 2", latest.Messages[0].CheckpointTurn)
+	}
+	if latest.Messages[2].Role != "notice" || !strings.Contains(latest.Messages[2].Content, "update the plan") {
+		t.Fatalf("steer message = %+v, want notice in second turn window", latest.Messages[2])
+	}
+	if latest.Messages[3].Role != "user" || latest.Messages[3].Content != "third" {
+		t.Fatalf("third latest message = %+v, want third user", latest.Messages[3])
+	}
+	if latest.Messages[3].CheckpointTurn == nil || *latest.Messages[3].CheckpointTurn != 3 {
+		t.Fatalf("third user checkpoint = %v, want 3", latest.Messages[3].CheckpointTurn)
+	}
+
+	older := historyPageFromProviderMessages(
+		msgs,
+		func(content string) string { return content },
+		nil,
+		map[int]int{1: 0, 5: 2, 8: 3},
+		latest.StartTurn,
+		2,
+	)
+	if older.StartTurn != 0 || older.EndTurn != 1 || older.TotalTurns != 3 || older.HasOlder {
+		t.Fatalf("older page metadata = %+v, want turns 0-1/3 no older", older)
+	}
+	if len(older.Messages) != 4 || older.Messages[0].Role != "system" || older.Messages[1].Content != "first" || older.Messages[3].Content != "hidden continuation" {
+		t.Fatalf("older page messages = %+v, want prelude and first visible turn", older.Messages)
+	}
+}
+
+func TestHistoryCheckpointTurnsSkipsHiddenUsers(t *testing.T) {
+	msgs := []provider.Message{
+		{Role: provider.RoleUser, Content: "first visible"},
+		{Role: provider.RoleAssistant, Content: "ok"},
+		{Role: provider.RoleUser, Content: "Continue pursuing the active goal. If it is complete, provide the concise final result."},
+		{Role: provider.RoleUser, Content: "second visible"},
+	}
+	got := historyCheckpointTurns(
+		msgs,
+		func(content string) string { return content },
+		map[int]int{0: 0, 2: 1, 3: 2},
+	)
+	if len(got) != 2 || got[0] != 0 || got[1] != 2 {
+		t.Fatalf("checkpoint turns = %v, want [0 2]", got)
+	}
+}
+
 func TestHistoryForTabRestoresPlannerDisplayAfterReload(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")

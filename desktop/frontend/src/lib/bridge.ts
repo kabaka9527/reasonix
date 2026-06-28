@@ -33,6 +33,7 @@ import type {
   EffortInfo,
   FilePreview,
   HistoryMessage,
+  HistoryPage,
   HookConfigView,
   HooksSettingsView,
   JobView,
@@ -152,6 +153,9 @@ export interface AppBindings {
   ClearSession(): Promise<void>;
   History(): Promise<HistoryMessage[]>;
   HistoryForTab(tabID: string): Promise<HistoryMessage[]>;
+  HistoryPage(beforeTurn: number, limit: number): Promise<HistoryPage>;
+  HistoryPageForTab(tabID: string, beforeTurn: number, limit: number): Promise<HistoryPage>;
+  HistoryCheckpointTurnsForTab(tabID: string): Promise<number[]>;
   Checkpoints(): Promise<CheckpointMeta[]>;
   CheckpointsForTab(tabID: string): Promise<CheckpointMeta[]>;
   Rewind(turn: number, scope: string): Promise<void>;
@@ -162,7 +166,10 @@ export interface AppBindings {
   ListTrashedSessions(): Promise<SessionMeta[]>;
   ResumeSession(path: string): Promise<HistoryMessage[]>;
   ResumeSessionForTab(tabID: string, path: string): Promise<HistoryMessage[]>;
+  ResumeSessionPage(path: string, limit: number): Promise<HistoryPage>;
+  ResumeSessionPageForTab(tabID: string, path: string, limit: number): Promise<HistoryPage>;
   OpenChannelSessionForTab(tabID: string, path: string): Promise<HistoryMessage[]>;
+  OpenChannelSessionPageForTab(tabID: string, path: string, limit: number): Promise<HistoryPage>;
   PreviewSession(path: string): Promise<HistoryMessage[]>;
   DeleteSession(path: string): Promise<void>;
   RestoreSession(path: string): Promise<void>;
@@ -1162,8 +1169,8 @@ function makeMockApp(): AppBindings {
     });
     return out;
   };
-  const mockTopicHistory = (topicId: string): HistoryMessage[] => {
-    switch (topicId) {
+	  const mockTopicHistory = (topicId: string): HistoryMessage[] => {
+	    switch (topicId) {
       case "topic_product":
         return [
           {
@@ -1237,9 +1244,22 @@ function makeMockApp(): AppBindings {
         ];
       default:
         return [];
-    }
-  };
-  const mockRuntimeInjected = new Set<string>();
+	    }
+	  };
+	  const mockHistoryPage = (messages: HistoryMessage[], beforeTurn = 0, limit = 60): HistoryPage => {
+	    const totalTurns = messages.reduce((count, message) => count + (message.role === "user" ? 1 : 0), 0);
+	    const safeLimit = Math.max(1, Math.min(200, Math.floor(limit || 60)));
+	    const endTurn = beforeTurn > 0 && beforeTurn <= totalTurns ? beforeTurn : totalTurns;
+	    const startTurn = Math.max(0, endTurn - safeLimit);
+	    let turn = -1;
+	    const pageMessages = messages.filter((message) => {
+	      if (message.role === "user") turn += 1;
+	      if (turn < 0) return startTurn === 0;
+	      return turn >= startTurn && turn < endTurn;
+	    });
+	    return { messages: pageMessages, startTurn, endTurn, totalTurns, hasOlder: startTurn > 0 };
+	  };
+	  const mockRuntimeInjected = new Set<string>();
   const queueMockTopicRuntime = (tab: TabMeta) => {
     if (!runningMock) return;
     const status = mockTopicStatus(tab.topicId);
@@ -1814,6 +1834,20 @@ function makeMockApp(): AppBindings {
           }
           return this.History();
         },
+        async HistoryPage(beforeTurn = 0, limit = 60) {
+          return mockHistoryPage(await this.History(), beforeTurn, limit);
+        },
+        async HistoryPageForTab(tabID: string, beforeTurn = 0, limit = 60) {
+          return mockHistoryPage(await this.HistoryForTab(tabID), beforeTurn, limit);
+        },
+        async HistoryCheckpointTurnsForTab(tabID: string) {
+          const turns: number[] = [];
+          for (const message of await this.HistoryForTab(tabID)) {
+            if (message.role !== "user") continue;
+            turns.push(message.checkpointTurn ?? turns.length);
+          }
+          return turns;
+        },
     async ListSessions() {
       return sessions.map((s) => ({ ...s }));
     },
@@ -1830,14 +1864,23 @@ function makeMockApp(): AppBindings {
         { role: "assistant", content: "This is a mock resumed transcript — the real one comes from the kernel." },
       ];
     },
-    async ResumeSessionForTab(_tabID: string, path: string) {
-      return this.ResumeSession(path);
-    },
-    async OpenChannelSessionForTab(tabID: string, path: string) {
-      mockTabs = mockTabs.map((tab) => tab.id === tabID ? { ...tab, sessionPath: path, readOnly: true } : tab);
-      return this.ResumeSession(path);
-    },
-    async PreviewSession(path: string) {
+	    async ResumeSessionForTab(_tabID: string, path: string) {
+	      return this.ResumeSession(path);
+	    },
+	    async ResumeSessionPage(path: string, limit = 60) {
+	      return mockHistoryPage(await this.ResumeSession(path), 0, limit);
+	    },
+	    async ResumeSessionPageForTab(_tabID: string, path: string, limit = 60) {
+	      return this.ResumeSessionPage(path, limit);
+	    },
+	    async OpenChannelSessionForTab(tabID: string, path: string) {
+	      mockTabs = mockTabs.map((tab) => tab.id === tabID ? { ...tab, sessionPath: path, readOnly: true } : tab);
+	      return this.ResumeSession(path);
+	    },
+	    async OpenChannelSessionPageForTab(tabID: string, path: string, limit = 60) {
+	      return mockHistoryPage(await this.OpenChannelSessionForTab(tabID, path), 0, limit);
+	    },
+	    async PreviewSession(path: string) {
       const s = sessions.find((x) => x.path === path) ?? trashedSessions.find((x) => x.path === path);
       return [
         { role: "user", content: s?.preview || `(mock) preview ${path}` },
