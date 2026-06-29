@@ -83,6 +83,65 @@ func TestPruneStaleToolResults(t *testing.T) {
 	}
 }
 
+func TestSnipStaleToolResults(t *testing.T) {
+	var lines []string
+	for i := 0; i < 1000; i++ {
+		lines = append(lines, "line")
+	}
+	big := strings.Join(lines, "\n")
+	sess := pruneFixture(big)
+	dir := t.TempDir()
+	a := New(nil, tool.NewRegistry(), sess, Options{ContextWindow: 1000, RecentKeep: 2, ArchiveDir: dir}, event.Discard)
+
+	st, err := a.SnipStaleToolResults()
+	if err != nil {
+		t.Fatalf("snip: %v", err)
+	}
+	if st.Results != 1 {
+		t.Fatalf("Results = %d, want 1", st.Results)
+	}
+	snipped := sess.Snapshot()[3].Content
+	if !strings.HasPrefix(snipped, snippedMarker) {
+		t.Fatalf("tool content not snipped: %.80q", snipped)
+	}
+	if !strings.Contains(snipped, "[... ") || !strings.Contains(snipped, "lines omitted") {
+		t.Fatalf("snipped content missing omission marker: %.120q", snipped)
+	}
+	if st.SavedChars <= 0 {
+		t.Fatalf("SavedChars = %d, want positive", st.SavedChars)
+	}
+	if st.Archive == "" {
+		t.Fatal("no archive written")
+	}
+
+	st2, err := a.SnipStaleToolResults()
+	if err != nil {
+		t.Fatalf("second snip: %v", err)
+	}
+	if st2.Results != 0 {
+		t.Fatalf("second pass snipped %d, want 0", st2.Results)
+	}
+}
+
+func TestSnipCanUpgradeToPrune(t *testing.T) {
+	big := strings.Join([]string{strings.Repeat("a\n", 800), strings.Repeat("b\n", 800)}, "")
+	sess := pruneFixture(big)
+	a := New(nil, tool.NewRegistry(), sess, Options{ContextWindow: 1000, RecentKeep: 2, ArchiveDir: t.TempDir()}, event.Discard)
+
+	snipStats, err := a.SnipStaleToolResults()
+	if err != nil || snipStats.Results != 1 {
+		t.Fatalf("snip st=%+v err=%v, want one result", snipStats, err)
+	}
+	if pruneStats, err := a.PruneStaleToolResults(); err != nil || pruneStats.Results != 1 {
+		t.Fatalf("prune st=%+v err=%v, want one upgraded result", pruneStats, err)
+	}
+	if got := sess.Snapshot()[3].Content; !strings.HasPrefix(got, prunedMarker) {
+		t.Fatalf("snipped result was not upgraded to prune: %.80q", got)
+	} else if !strings.Contains(got, snipStats.Archive) {
+		t.Fatalf("pruned marker did not preserve original archive path %q: %.120q", snipStats.Archive, got)
+	}
+}
+
 func TestPruneNoopWithoutWindow(t *testing.T) {
 	sess := pruneFixture(strings.Repeat("x", 5000))
 	a := New(nil, tool.NewRegistry(), sess, Options{RecentKeep: 2}, event.Discard)
@@ -119,6 +178,52 @@ func TestMaybeCompactPruneAvoidsFold(t *testing.T) {
 	}
 }
 
+func TestMaybeCompactSnipsAtSnipRatioWithoutFold(t *testing.T) {
+	prov := &fakeProvider{reply: "summary"}
+	sess := pruneFixture(strings.Repeat("line\n", 1000))
+	a := New(prov, tool.NewRegistry(), sess, Options{ContextWindow: 1000, RecentKeep: 2, ArchiveDir: t.TempDir()}, event.Discard)
+
+	a.maybeCompact(context.Background(), &provider.Usage{PromptTokens: 650})
+
+	if prov.got != nil {
+		t.Fatal("summarizer was called at snip ratio")
+	}
+	if got := sess.Snapshot()[3].Content; !strings.HasPrefix(got, snippedMarker) {
+		t.Errorf("tool result not snipped at snip ratio: %.80q", got)
+	}
+}
+
+func TestMaybeCompactPruneFallsThroughWhenStillOverThreshold(t *testing.T) {
+	prov := &fakeProvider{reply: "summary"}
+	sess := &Session{Messages: []provider.Message{
+		{Role: provider.RoleSystem, Content: "sys"},
+		{Role: provider.RoleUser, Content: "task"},
+		{Role: provider.RoleAssistant, Content: strings.Repeat("foldable assistant work\n", 500)},
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{ID: "1", Name: "read_file", Arguments: "{}"}}},
+		{Role: provider.RoleTool, ToolCallID: "1", Name: "read_file", Content: strings.Repeat("x", 1200)},
+		{Role: provider.RoleAssistant, Content: "step done"},
+		{Role: provider.RoleUser, Content: "next"},
+		{Role: provider.RoleAssistant, Content: "ok"},
+	}}
+	a := New(prov, tool.NewRegistry(), sess, Options{ContextWindow: 10000, RecentKeep: 2, ArchiveDir: t.TempDir()}, event.Discard)
+
+	a.maybeCompact(context.Background(), &provider.Usage{PromptTokens: 8900})
+
+	if prov.got == nil {
+		t.Fatal("summarizer was not called although pruning still left prompt above compact threshold")
+	}
+	foundSummary := false
+	for _, m := range sess.Snapshot() {
+		if strings.Contains(m.Content, summaryTagOpen) {
+			foundSummary = true
+			break
+		}
+	}
+	if !foundSummary {
+		t.Fatal("summary compaction did not update the session")
+	}
+}
+
 func TestMaybeCompactForceRatioStillFolds(t *testing.T) {
 	prov := &fakeProvider{reply: "summary"}
 	// A big assistant turn in the foldable region (after the pinned task, before the
@@ -152,6 +257,36 @@ func TestMaybeCompactForceRatioStillFolds(t *testing.T) {
 	}
 	if !found {
 		t.Error("no compaction summary in session after forced fold")
+	}
+}
+
+func TestPruneSkipsRecentTail(t *testing.T) {
+	old := strings.Repeat("old\n", 1000)
+	recent := strings.Repeat("recent\n", 1000)
+	sess := &Session{Messages: []provider.Message{
+		{Role: provider.RoleSystem, Content: "sys"},
+		{Role: provider.RoleUser, Content: "task"},
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{ID: "old", Name: "read_file", Arguments: "{}"}}},
+		{Role: provider.RoleTool, ToolCallID: "old", Name: "read_file", Content: old},
+		{Role: provider.RoleUser, Content: "next"},
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{ID: "recent", Name: "read_file", Arguments: "{}"}}},
+		{Role: provider.RoleTool, ToolCallID: "recent", Name: "read_file", Content: recent},
+	}}
+	a := New(nil, tool.NewRegistry(), sess, Options{ContextWindow: 1000, RecentKeep: 3, ArchiveDir: t.TempDir()}, event.Discard)
+
+	st, err := a.PruneStaleToolResults()
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if st.Results != 1 {
+		t.Fatalf("Results = %d, want only the stale result pruned", st.Results)
+	}
+	msgs := sess.Snapshot()
+	if !strings.HasPrefix(msgs[3].Content, prunedMarker) {
+		t.Fatalf("old result was not pruned: %.80q", msgs[3].Content)
+	}
+	if msgs[6].Content != recent {
+		t.Fatalf("recent tail tool result was rewritten")
 	}
 }
 
