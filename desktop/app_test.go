@@ -1687,7 +1687,17 @@ func TestSetModelForTabRefreshesCarriedSystemPrompt(t *testing.T) {
 	}
 }
 
-func TestEnsureTabControllerWorkspaceRebuildsStaleWorkspace(t *testing.T) {
+type staleWorkspaceBindingFixture struct {
+	app          *App
+	tab          *WorkspaceTab
+	oldCtrl      *control.Controller
+	projectA     string
+	sessionDirA  string
+	sessionPathA string
+}
+
+func newStaleWorkspaceBindingFixture(t *testing.T, suffix string) staleWorkspaceBindingFixture {
+	t.Helper()
 	isolateDesktopUserDirs(t)
 	setDesktopTestCredential(t, "TEST_MODEL_KEY", "sk-test")
 
@@ -1710,8 +1720,8 @@ func TestEnsureTabControllerWorkspaceRebuildsStaleWorkspace(t *testing.T) {
 		t.Fatalf("add project B: %v", err)
 	}
 
-	topicID := "topic_rebuild_workspace"
-	topicTitle := "Rebuild workspace"
+	topicID := "topic_" + suffix
+	topicTitle := "Rebuild workspace " + suffix
 	sessionDirA := desktopSessionDir(projectA)
 	sessionDirB := desktopSessionDir(projectB)
 	if err := os.MkdirAll(sessionDirA, 0o755); err != nil {
@@ -1739,7 +1749,7 @@ func TestEnsureTabControllerWorkspaceRebuildsStaleWorkspace(t *testing.T) {
 	app := NewApp()
 	app.readyHook = func() {}
 	tab := &WorkspaceTab{
-		ID:            "tab_stale_workspace",
+		ID:            "tab_stale_workspace_" + suffix,
 		Scope:         "project",
 		WorkspaceRoot: projectB,
 		TopicID:       topicID,
@@ -1748,7 +1758,7 @@ func TestEnsureTabControllerWorkspaceRebuildsStaleWorkspace(t *testing.T) {
 		Ready:         true,
 		model:         "test/test-model",
 		Ctrl:          oldCtrl,
-		sink:          &tabEventSink{tabID: "tab_stale_workspace", app: app},
+		sink:          &tabEventSink{tabID: "tab_stale_workspace_" + suffix, app: app},
 		disabledMCP:   map[string]ServerView{},
 	}
 	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
@@ -1760,27 +1770,64 @@ func TestEnsureTabControllerWorkspaceRebuildsStaleWorkspace(t *testing.T) {
 		}
 	})
 
-	if err := app.ensureTabControllerWorkspace(tab); err != nil {
-		t.Fatalf("ensureTabControllerWorkspace: %v", err)
+	return staleWorkspaceBindingFixture{
+		app:          app,
+		tab:          tab,
+		oldCtrl:      oldCtrl,
+		projectA:     projectA,
+		sessionDirA:  sessionDirA,
+		sessionPathA: sessionPathA,
 	}
-	if tab.Ctrl == nil {
+}
+
+func assertTabRebuiltToPinnedWorkspace(t *testing.T, f staleWorkspaceBindingFixture) {
+	t.Helper()
+	if f.tab.Ctrl == nil {
 		t.Fatal("controller was not rebuilt")
 	}
-	if tab.Ctrl == oldCtrl {
+	if f.tab.Ctrl == f.oldCtrl {
 		t.Fatal("stale controller was reused")
 	}
-	if got := normalizeProjectRoot(tab.WorkspaceRoot); got != normalizeProjectRoot(projectA) {
-		t.Fatalf("tab workspace root = %q, want project A %q", got, normalizeProjectRoot(projectA))
+	if got := normalizeProjectRoot(f.tab.WorkspaceRoot); got != normalizeProjectRoot(f.projectA) {
+		t.Fatalf("tab workspace root = %q, want project A %q", got, normalizeProjectRoot(f.projectA))
 	}
-	if got := normalizeProjectRoot(tab.Ctrl.WorkspaceRoot()); got != normalizeProjectRoot(projectA) {
-		t.Fatalf("controller workspace root = %q, want project A %q", got, normalizeProjectRoot(projectA))
+	if got := normalizeProjectRoot(f.tab.Ctrl.WorkspaceRoot()); got != normalizeProjectRoot(f.projectA) {
+		t.Fatalf("controller workspace root = %q, want project A %q", got, normalizeProjectRoot(f.projectA))
 	}
-	if !sameDesktopPath(tab.Ctrl.SessionDir(), sessionDirA) {
-		t.Fatalf("controller session dir = %q, want %q", tab.Ctrl.SessionDir(), sessionDirA)
+	if !sameDesktopPath(f.tab.Ctrl.SessionDir(), f.sessionDirA) {
+		t.Fatalf("controller session dir = %q, want %q", f.tab.Ctrl.SessionDir(), f.sessionDirA)
 	}
-	if !sameDesktopPath(tab.Ctrl.SessionPath(), sessionPathA) {
-		t.Fatalf("controller session path = %q, want %q", tab.Ctrl.SessionPath(), sessionPathA)
+	if !sameDesktopPath(f.tab.Ctrl.SessionPath(), f.sessionPathA) {
+		t.Fatalf("controller session path = %q, want %q", f.tab.Ctrl.SessionPath(), f.sessionPathA)
 	}
+}
+
+func TestEnsureTabControllerWorkspaceRebuildsStaleWorkspace(t *testing.T) {
+	f := newStaleWorkspaceBindingFixture(t, "rebuild_workspace")
+
+	if err := f.app.ensureTabControllerWorkspace(f.tab); err != nil {
+		t.Fatalf("ensureTabControllerWorkspace: %v", err)
+	}
+	assertTabRebuiltToPinnedWorkspace(t, f)
+}
+
+func TestSteerForTabReconcilesStaleWorkspaceBeforeIdleFallback(t *testing.T) {
+	f := newStaleWorkspaceBindingFixture(t, "steer_idle_fallback")
+
+	if err := f.app.SteerForTab(f.tab.ID, "/unknown-command"); err != nil {
+		t.Fatalf("SteerForTab: %v", err)
+	}
+	waitNotRunning(t, f.tab.Ctrl)
+	assertTabRebuiltToPinnedWorkspace(t, f)
+}
+
+func TestCompactReconcilesStaleWorkspaceBeforeCompaction(t *testing.T) {
+	f := newStaleWorkspaceBindingFixture(t, "compact")
+
+	if err := f.app.Compact(); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	assertTabRebuiltToPinnedWorkspace(t, f)
 }
 
 func TestListSessionsUsesPinnedSessionOwnerBeforeStaleRuntimeDir(t *testing.T) {

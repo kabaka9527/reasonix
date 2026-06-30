@@ -864,6 +864,13 @@ func (a *App) SteerForTab(tabID, text string) error {
 	if ctrl == nil {
 		return workspaceNotReadyErr(tab)
 	}
+	if err := a.ensureTabControllerWorkspace(tab); err != nil {
+		return err
+	}
+	ctrl = tab.Ctrl
+	if ctrl == nil {
+		return workspaceNotReadyErr(tab)
+	}
 	ctrl.Steer(text)
 	return nil
 }
@@ -1209,6 +1216,13 @@ func (a *App) Compact() error {
 	if tab != nil && tab.ReadOnly {
 		return readOnlyChannelErr()
 	}
+	if ctrl == nil {
+		return nil
+	}
+	if err := a.ensureTabControllerWorkspace(tab); err != nil {
+		return err
+	}
+	ctrl = tab.Ctrl
 	if ctrl == nil {
 		return nil
 	}
