@@ -1835,9 +1835,10 @@ func newBlockingSnapshotCtrl(ctrl control.SessionAPI) *blockingSnapshotCtrl {
 
 func (c *blockingSnapshotCtrl) Snapshot() error {
 	count := c.snapshotCount.Add(1)
-	if count == 1 {
+	switch count {
+	case 1:
 		c.firstOnce.Do(func() { close(c.firstSnapshotStarted) })
-	} else if count == 2 {
+	case 2:
 		c.secondOnce.Do(func() { close(c.secondSnapshotStarted) })
 	}
 	<-c.releaseSnapshot
@@ -1887,6 +1888,101 @@ func TestCompactReconcilesStaleWorkspaceBeforeCompaction(t *testing.T) {
 		t.Fatalf("Compact: %v", err)
 	}
 	assertTabRebuiltToPinnedWorkspace(t, f)
+}
+
+func TestEffortCommandUsesPinnedSessionOwnerBeforeStaleWorkspaceRoot(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "OWNER_MODEL_KEY", "sk-test")
+	setDesktopTestCredential(t, "STALE_MODEL_KEY", "sk-test")
+
+	projectA := t.TempDir()
+	projectB := t.TempDir()
+	if err := addProject(projectA, "Project A"); err != nil {
+		t.Fatalf("add project A: %v", err)
+	}
+	if err := addProject(projectB, "Project B"); err != nil {
+		t.Fatalf("add project B: %v", err)
+	}
+	ownerConfig := `default_model = "owner/owner-model"
+[[providers]]
+name = "owner"
+kind = "openai"
+base_url = "https://owner.example.invalid/v1"
+model = "owner-model"
+api_key_env = "OWNER_MODEL_KEY"
+supported_efforts = ["max"]
+default_effort = "max"
+`
+	if err := os.WriteFile(filepath.Join(projectA, "reasonix.toml"), []byte(ownerConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	staleConfig := `default_model = "stale/stale-model"
+[[providers]]
+name = "stale"
+kind = "openai"
+base_url = "https://stale.example.invalid/v1"
+model = "stale-model"
+api_key_env = "STALE_MODEL_KEY"
+reasoning_protocol = "none"
+`
+	if err := os.WriteFile(filepath.Join(projectB, "reasonix.toml"), []byte(staleConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	topicID := "topic_effort_owner"
+	topicTitle := "Effort owner"
+	sessionDirA := desktopSessionDir(projectA)
+	sessionDirB := desktopSessionDir(projectB)
+	if err := os.MkdirAll(sessionDirA, 0o755); err != nil {
+		t.Fatalf("mkdir project A sessions: %v", err)
+	}
+	if err := os.MkdirAll(sessionDirB, 0o755); err != nil {
+		t.Fatalf("mkdir project B sessions: %v", err)
+	}
+	sessionPathA := writeTopicSessionWithPrompt(t, sessionDirA, "project-a.jsonl", topicID, topicTitle, projectA, "project A prompt", time.Now())
+	oldCtrl := control.New(control.Options{
+		SessionDir:    sessionDirB,
+		SessionPath:   filepath.Join(sessionDirB, "wrong.jsonl"),
+		WorkspaceRoot: projectB,
+		Sink:          event.Discard,
+	})
+
+	app := NewApp()
+	app.readyHook = func() {}
+	tab := &WorkspaceTab{
+		ID:            "tab_stale_effort",
+		Scope:         "project",
+		WorkspaceRoot: projectB,
+		TopicID:       topicID,
+		TopicTitle:    topicTitle,
+		SessionPath:   sessionPathA,
+		Ready:         true,
+		Ctrl:          oldCtrl,
+		sink:          &tabEventSink{tabID: "tab_stale_effort", app: app},
+		disabledMCP:   map[string]ServerView{},
+	}
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+	t.Cleanup(func() {
+		if tab.Ctrl != nil {
+			tab.Ctrl.Close()
+		}
+	})
+
+	if err := app.SubmitToTab(tab.ID, "/effort max"); err != nil {
+		t.Fatalf("SubmitToTab(/effort max): %v", err)
+	}
+	waitNotRunning(t, tab.Ctrl)
+	if tab.effort == nil || *tab.effort != "max" {
+		t.Fatalf("tab effort = %#v, want max from pinned project A provider", tab.effort)
+	}
+	if got := normalizeProjectRoot(tab.WorkspaceRoot); got != normalizeProjectRoot(projectA) {
+		t.Fatalf("tab workspace root = %q, want project A %q", got, normalizeProjectRoot(projectA))
+	}
+	if got := normalizeProjectRoot(tab.Ctrl.WorkspaceRoot()); got != normalizeProjectRoot(projectA) {
+		t.Fatalf("controller workspace root = %q, want project A %q", got, normalizeProjectRoot(projectA))
+	}
 }
 
 func TestClassicLayoutQuickClicksSerializeWorkspaceRebuild(t *testing.T) {

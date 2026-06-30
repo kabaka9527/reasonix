@@ -6907,6 +6907,9 @@ func (a *App) runEffortCommandForTab(tabID, input string) {
 }
 
 func (a *App) currentProviderEntryForTab(tabID string) (*config.ProviderEntry, error) {
+	if tab := a.tabByID(tabID); tab != nil {
+		a.reconcileTabWithPinnedSessionMeta(tab)
+	}
 	a.mu.RLock()
 	ref := ""
 	workspaceRoot := ""
