@@ -125,6 +125,13 @@ ok(
   appSource.includes('e.kind === "notice"') && appSource.includes('startsWith("autoresearch ")'),
   "AutoResearch lifecycle notices refresh the context panel",
 );
+const useControllerSource = readFileSync(new URL("../lib/useController.ts", import.meta.url), "utf8");
+ok(
+  useControllerSource.includes("isAutoResearchNotice") &&
+    useControllerSource.includes('startsWith("autoresearch ")') &&
+    useControllerSource.includes("refreshMetaForTab(targetTabId, dispatchTo)"),
+  "AutoResearch lifecycle notices refresh tab metadata for the status bar",
+);
 
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
 if (failed > 0) process.exit(1);
