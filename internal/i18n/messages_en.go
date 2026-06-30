@@ -104,6 +104,7 @@ var English = Messages{
 	SlashClearPrompt:   "Clear current context without saving?",
 	SlashClearDone:     "current context cleared",
 	SlashClearFailed:   "could not clear current context",
+	SlashClsDone:       "screen cleared",
 	SlashUnavailable:   "command unavailable in this build",
 	SlashUnknown:       "unknown command",
 	SlashTodoCleared:   "task list dismissed",
@@ -166,6 +167,7 @@ var English = Messages{
 
 	CmdNew:              "start new session; save transcript",
 	CmdClear:            "discard current context",
+	CmdCls:              "clear screen only (keep LLM context)",
 	CmdCompact:          "compact context",
 	CmdRewind:           "rewind to an earlier turn",
 	CmdTree:             "show conversation branches",

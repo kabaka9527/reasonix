@@ -168,8 +168,10 @@ func migrateMCPConfigForCLIWorkspace() {
 func configureCLIThemeFromConfig() {
 	if cfg, err := config.Load(); err == nil {
 		configureCLIThemeWithStyle(cfg.UITheme(), cfg.UIThemeStyle())
+		cliCursorShape = cfg.UICursorShape()
 	} else {
 		configureCLITheme("auto")
+		cliCursorShape = "underline"
 	}
 }
 
@@ -545,6 +547,7 @@ func chatREPL(args []string) int {
 	cfg, err := config.Load()
 	if err == nil {
 		configureCLIThemeWithStyle(cfg.UITheme(), cfg.UIThemeStyle())
+		cliCursorShape = cfg.UICursorShape()
 	}
 
 	// Decide whether we're starting fresh or resuming. --resume opens an

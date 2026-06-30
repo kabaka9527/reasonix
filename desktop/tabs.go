@@ -841,7 +841,7 @@ func isBackgroundJobLifecycleNotice(e event.Event) bool {
 			strings.Contains(text, " killed: "))
 }
 
-func (a *App) emitReady(ctx context.Context) {
+func (a *App) emitReady(ctx context.Context, tabID ...string) {
 	a.mu.RLock()
 	hook := a.readyHook
 	a.mu.RUnlock()
@@ -850,6 +850,10 @@ func (a *App) emitReady(ctx context.Context) {
 		return
 	}
 	if ctx != nil {
+		if len(tabID) > 0 && strings.TrimSpace(tabID[0]) != "" {
+			runtime.EventsEmit(ctx, "agent:ready", strings.TrimSpace(tabID[0]))
+			return
+		}
 		runtime.EventsEmit(ctx, "agent:ready")
 	}
 }
@@ -2048,7 +2052,7 @@ func (a *App) buildTabControllerWithContext(tab *WorkspaceTab, loadedSession loa
 		tab.StartupErr = err.Error()
 		tab.Ready = true
 		a.mu.Unlock()
-		a.emitReady(wailsCtx)
+		a.emitReady(wailsCtx, tab.ID)
 		return
 	}
 
@@ -2156,7 +2160,7 @@ func (a *App) buildTabControllerWithContext(tab *WorkspaceTab, loadedSession loa
 		tab.Ready = true
 		a.releaseTabSharedHost(tab)
 		a.mu.Unlock()
-		a.emitReady(wailsCtx)
+		a.emitReady(wailsCtx, tab.ID)
 		return
 	}
 	if a.tabRemovedForBuild(tab) {
@@ -2191,7 +2195,7 @@ func (a *App) buildTabControllerWithContext(tab *WorkspaceTab, loadedSession loa
 		// topicId and could pick the wrong session when one topic had multiple files.
 		if loaded, pinnedPath, ok := loadPinnedTabSessionWithPreload(dir, tab.SessionPath, loadedSession); ok {
 			if loaded != nil {
-				ctrl.Resume(loaded, pinnedPath)
+				ctrl.Resume(sessionWithFreshSystemPrompt(loaded, systemPromptFrom(ctrl.History())), pinnedPath)
 			} else {
 				ctrl.SetSessionPath(pinnedPath)
 			}
@@ -2201,7 +2205,7 @@ func (a *App) buildTabControllerWithContext(tab *WorkspaceTab, loadedSession loa
 			existingPath := findTopicSession(dir, tab.TopicID)
 			if existingPath != "" {
 				if loaded, err := loadResumableSession(existingPath); err == nil {
-					ctrl.Resume(loaded, existingPath)
+					ctrl.Resume(sessionWithFreshSystemPrompt(loaded, systemPromptFrom(ctrl.History())), existingPath)
 					path = existingPath
 				}
 			}
@@ -2229,7 +2233,7 @@ func (a *App) buildTabControllerWithContext(tab *WorkspaceTab, loadedSession loa
 			if a.attachExistingSessionRuntime(tab, path, wailsCtx) {
 				ctrl.Close()
 				a.releaseSharedHost(rootKey)
-				a.emitReady(wailsCtx)
+				a.emitReady(wailsCtx, tab.ID)
 				return
 			}
 		}
@@ -2248,7 +2252,7 @@ func (a *App) buildTabControllerWithContext(tab *WorkspaceTab, loadedSession loa
 	tab.StartupErr = ""
 	keepBuildContext = true
 	a.mu.Unlock()
-	a.emitReady(wailsCtx)
+	a.emitReady(wailsCtx, tab.ID)
 }
 
 func (a *App) reconcileTabWithPinnedSessionMeta(tab *WorkspaceTab) {
@@ -4873,23 +4877,29 @@ func unixMilliOrZero(t time.Time) int64 {
 
 // ContextPanelInfo is the right-side panel's data for one tab.
 type ContextPanelInfo struct {
-	UsedTokens       int                         `json:"usedTokens"`
-	WindowTokens     int                         `json:"windowTokens"`
-	PromptTokens     int                         `json:"promptTokens"`
-	CompletionTokens int                         `json:"completionTokens"`
-	TotalTokens      int                         `json:"totalTokens"`
-	ReasoningTokens  int                         `json:"reasoningTokens"`
-	CacheHitTokens   int                         `json:"cacheHitTokens"`
-	CacheMissTokens  int                         `json:"cacheMissTokens"`
-	RequestCount     int                         `json:"requestCount"`
-	ElapsedMs        int64                       `json:"elapsedMs"`
-	SessionCost      float64                     `json:"sessionCost"`
-	SessionCurrency  string                      `json:"sessionCurrency,omitempty"`
-	SessionCostUsd   float64                     `json:"sessionCostUsd,omitempty"`
-	Sources          map[string]usageSourceStats `json:"sources,omitempty"`
-	Mock             bool                        `json:"mock,omitempty"`
-	ReadFiles        []readFileRecord            `json:"readFiles"`
-	ChangedFiles     []ChangedFileInfo           `json:"changedFiles"`
+	UsedTokens       int `json:"usedTokens"`
+	WindowTokens     int `json:"windowTokens"`
+	PromptTokens     int `json:"promptTokens"`
+	CompletionTokens int `json:"completionTokens"`
+	TotalTokens      int `json:"totalTokens"`
+	ReasoningTokens  int `json:"reasoningTokens"`
+	CacheHitTokens   int `json:"cacheHitTokens"`
+	CacheMissTokens  int `json:"cacheMissTokens"`
+	// Session-cumulative token counts (from telemetry, atomic snapshot).
+	// Separate from the per-turn fields above so existing consumers (status bar
+	// turn tokens, donut chart) are unaffected.
+	SessionCacheHitTokens   int                         `json:"sessionCacheHitTokens"`
+	SessionCacheMissTokens  int                         `json:"sessionCacheMissTokens"`
+	SessionCompletionTokens int                         `json:"sessionCompletionTokens"`
+	RequestCount            int                         `json:"requestCount"`
+	ElapsedMs               int64                       `json:"elapsedMs"`
+	SessionCost             float64                     `json:"sessionCost"`
+	SessionCurrency         string                      `json:"sessionCurrency,omitempty"`
+	SessionCostUsd          float64                     `json:"sessionCostUsd,omitempty"`
+	Sources                 map[string]usageSourceStats `json:"sources,omitempty"`
+	Mock                    bool                        `json:"mock,omitempty"`
+	ReadFiles               []readFileRecord            `json:"readFiles"`
+	ChangedFiles            []ChangedFileInfo           `json:"changedFiles"`
 }
 
 type ChangedFileInfo struct {
@@ -4945,6 +4955,9 @@ func (a *App) ContextPanel(tabID string) ContextPanelInfo {
 	info.SessionCurrency = usage.SessionCurrency
 	info.SessionCostUsd = usage.SessionCostUsd
 	info.Sources = usage.Sources
+	info.SessionCacheHitTokens = usage.CacheHitTokens
+	info.SessionCacheMissTokens = usage.CacheMissTokens
+	info.SessionCompletionTokens = usage.CompletionTokens
 
 	// Gather workspace changes for this tab's root.
 	if ctrl != nil && tab.WorkspaceRoot != "" {
@@ -5143,7 +5156,10 @@ func newTabID() string {
 
 func newTopicID() string {
 	var b [8]byte
-	rand.Read(b[:])
+	if _, err := rand.Read(b[:]); err != nil {
+		now := time.Now().UTC()
+		return "topic_" + now.Format("20060102-150405") + "_" + fmt.Sprintf("%09d", now.Nanosecond())
+	}
 	return "topic_" + time.Now().UTC().Format("20060102-150405") + "_" + hex.EncodeToString(b[:])
 }
 
@@ -5185,6 +5201,9 @@ func loadPinnedTabSessionWithPreload(dir, sessionPath string, preloaded loadedTa
 		return nil, "", false
 	}
 	if preloaded.matches(path) {
+		if preloaded.Session != nil && len(preloaded.Session.Snapshot()) == 0 {
+			return nil, path, true
+		}
 		return preloaded.Session, path, true
 	}
 	loaded, err := agent.LoadSession(path)
@@ -5193,6 +5212,13 @@ func loadPinnedTabSessionWithPreload(dir, sessionPath string, preloaded loadedTa
 			return nil, path, true
 		}
 		return nil, "", false
+	}
+	// An empty file (0 messages) is a pre-created placeholder, not a real
+	// session to resume.  Treating it as valid would make ctrl.Resume replace
+	// the executor's live session (with system prompt) with the empty one,
+	// causing the saved transcript to lack the agent identity contract.
+	if len(loaded.Snapshot()) == 0 {
+		return nil, path, true
 	}
 	return loaded, path, true
 }

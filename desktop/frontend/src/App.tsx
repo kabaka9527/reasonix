@@ -818,6 +818,7 @@ export default function App() {
     restoreSession,
     purgeTrashedSession,
     renameSession,
+    loadOlderHistory,
     refreshMeta,
     pickWorkspace,
     switchWorkspace,
@@ -1200,15 +1201,6 @@ export default function App() {
     return currentTabTurns > 0 ? currentTabTurns : activeTopicTurns ?? 0;
   }, [activeTopicTurns, state.checkpoints.length, state.items]);
   const startupSplashHold = !activeTabId && state.meta?.ready !== true && !state.meta?.startupErr;
-  const hydrateStatusLabel = state.hydrating
-    ? state.hydrateReason === "switch-tab"
-      ? t("status.hydrateSwitch")
-      : state.hydrateReason === "resume-session"
-        ? t("status.hydrateResume")
-        : state.hydrateReason === "new-session"
-          ? t("status.hydrateNewSession")
-          : t("status.hydrateSync")
-    : undefined;
   const activeComposerProfile = activeTabId ? composerProfilesByTab[activeTabId] : undefined;
   const backendActiveComposerProfile = useMemo(() => {
     if (state.meta) {
@@ -2262,16 +2254,28 @@ export default function App() {
     const next = displayText.trim();
     if (!next) return false;
     const submit = (submitText ?? displayText).trim();
+    const hasCheckpointTurns = state.items.some((it) => it.kind === "user" && it.checkpointTurn != null);
+    let original = "";
+    let userCount = 0;
+    for (const item of state.items) {
+      if (item.kind !== "user") continue;
+      const matches = hasCheckpointTurns ? item.checkpointTurn === turn : userCount === turn;
+      if (matches) {
+        original = (item.submitText ?? item.text).trim();
+        break;
+      }
+      userCount++;
+    }
     const ok = await rewind(turn, "conversation");
     if (!ok) return false;
     setRewindSignal((v) => v + 1);
     try {
-      await sendToTab(sourceTabId, next, submit);
+      await sendToTab(sourceTabId, next, submit, original);
       return true;
     } catch {
       return false;
     }
-  }, [activeTab?.readOnly, activeTabId, clearContextPending, controllerReady, hydratePlaceholderActive, sendToTab, state.approval, state.ask, state.messageAction, state.running, rewind]);
+  }, [activeTab?.readOnly, activeTabId, clearContextPending, controllerReady, hydratePlaceholderActive, sendToTab, state.approval, state.ask, state.items, state.messageAction, state.running, rewind]);
 
   // History drawer: project menus can open a scoped saved-session list. Idle row
   // clicks resume; running row clicks only preview through PreviewSession.
@@ -3264,6 +3268,10 @@ export default function App() {
                 rewindSignal={rewindSignal}
                 revealSignal={transcriptRevealSignal}
                 hydrating={transcriptHydrating}
+                hasOlderHistory={state.historyHasOlder && !rewindState}
+                olderHistoryCount={state.historyStartTurn}
+                loadingOlderHistory={state.historyOlderLoading}
+                onLoadOlderHistory={() => activeTabId && loadOlderHistory(activeTabId)}
               />
             )}
           </main>
@@ -3367,10 +3375,7 @@ export default function App() {
               context={state.context}
               usage={state.usage}
               balance={state.balance}
-              jobs={state.jobs}
               running={state.running || rewindCommitting}
-              collaborationMode={collaborationMode}
-              toolApprovalMode={toolApprovalMode}
               sessionTurns={sessionTurns}
               sessionTokens={state.sessionTokens}
               turnTokens={state.turnTotalTokens}
@@ -3383,7 +3388,6 @@ export default function App() {
               workspacePath={state.meta?.workspacePath || state.meta?.workspaceRoot || state.meta?.cwd}
               workspaceName={state.meta?.workspaceName}
               gitBranch={state.meta?.gitBranch}
-              hydrationLabel={hydrateStatusLabel}
             />
           </footer>
           )}

@@ -12,6 +12,7 @@
 ## Contents
 
 - [Configuration](#configuration)
+- [Environment variables](#environment-variables)
 - [Serve web frontend](#serve-web-frontend)
 - [Configuration paths](./CONFIG_PATHS.md)
 - [Reasoning language](./REASONING_LANGUAGE.md)
@@ -50,6 +51,7 @@ default_model = "deepseek-flash"   # executor; set [agent].planner_model to add 
 
 [ui]
 # shortcut_layout = "desktop"      # classic|desktop; compatibility setting
+# cursor_shape = "underline"       # block|underline|bar; CLI/TUI text cursor
 
 [agent]
 max_steps = 0                    # user/global only; executor tool-call rounds; 0 = no limit
@@ -62,6 +64,7 @@ reasoning_language = "auto"      # visible reasoning text: auto|zh|en
 # subagent_models = { review = "deepseek-pro", security_review = "deepseek-pro" }
 auto_plan = "off"                  # user-level only; off|on; off keeps plan mode manual
 # auto_plan_classifier = "deepseek-flash"   # optional; only borderline tasks call it
+tool_result_snip_ratio = 0.6       # shorten stale tool output before summary compaction
 
 [[providers]]
 name        = "deepseek-flash"
@@ -75,6 +78,11 @@ api_key_env = "DEEPSEEK_API_KEY"
 enabled = []   # omit/empty = all built-ins
 bash_timeout_seconds = 120   # foreground safety cap; set 0 for no tool-local cap
 mcp_call_timeout_seconds = 300   # default MCP call safety cap; per-plugin/tool overrides may raise it
+
+[environment]
+enabled = true   # inject a stable startup summary of OS, shell, and common tools
+# [environment.tools]
+# go = "/opt/homebrew/bin/go"   # optional explicit trusted path; workspace-local paths are not auto-executed
 
 [skills]
 # paths = ["~/my-skills", "../shared/skills"]   # extra custom skill roots
@@ -115,6 +123,36 @@ when you want to pre-seed audited tools; keep `plan_mode_allowed_tools` as the
 compatibility escape valve. It never unlocks known blocked plan-mode tools such
 as `bash`, `task`, writers, installers, or memory mutation tools, and it never
 bypasses bash's plan-mode safety checks.
+
+### Environment variables
+
+Most day-to-day settings belong in `config.toml` or the global Reasonix `.env`
+described above. The variables below are process-level advanced switches; set
+them before launching Reasonix. Project `.env` files are not a runtime source for
+Reasonix control variables.
+
+`REASONIX_MEMORY_COMPILER_LLM_CLASSIFICATION=true` enables the optional LLM
+task/chat classifier for Memory v5. By default it is disabled, and Reasonix uses
+the local heuristic classifier without extra provider calls. When enabled, cache
+misses may send a small classifier request through the configured provider before
+deciding whether a user input is task-like or conversational; this can add a
+little latency, provider usage, and token cost. The classifier result is cached
+per session for a short time. Only the exact trimmed value `true` enables it;
+unset, `false`, `1`, and `TRUE` keep the default heuristic path.
+
+```bash
+REASONIX_MEMORY_COMPILER_LLM_CLASSIFICATION=true reasonix
+```
+
+For development runs, prefix the command that starts the process, for example:
+
+```bash
+REASONIX_MEMORY_COMPILER_LLM_CLASSIFICATION=true wails dev -forcebuild
+```
+
+Packaged desktop apps launched from the OS app launcher may not inherit variables
+from your interactive terminal; start the app from an environment-managed launcher
+when you intentionally want this advanced switch enabled.
 
 ## Serve web frontend
 
@@ -169,6 +207,12 @@ paste key.
 
 `[ui].shortcut_layout` is still accepted for old configs, but the shortcut
 behavior below is unified across layouts.
+
+For CLI/TUI text input, `[ui].cursor_shape` accepts `underline`, `block`, or
+`bar`. The default is `underline` because terminal block cursors can visually
+cover double-width CJK characters in some mixed-language input. Set it to
+`block` to keep the old terminal-style cursor, or `bar` for a thin insertion
+cursor. This setting does not change desktop or web text fields.
 
 ### Desktop GUI
 
@@ -227,10 +271,11 @@ Chat and transcript shortcuts:
 | Plain `Up` / `Down` while idle | Recalls older or newer submitted prompts | In a running turn, the same keys navigate queued follow-up feedback. |
 | `PageUp` / `PageDown` | Scrolls the transcript | Works regardless of the current chat state. |
 | `Ctrl+Home` / `Ctrl+End` | Jumps to the top or bottom of the transcript | Useful after long tool output. |
+| `Ctrl+L` or `/cls` | Clears only the visible transcript | The LLM context, session file, tools, memory, and plugins stay loaded. Use `/clear` when you want to discard the conversation context. |
 | `Esc` | Backs out of the current action | It un-sends a just-submitted turn before any reply, cancels a running turn, or clears non-empty input. |
 | Double `Esc` on an empty idle composer | Opens the rewind picker | Same entry point as `/rewind`. |
-| Terminal native selection | Copies transcript text | Reasonix does not enable mouse reporting by default, so terminal selection/copy remains available. |
-| `Ctrl+C` | Cancels, clears, or quits | Cancels a running turn, clears non-empty input, or quits on a second empty-composer press. |
+| Transcript text selection | Copies transcript text | The full-screen TUI enables mouse reporting, so drag in the transcript to select text in-app, then press `Ctrl+C`, `Super+C`, `Meta+C`, or right-click the active selection to copy it. |
+| `Ctrl+C` | Copies, cancels, clears, or quits | Copies an active transcript selection first. Otherwise it cancels a running turn, clears non-empty input, or quits on a second empty-composer press. |
 | `Ctrl+D` | Quits the TUI | Immediate quit. |
 | `Ctrl+V`, `Ctrl+Shift+V`, `Meta+V`, or `Super+V` | Pastes clipboard content | The CLI tries an image first, then falls back to text or file references. |
 | `/paste-image` | Pastes a clipboard image | Use it when you want image-only paste or the terminal handles text paste itself. |
@@ -244,7 +289,7 @@ Mode and display shortcuts:
 | `Ctrl+Y` | Toggles YOLO on/off | Turning YOLO off restores the previous Ask/Auto base when known. Terminals that forward Command/Super may also send `Cmd+Y`, but `Ctrl+Y` is the reliable terminal shortcut. |
 | `--yolo`, `--dangerously-skip-permissions` | Starts chat in YOLO | Same runtime mode as `Ctrl+Y`. |
 | `Ctrl+O` | Toggles verbose reasoning display | Also available through `/verbose`. |
-| `Ctrl+B` | Expands or collapses long shell output | Works with terminal-native text selection because the TUI does not enable mouse reporting by default. |
+| `Ctrl+B` | Expands or collapses long shell output | Long shell-output hint lines can also be clicked in the transcript; text selection is handled in-app while the full-screen TUI has mouse reporting enabled. |
 | Ask / Auto | No keyboard cycle | Ask is the default interactive base. Auto is not entered through `Shift+Tab`; use clients or APIs that expose the tool approval posture directly. |
 | `/goal <objective>`, `/goal --research <objective>`, `/goal --simple <objective>`, `/goal status`, `/goal clear` | Starts, checks, or clears Goal | Goal is not in any keyboard cycle; clearly long-horizon goals automatically enable AutoResearch. Ordinary prompts with strong AutoResearch signals are also upgraded into Goal. |
 | `/migrate`, `/migrate --from <legacy-dir>` | Retries legacy migration or imports sessions from a chosen v0.x source | Use `--from` for custom Windows v0.52 install/data directories; it imports sessions only. See [Configuration paths](./CONFIG_PATHS.md). |

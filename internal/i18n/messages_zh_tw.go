@@ -157,6 +157,7 @@ var ChineseTraditional = Messages{
 	ShellModeHint:       "Enter 執行 Shell · Esc 取消 · 點擊輸出展開",
 
 	CmdNew:              "清空上下文並儲存歷史",
+	CmdCls:              "清除畫面（保留 LLM 上下文）",
 	CmdCompact:          "壓縮上下文",
 	CmdRewind:           "回滾到更早的一輪",
 	CmdTree:             "檢視對話分支樹",
@@ -365,6 +366,7 @@ var ChineseTraditional = Messages{
 	SlashClearPrompt:           "清空當前上下文且不儲存？",
 	SlashClearDone:             "已清空當前上下文",
 	SlashClearFailed:           "清空當前上下文失敗",
+	SlashClsDone:               "已清除畫面（LLM 上下文保留）",
 	CmdClear:                   "丟棄當前上下文",
 	CmdRename:                  "重新命名會話",
 	CmdGoal:                    "設定或清除當前目標",

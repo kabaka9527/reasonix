@@ -113,7 +113,7 @@ func (m *chatTUI) replayActiveBranch(title string) {
 	// every /resume / /switch / /rewind / /branch, bloating memory and causing
 	// the scroll position to be preserved at a stale offset inside the merged
 	// content (#4584).
-	m.transcript = nil
+	m.clearTranscriptDisplay()
 	m.transcriptDirty = true
 	m.forceGotoBottom = true
 

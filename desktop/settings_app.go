@@ -927,34 +927,6 @@ func (a *App) rebuild() error {
 	return nil
 }
 
-func systemPromptFrom(messages []provider.Message) string {
-	for _, m := range messages {
-		if m.Role == provider.RoleSystem {
-			return m.Content
-		}
-	}
-	return ""
-}
-
-func withFreshSystemPrompt(messages []provider.Message, system string) []provider.Message {
-	if strings.TrimSpace(system) == "" {
-		return messages
-	}
-	out := append([]provider.Message(nil), messages...)
-	for i := range out {
-		if out[i].Role == provider.RoleSystem {
-			out[i].Content = system
-			out[i].ReasoningContent = ""
-			out[i].ReasoningSignature = ""
-			out[i].ToolCalls = nil
-			out[i].ToolCallID = ""
-			out[i].Name = ""
-			return out
-		}
-	}
-	return append([]provider.Message{{Role: provider.RoleSystem, Content: system}}, out...)
-}
-
 // SetDefaultModel sets the config default and switches the live model to it.
 func (a *App) SetDefaultModel(ref string) error {
 	tab := a.activeTab()

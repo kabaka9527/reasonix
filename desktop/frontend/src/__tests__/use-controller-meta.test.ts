@@ -193,15 +193,59 @@ console.log("\nuse controller meta");
   s = reducer(s, { type: "event", e: { kind: "turn_done" } });
   const merged = reducer(s, {
     type: "history_checkpoint_turns",
-    messages: [
-      { role: "user", content: "first", checkpointTurn: 0 },
-      { role: "assistant", content: "done" },
-    ],
+    turns: [0],
   });
   const user = merged.items.find((item) => item.kind === "user");
   const notice = merged.items.find((item) => item.kind === "notice" && item.text === "runtime notice");
   eq(user?.kind === "user" && user.checkpointTurn, 0, "turn_done checkpoint merge stamps user turn zero");
   eq(Boolean(notice), true, "turn_done checkpoint merge preserves runtime notices");
+}
+
+{
+  let s = reducer(initialState, {
+    type: "history_page",
+    mode: "replace",
+    page: {
+      messages: [
+        { role: "user", content: "recent prompt" },
+        { role: "assistant", content: "recent answer" },
+      ],
+      startTurn: 60,
+      endTurn: 61,
+      totalTurns: 61,
+      hasOlder: true,
+    },
+  });
+  eq(s.items.some((item) => item.kind === "user" && item.text === "recent prompt"), true, "history page replace renders the latest window");
+  eq(s.historyStartTurn, 60, "history page stores the older cursor");
+  eq(s.historyHasOlder, true, "history page records older availability");
+  const checkpointed = reducer(s, {
+    type: "history_checkpoint_turns",
+    turns: Array.from({ length: 61 }, (_, index) => index + 1000),
+  });
+  const recentUser = checkpointed.items.find((item) => item.kind === "user" && item.text === "recent prompt");
+  eq(recentUser?.kind === "user" && recentUser.checkpointTurn, 1060, "paged checkpoint merge uses the window start turn");
+  s = reducer(s, { type: "history_older_start" });
+  eq(s.historyOlderLoading, true, "older history request marks loading");
+  s = reducer(s, {
+    type: "history_page",
+    mode: "prepend",
+    page: {
+      messages: [
+        { role: "user", content: "older prompt" },
+        { role: "assistant", content: "older answer" },
+      ],
+      startTurn: 0,
+      endTurn: 1,
+      totalTurns: 61,
+      hasOlder: false,
+    },
+  });
+  const users = s.items.filter((item) => item.kind === "user");
+  eq(users[0]?.kind === "user" && users[0].text, "older prompt", "older history prepends before the current window");
+  eq(users[1]?.kind === "user" && users[1].text, "recent prompt", "older history keeps the current window");
+  eq(s.historyHasOlder, false, "older history clears hasOlder when all pages are loaded");
+  eq(s.historyOlderLoading, false, "older history clears loading");
 }
 
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

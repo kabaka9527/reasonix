@@ -247,6 +247,9 @@ export interface ContextPanelInfo {
   reasoningTokens: number;
   cacheHitTokens: number;
   cacheMissTokens: number;
+  sessionCacheHitTokens: number;
+  sessionCacheMissTokens: number;
+  sessionCompletionTokens: number;
   requestCount?: number;
   elapsedMs?: number;
   sessionCost?: number;
@@ -323,6 +326,14 @@ export interface HistoryToolCall {
   added?: number;
   removed?: number;
   argumentsArchived?: boolean;
+}
+
+export interface HistoryPage {
+  messages: HistoryMessage[];
+  startTurn: number;
+  endTurn: number;
+  totalTurns: number;
+  hasOlder: boolean;
 }
 
 export interface PromptHistoryEntry {
@@ -412,6 +423,7 @@ export interface Meta {
   workspaceRoot?: string;
   workspaceName?: string;
   workspacePath?: string;
+  sessionPath?: string;
   gitBranch?: string;
   imageInputEnabled?: boolean;
   autoApproveTools?: boolean;

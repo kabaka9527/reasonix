@@ -396,6 +396,20 @@ func (c *Controller) recordDisplay(content, display string) {
 	}
 }
 
+// ToolContractEntries returns a stable snapshot of the executor's live tool
+// contract: provider-visible names, descriptions, canonical schemas, and
+// read-only flags. It is intended for diagnostics and regression tests.
+func (c *Controller) ToolContractEntries() []tool.ContractEntry {
+	if c == nil {
+		return nil
+	}
+	reg := c.mcp.registry()
+	if reg == nil {
+		return nil
+	}
+	return reg.ContractEntries()
+}
+
 func (c *Controller) recordDisplayForNewUser(startMessages int, display string) {
 	if strings.TrimSpace(display) == "" {
 		return
@@ -409,6 +423,29 @@ func (c *Controller) recordDisplayForNewUser(startMessages int, display string) 
 			c.recordDisplay(m.Content, display)
 			return
 		}
+	}
+}
+
+func (c *Controller) markEditedForNewUser(startMessages int, original string) {
+	if strings.TrimSpace(original) == "" || c.executor == nil {
+		return
+	}
+	s := c.executor.Session()
+	msgs := s.Snapshot()
+	if startMessages > len(msgs) {
+		startMessages = len(msgs)
+	}
+	for i := startMessages; i < len(msgs); i++ {
+		if msgs[i].Role != provider.RoleUser {
+			continue
+		}
+		if msgs[i].Content == original {
+			return
+		}
+		msgs[i].Edited = true
+		msgs[i].Original = original
+		s.Replace(msgs)
+		return
 	}
 }
 
@@ -558,6 +595,10 @@ func (c *Controller) runGoalLoopWithRawDisplay(ctx context.Context, input, raw, 
 	return newTurnOrchestrator(c).runGoalLoopWithRawDisplay(ctx, input, raw, display)
 }
 
+func (c *Controller) runEditedGoalLoopWithRawDisplay(ctx context.Context, input, raw, display, original string) error {
+	return newTurnOrchestrator(c).runEditedGoalLoopWithRawDisplay(ctx, input, raw, display, original)
+}
+
 func (c *Controller) runTurnWithRawDisplay(ctx context.Context, input, raw, display string) error {
 	return newTurnOrchestrator(c).runTurnWithRawDisplay(ctx, input, raw, display)
 }
@@ -604,7 +645,7 @@ func lastAssistantText(msgs []provider.Message) string {
 // resolve to a turn; an unknown slash emits a Notice. Anything else is a normal
 // turn with its @-references resolved first.
 func (c *Controller) Submit(input string) {
-	c.submit(input, "")
+	c.submit(input, "", "")
 }
 
 // SubmitHTTP accepts input from the unauthenticated localhost HTTP frontend. It
@@ -617,7 +658,14 @@ func (c *Controller) SubmitHTTP(input string) {
 // SubmitDisplay runs input as a turn while remembering the user-facing display
 // text for transcript replay when controller-side composition expands input.
 func (c *Controller) SubmitDisplay(display, input string) {
-	c.submit(input, display)
+	c.submit(input, display, "")
+}
+
+// SubmitEditedDisplay is SubmitDisplay for an inline-edited prompt. The model
+// sees input; the saved user message also keeps the pre-edit prompt as local UI
+// metadata so the edit survives session rewrites.
+func (c *Controller) SubmitEditedDisplay(display, input, original string) {
+	c.submit(input, display, original)
 }
 
 // SubmitUserTurn starts a normal model turn without interpreting shell or slash
@@ -627,7 +675,7 @@ func (c *Controller) SubmitUserTurn(input, display string) {
 	c.runRefTurn(input, display)
 }
 
-func (c *Controller) submit(input, display string) {
+func (c *Controller) submit(input, display, editedOriginal string) {
 	trimmed := strings.TrimSpace(input)
 	if note, ok := MemoryQuickAddNote(trimmed); ok {
 		c.rememberProjectNote(note)
@@ -644,7 +692,7 @@ func (c *Controller) submit(input, display string) {
 		c.RunShell(trimmed[1:])
 		return
 	}
-	c.submitCommandOrTurn(trimmed, input, display, false)
+	c.submitCommandOrTurn(trimmed, input, display, false, editedOriginal)
 }
 
 func (c *Controller) submitHTTP(input, display string) {
@@ -664,15 +712,27 @@ func (c *Controller) submitHTTP(input, display string) {
 		c.notice("shell commands are unavailable from this frontend")
 		return
 	}
-	c.submitCommandOrTurn(trimmed, input, display, true)
+	c.submitCommandOrTurn(trimmed, input, display, true, "")
 }
 
-func (c *Controller) submitCommandOrTurn(trimmed, input, display string, scopedRefsOnly bool) {
+func (c *Controller) submitCommandOrTurn(trimmed, input, display string, scopedRefsOnly bool, editedOriginal string) {
 	runRefTurn := c.runRefTurn
 	runRefTurnWithRefs := c.runRefTurnWithRefs
+	runGoalLoop := c.runGoalLoopWithRawDisplay
 	if scopedRefsOnly {
 		runRefTurn = c.runScopedRefTurn
 		runRefTurnWithRefs = c.runScopedRefTurnWithRefs
+	}
+	if strings.TrimSpace(editedOriginal) != "" {
+		runRefTurn = func(input, display string) {
+			c.runEditedRefTurn(input, display, editedOriginal)
+		}
+		runRefTurnWithRefs = func(input, refLine, display string) {
+			c.runEditedRefTurnWithRefs(input, refLine, display, editedOriginal)
+		}
+		runGoalLoop = func(ctx context.Context, input, raw, display string) error {
+			return c.runEditedGoalLoopWithRawDisplay(ctx, input, raw, display, editedOriginal)
+		}
 	}
 	switch {
 	case trimmed == "/compact" || strings.HasPrefix(trimmed, "/compact "):
@@ -713,7 +773,7 @@ func (c *Controller) submitCommandOrTurn(trimmed, input, display string, scopedR
 				c.notice("unknown command: " + trimmed)
 				return nil
 			}
-			return c.runGoalLoopWithRawDisplay(ctx, sent, sent, display)
+			return runGoalLoop(ctx, sent, sent, display)
 		})
 	case strings.HasPrefix(trimmed, "//"):
 		// Double-slash — not a command. Common in code snippets (JS
@@ -785,26 +845,26 @@ func (c *Controller) submitCommandOrTurn(trimmed, input, display string, scopedR
 		// turn. (Built-in slash verbs like /compact are handled above.)
 		if sent, ok := c.CustomCommand(trimmed); ok {
 			c.runGuarded(func(ctx context.Context) error {
-				return c.runGoalLoopWithRawDisplay(ctx, sent, sent, display)
+				return runGoalLoop(ctx, sent, sent, display)
 			})
 			return
 		}
 		if sent, ok := c.RunSkill(trimmed); ok {
 			c.runGuarded(func(ctx context.Context) error {
-				return c.runGoalLoopWithRawDisplay(ctx, sent, sent, display)
+				return runGoalLoop(ctx, sent, sent, display)
 			})
 			return
 		}
 		c.notice("unknown command: " + trimmed)
 	default:
-		if c.maybeAutoStartResearchGoal(input, display) {
+		if c.maybeAutoStartResearchGoal(input, display, editedOriginal) {
 			return
 		}
 		runRefTurn(input, display)
 	}
 }
 
-func (c *Controller) maybeAutoStartResearchGoal(input, display string) bool {
+func (c *Controller) maybeAutoStartResearchGoal(input, display, editedOriginal string) bool {
 	goal, ok := c.autoStartResearchGoalCandidate(input)
 	if !ok {
 		return false
@@ -824,6 +884,9 @@ func (c *Controller) maybeAutoStartResearchGoal(input, display string) bool {
 			sent := "Start pursuing the active goal now."
 			if block != "" {
 				sent = "Referenced context:\n\n" + block + "\n\n" + sent
+			}
+			if strings.TrimSpace(editedOriginal) != "" {
+				return c.runEditedGoalLoopWithRawDisplay(ctx, sent, goal, displayText, editedOriginal)
 			}
 			return c.runGoalLoopWithRawDisplay(ctx, sent, goal, displayText)
 		})
@@ -1081,6 +1144,13 @@ func (c *Controller) RunShell(command string) {
 		durationMs := time.Since(start).Milliseconds()
 		out := buf.String()
 
+		if ctx.Err() == context.Canceled {
+			c.sink.Emit(event.Event{
+				Kind: event.ToolResult,
+				Tool: event.Tool{ID: id, Name: "bash", Output: out, Err: i18n.M.TurnCancelled, DurationMs: durationMs},
+			})
+			return nil
+		}
 		if ctx.Err() == context.DeadlineExceeded {
 			c.sink.Emit(event.Event{
 				Kind: event.ToolResult,
@@ -1109,6 +1179,10 @@ func (c *Controller) runRefTurn(input, display string) {
 	c.runRefTurnWithRefs(input, input, display)
 }
 
+func (c *Controller) runEditedRefTurn(input, display, original string) {
+	c.runEditedRefTurnWithRefs(input, input, display, original)
+}
+
 func (c *Controller) runScopedRefTurn(input, display string) {
 	c.runScopedRefTurnWithRefs(input, input, display)
 }
@@ -1120,22 +1194,39 @@ func (c *Controller) runRefTurnWithRefs(input, refLine, display string) {
 	c.runRefTurnWithResolver(input, refLine, display, c.ResolveRefs)
 }
 
+func (c *Controller) runEditedRefTurnWithRefs(input, refLine, display, original string) {
+	c.runEditedRefTurnWithResolver(input, refLine, display, original, c.ResolveRefs)
+}
+
 func (c *Controller) runScopedRefTurnWithRefs(input, refLine, display string) {
 	c.runRefTurnWithResolver(input, refLine, display, c.ResolveScopedRefs)
 }
 
 func (c *Controller) runRefTurnWithResolver(input, refLine, display string, resolve func(context.Context, string) (string, []string)) {
 	c.runGuarded(func(ctx context.Context) error {
-		block, errs := resolve(ctx, refLine)
-		for _, e := range errs {
-			c.notice(e)
-		}
-		sent := input
-		if block != "" {
-			sent = "Referenced context:\n\n" + block + "\n\n" + input
-		}
-		return c.runGoalLoopWithRawDisplay(ctx, sent, input, display)
+		return c.runRefTurnWithResolverSync(ctx, input, refLine, display, "", resolve)
 	})
+}
+
+func (c *Controller) runEditedRefTurnWithResolver(input, refLine, display, original string, resolve func(context.Context, string) (string, []string)) {
+	c.runGuarded(func(ctx context.Context) error {
+		return c.runRefTurnWithResolverSync(ctx, input, refLine, display, original, resolve)
+	})
+}
+
+func (c *Controller) runRefTurnWithResolverSync(ctx context.Context, input, refLine, display, original string, resolve func(context.Context, string) (string, []string)) error {
+	block, errs := resolve(ctx, refLine)
+	for _, e := range errs {
+		c.notice(e)
+	}
+	sent := input
+	if block != "" {
+		sent = "Referenced context:\n\n" + block + "\n\n" + input
+	}
+	if strings.TrimSpace(original) != "" {
+		return c.runEditedGoalLoopWithRawDisplay(ctx, sent, input, display, original)
+	}
+	return c.runGoalLoopWithRawDisplay(ctx, sent, input, display)
 }
 
 // notice emits an informational Notice event.
@@ -1165,6 +1256,8 @@ func (c *Controller) Run(ctx context.Context, input string) error {
 		}
 		defer func() { c.hooks.Stop(context.Background(), lastAssistantText(c.History()), c.turn) }()
 	}
+	c.markInFlightTurn(startMessages, true)
+	defer c.clearInFlightTurn()
 	return c.runner.Run(ctx, input)
 }
 
@@ -1180,6 +1273,10 @@ func (c *Controller) Cancel() {
 	if cancel != nil {
 		c.approval.clearAll()
 		cancel()
+		return
+	}
+	if c.goals.active() {
+		c.stopGoal(GoalStatusStopped)
 	}
 }
 
@@ -2002,6 +2099,7 @@ func (c *Controller) Resume(s *agent.Session, path string) {
 	c.rebindCheckpoints(path)
 	c.restoreTerminalGoalTodos(path)
 	c.loadGuardianSession()
+	c.recoverInterruptedTurn(path)
 	c.maybeColdResumePrune(path)
 }
 
@@ -2124,6 +2222,18 @@ func (c *Controller) snapshot(markActivity bool) error {
 		// prompt) — staying quiet here is correct, not a data-loss path.
 		return nil
 	}
+	if !s.HasSystemMessage() {
+		// The session has user/assistant/tool messages but no leading system
+		// prompt.  Persisting it would create a session file that, when
+		// reloaded, has no agent-identity contract — the model falls back to
+		// its training-data defaults, giving wrong answers to identity
+		// queries ("who are you?").  Log the anomaly so the root cause
+		// (typically an empty sysPrompt reaching NewSession) can be
+		// diagnosed, then refuse to write a corrupted transcript.
+		slog.Warn("controller: refusing to snapshot session with content but no system message",
+			"label", c.Label(), "session_dir", c.SessionDir(), "message_count", len(s.Snapshot()))
+		return nil
+	}
 	if path == "" {
 		// There IS content but nowhere to write it: this silently dropped whole
 		// bot conversations (#4414). Surface it loudly instead of returning nil
@@ -2161,12 +2271,58 @@ func (c *Controller) messageCount() int {
 	return len(c.executor.Session().Snapshot())
 }
 
+func (c *Controller) markInFlightTurn(startMessageIndex int, preserveUser bool) {
+	path := c.SessionPath()
+	if path == "" {
+		return
+	}
+	if err := agent.MarkSessionInFlightTurn(path, startMessageIndex, preserveUser); err != nil {
+		slog.Warn("controller: mark in-flight turn", "err", err)
+	}
+}
+
+func (c *Controller) clearInFlightTurn() {
+	path := c.SessionPath()
+	if path == "" {
+		return
+	}
+	if err := agent.ClearSessionInFlightTurn(path); err != nil {
+		slog.Warn("controller: clear in-flight turn", "err", err)
+	}
+}
+
+func (c *Controller) recoverInterruptedTurn(path string) {
+	if c.executor == nil || path == "" {
+		return
+	}
+	meta, ok, err := agent.LoadBranchMeta(path)
+	if err != nil || !ok || meta.InFlightTurn == nil {
+		if err != nil {
+			slog.Warn("controller: load in-flight turn marker", "err", err)
+		}
+		return
+	}
+	marker := meta.InFlightTurn
+	msgs := c.executor.Session().Snapshot()
+	changed := marker.StartMessageIndex >= 0 && len(msgs) > marker.StartMessageIndex
+	if changed {
+		if marker.PreserveUser {
+			c.stripCancelledVisibleTurnMessagesAfter(marker.StartMessageIndex)
+		} else {
+			c.stripTurnMessagesAfter(marker.StartMessageIndex)
+		}
+		if err := c.snapshot(false); err != nil {
+			slog.Warn("controller: post-interrupted-turn snapshot", "err", err)
+		}
+	}
+	if err := agent.ClearSessionInFlightTurn(path); err != nil {
+		slog.Warn("controller: clear stale in-flight turn", "err", err)
+	}
+}
+
 // stripTurnMessagesAfter truncates the executor's session to keep only messages
-// before the given index, discarding an incomplete turn (the user prompt plus
-// every assistant / tool message that followed).  It is called when the user
-// explicitly cancels a turn so the next prompt starts clean — the model won't
-// see leftover in-progress todo items or partial tool calls and re-execute
-// interrupted work.
+// before the given index, discarding an incomplete synthetic turn (the synthetic
+// user prompt plus every assistant/tool message that followed).
 func (c *Controller) stripTurnMessagesAfter(idx int) {
 	if c.executor == nil {
 		return
@@ -2175,7 +2331,38 @@ func (c *Controller) stripTurnMessagesAfter(idx int) {
 	if len(msgs) <= idx {
 		return
 	}
-	c.executor.Session().Replace(msgs[:idx])
+	c.replaceSessionAfterCancel(msgs[:idx])
+}
+
+// stripCancelledVisibleTurnMessagesAfter removes assistant/tool remnants from a
+// cancelled visible turn while preserving the real user prompt that started it.
+func (c *Controller) stripCancelledVisibleTurnMessagesAfter(idx int) {
+	if c.executor == nil {
+		return
+	}
+	msgs := c.executor.Session().Snapshot()
+	if len(msgs) <= idx {
+		return
+	}
+	next := append([]provider.Message{}, msgs[:idx]...)
+	for _, m := range msgs[idx:] {
+		if m.Role != provider.RoleUser {
+			continue
+		}
+		if IsSyntheticUserMessage(m.Content) {
+			continue
+		}
+		if _, ok := agent.SteerText(m.Content); ok {
+			continue
+		}
+		next = append(next, m)
+		break
+	}
+	c.replaceSessionAfterCancel(next)
+}
+
+func (c *Controller) replaceSessionAfterCancel(msgs []provider.Message) {
+	c.executor.Session().Replace(append([]provider.Message(nil), msgs...))
 	// Rebuild canonical todo state from the truncated transcript so
 	// Controller.Todos(), goal readiness, and the task panel no longer see
 	// the in_progress items written by the cancelled turn.
@@ -2292,8 +2479,10 @@ func (c *Controller) History() []provider.Message {
 	return c.executor.Session().Snapshot() // copy — a turn may be appending concurrently
 }
 
-// ContextSnapshot returns (promptTokens, contextWindow) from the most recent
+// ContextSnapshot returns (usedTokens, contextWindow) from the most recent
 // turn. Both zero means no data yet — a gauge hides itself.
+// usedTokens is promptTokens + completionTokens so the GUI breakdown and
+// gauge reflect the full token usage, not just the prompt fill.
 func (c *Controller) ContextSnapshot() (int, int) {
 	if c.executor == nil {
 		return 0, 0
@@ -2302,7 +2491,7 @@ func (c *Controller) ContextSnapshot() (int, int) {
 	if u == nil {
 		return 0, c.executor.ContextWindow()
 	}
-	return u.PromptTokens, c.executor.ContextWindow()
+	return u.PromptTokens + u.CompletionTokens, c.executor.ContextWindow()
 }
 
 // CompactRatio returns the auto-compaction threshold as a fraction of the window

@@ -32,6 +32,7 @@ import (
 	"reasonix/internal/agent"
 	"reasonix/internal/billing"
 	"reasonix/internal/boot"
+	"reasonix/internal/botruntime"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
@@ -379,6 +380,9 @@ func (a *App) beforeClose(ctx context.Context) bool {
 		cfg = config.LoadForEdit(config.UserConfigPath())
 	}
 	if cfg.DesktopCloseBehavior() == "background" {
+		if !a.backgroundCloseHasRestorePath() {
+			return false
+		}
 		a.backgroundMaximised.Store(runtime.WindowIsMaximised(ctx))
 		a.saveWindowStateSync()
 		a.snapshotAllTabs()
@@ -386,6 +390,59 @@ func (a *App) beforeClose(ctx context.Context) bool {
 		return true
 	}
 	return false
+}
+
+const backgroundCloseTrayReadyTimeout = 500 * time.Millisecond
+
+func (a *App) backgroundCloseHasRestorePath() bool {
+	if backgroundCloseUsesApplicationHide(goruntime.GOOS) {
+		return backgroundCloseHasRestorePathFor(goruntime.GOOS, false, false)
+	}
+	if !a.startTray() {
+		return false
+	}
+	return backgroundCloseHasRestorePathFor(goruntime.GOOS, true, a.waitForTrayReady(backgroundCloseTrayReadyTimeout))
+}
+
+func (a *App) waitForTrayReady(timeout time.Duration) bool {
+	if a.isTrayReady() {
+		return true
+	}
+	ready := a.trayReadySignal()
+	if ready == nil {
+		return false
+	}
+	if timeout <= 0 {
+		select {
+		case <-ready:
+			return a.isTrayReady()
+		default:
+			return false
+		}
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-ready:
+		return a.isTrayReady()
+	case <-timer.C:
+		return a.isTrayReady()
+	}
+}
+
+func (a *App) isTrayReady() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.trayReady
+}
+
+func (a *App) trayReadySignal() <-chan struct{} {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.tray == nil {
+		return nil
+	}
+	return a.tray.ready
 }
 
 func (a *App) showMainWindow() {
@@ -430,6 +487,10 @@ func showFromBackground(ctx context.Context, wasMaximised bool) {
 
 func backgroundCloseUsesApplicationHide(goos string) bool {
 	return goos == "darwin"
+}
+
+func backgroundCloseHasRestorePathFor(goos string, trayStarted, trayReady bool) bool {
+	return backgroundCloseUsesApplicationHide(goos) || (trayStarted && trayReady)
 }
 
 type backgroundRestorePlan struct {
@@ -718,6 +779,18 @@ func (a *App) SubmitDisplayToTab(tabID, display, input string) error {
 		return workspaceNotReadyErr(tab)
 	}
 	ctrl.SubmitDisplay(display, input)
+	return nil
+}
+
+func (a *App) SubmitEditedDisplayToTab(tabID, display, input, original string) error {
+	tab, ctrl := a.tabAndCtrlByID(tabID)
+	if tab != nil && tab.ReadOnly {
+		return readOnlyChannelErr()
+	}
+	if ctrl == nil {
+		return workspaceNotReadyErr(tab)
+	}
+	ctrl.SubmitEditedDisplay(display, input, original)
 	return nil
 }
 
@@ -1714,6 +1787,9 @@ func (a *App) DeleteSession(path string) error {
 		}
 	}
 	a.closeRemainingRemovedSessionRuntimesAfterDestroy(removed, closedRemoved)
+	if err := botruntime.ForgetAutoSessionMappingsForPath(sessionPath); err != nil {
+		slog.Warn("desktop: failed to clear auto bot session mapping", "err", err)
+	}
 	if fallback.needs {
 		fallback = a.sessionDeleteFallbackTarget(fallback)
 		if err := a.openFallbackRuntime(fallback); err != nil {
@@ -2172,6 +2248,33 @@ func (a *App) ResumeSession(path string) ([]HistoryMessage, error) {
 	return a.ResumeSessionForTab("", path)
 }
 
+func (a *App) ResumeSessionPage(path string, limit int) (HistoryPage, error) {
+	return a.ResumeSessionPageForTab("", path, limit)
+}
+
+func (a *App) ResumeSessionPageForTab(tabID, path string, limit int) (HistoryPage, error) {
+	tab := a.tabByID(tabID)
+	if tab == nil || tab.Ctrl == nil {
+		return HistoryPage{}, fmt.Errorf("tab is not ready")
+	}
+	ctrl := tab.Ctrl
+	sessionPath, _, err := validateSessionPath(controllerSessionDir(ctrl), path)
+	if err != nil {
+		return HistoryPage{}, err
+	}
+	loaded, err := loadResumableSession(sessionPath)
+	if err != nil {
+		return HistoryPage{}, err
+	}
+	if sessionRuntimeKey(tab.currentSessionPath()) != sessionRuntimeKey(sessionPath) {
+		if err := a.rebindTabToLoadedSessionPath(tab, sessionPath, loaded); err != nil {
+			return HistoryPage{}, err
+		}
+	}
+	a.setTabReadOnly(tab.ID, false)
+	return a.HistoryPageForTab(tab.ID, 0, limit), nil
+}
+
 // ResumeSessionForTab is the tab-scoped form of ResumeSession. A saved session
 // path is a runtime identity, so changing to a different path must replace the
 // tab's controller binding rather than mutating the current controller in place.
@@ -2222,6 +2325,29 @@ func (a *App) OpenChannelSessionForTab(tabID, path string) ([]HistoryMessage, er
 	}
 	a.setTabReadOnly(tab.ID, true)
 	return a.HistoryForTab(tab.ID), nil
+}
+
+func (a *App) OpenChannelSessionPageForTab(tabID, path string, limit int) (HistoryPage, error) {
+	tab := a.tabByID(tabID)
+	if tab == nil || tab.Ctrl == nil {
+		return HistoryPage{}, fmt.Errorf("tab is not ready")
+	}
+	ctrl := tab.Ctrl
+	sessionPath, _, err := validateSessionPath(controllerSessionDir(ctrl), path)
+	if err != nil {
+		return HistoryPage{}, err
+	}
+	loaded, err := loadResumableSession(sessionPath)
+	if err != nil {
+		return HistoryPage{}, err
+	}
+	if sessionRuntimeKey(tab.currentSessionPath()) != sessionRuntimeKey(sessionPath) {
+		if err := a.rebindTabToLoadedSessionPath(tab, sessionPath, loaded); err != nil {
+			return HistoryPage{}, err
+		}
+	}
+	a.setTabReadOnly(tab.ID, true)
+	return a.HistoryPageForTab(tab.ID, 0, limit), nil
 }
 
 func (a *App) setTabReadOnly(tabID string, readOnly bool) {
@@ -3088,9 +3214,119 @@ type HistoryToolCall struct {
 	ArgumentsArchived bool   `json:"argumentsArchived,omitempty"`
 }
 
+const (
+	defaultHistoryPageTurns = 60
+	maxHistoryPageTurns     = 200
+)
+
+type HistoryPage struct {
+	Messages   []HistoryMessage `json:"messages"`
+	StartTurn  int              `json:"startTurn"`
+	EndTurn    int              `json:"endTurn"`
+	TotalTurns int              `json:"totalTurns"`
+	HasOlder   bool             `json:"hasOlder"`
+}
+
 // History returns the session's message log.
 func (a *App) History() []HistoryMessage {
 	return a.HistoryForTab("")
+}
+
+func (a *App) HistoryPage(beforeTurn, limit int) HistoryPage {
+	return a.HistoryPageForTab("", beforeTurn, limit)
+}
+
+func (a *App) HistoryPageForTab(tabID string, beforeTurn, limit int) HistoryPage {
+	a.mu.RLock()
+	tab := a.tabByIDLocked(tabID)
+	var ctrl control.SessionAPI
+	var sessionDir, sessionPath string
+	if tab != nil {
+		ctrl = tab.Ctrl
+		sessionDir = tabSessionDir(tab)
+		sessionPath = tab.currentSessionPath()
+	}
+	a.mu.RUnlock()
+	if ctrl == nil {
+		if strings.TrimSpace(sessionPath) == "" {
+			return HistoryPage{Messages: []HistoryMessage{}}
+		}
+		page, err := previewSessionPage(sessionDir, sessionPath, beforeTurn, limit)
+		if err != nil {
+			return HistoryPage{Messages: []HistoryMessage{}}
+		}
+		return page
+	}
+	msgs := ctrl.History()
+	dir := controllerSessionDir(ctrl)
+	path := ctrl.SessionPath()
+	return historyPageFromProviderMessages(
+		msgs,
+		sessionDisplayResolver(dir, path),
+		sessionPlannerDisplayTurns(dir, path),
+		ctrl.CheckpointTurnsByMessageIndex(),
+		beforeTurn,
+		limit,
+	)
+}
+
+func normalizeHistoryPageLimit(limit int) int {
+	if limit <= 0 {
+		return defaultHistoryPageTurns
+	}
+	if limit > maxHistoryPageTurns {
+		return maxHistoryPageTurns
+	}
+	return limit
+}
+
+func historyPageFromMessages(messages []HistoryMessage, beforeTurn, limit int) HistoryPage {
+	limit = normalizeHistoryPageLimit(limit)
+	totalTurns := 0
+	for _, msg := range messages {
+		if msg.Role == "user" {
+			totalTurns++
+		}
+	}
+	if beforeTurn <= 0 || beforeTurn > totalTurns {
+		beforeTurn = totalTurns
+	}
+	startTurn := beforeTurn - limit
+	if startTurn < 0 {
+		startTurn = 0
+	}
+	page := HistoryPage{
+		StartTurn:  startTurn,
+		EndTurn:    beforeTurn,
+		TotalTurns: totalTurns,
+		HasOlder:   startTurn > 0,
+	}
+	if len(messages) == 0 || startTurn >= beforeTurn {
+		page.Messages = []HistoryMessage{}
+		return page
+	}
+	page.Messages = historyMessagesForTurnRange(messages, startTurn, beforeTurn)
+	return page
+}
+
+func historyMessagesForTurnRange(messages []HistoryMessage, startTurn, endTurn int) []HistoryMessage {
+	out := make([]HistoryMessage, 0, len(messages))
+	turn := -1
+	for _, msg := range messages {
+		if msg.Role == "user" {
+			turn++
+		}
+		if turn < 0 {
+			if startTurn == 0 {
+				out = append(out, msg)
+			}
+			continue
+		}
+		if turn >= startTurn && turn < endTurn {
+			out = append(out, msg)
+		}
+	}
+	return out
 }
 
 func (a *App) HistoryForTab(tabID string) []HistoryMessage {
@@ -3125,14 +3361,64 @@ func (a *App) HistoryForTab(tabID string) []HistoryMessage {
 	)
 }
 
+func (a *App) HistoryCheckpointTurnsForTab(tabID string) []int {
+	a.mu.RLock()
+	tab := a.tabByIDLocked(tabID)
+	var ctrl control.SessionAPI
+	if tab != nil {
+		ctrl = tab.Ctrl
+	}
+	a.mu.RUnlock()
+	if ctrl == nil {
+		return []int{}
+	}
+	return historyCheckpointTurns(
+		ctrl.History(),
+		sessionDisplayResolver(controllerSessionDir(ctrl), ctrl.SessionPath()),
+		ctrl.CheckpointTurnsByMessageIndex(),
+	)
+}
+
+func historyCheckpointTurns(msgs []provider.Message, resolveUserContent func(string) string, checkpointTurns map[int]int) []int {
+	out := make([]int, 0)
+	for index, msg := range msgs {
+		if msg.Role != provider.RoleUser {
+			continue
+		}
+		if _, isSteer := agent.SteerText(msg.Content); isSteer {
+			continue
+		}
+		if control.IsSyntheticUserMessage(resolveUserContent(msg.Content)) {
+			continue
+		}
+		turn, ok := checkpointTurns[index]
+		if !ok {
+			turn = -1
+		}
+		out = append(out, turn)
+	}
+	return out
+}
+
 func historyMessages(msgs []provider.Message, resolveUserContent func(string) string) []HistoryMessage {
 	return historyMessagesWithPlannerDisplays(msgs, resolveUserContent, nil, nil)
 }
 
 func historyMessagesWithPlannerDisplays(msgs []provider.Message, resolveUserContent func(string) string, plannerTurns []plannerDisplayTurn, checkpointTurns map[int]int) []HistoryMessage {
-	out := make([]HistoryMessage, 0, len(msgs))
 	replayedTodoArgs := historyTodoArgsWithCompleteSteps(msgs)
 	toolResults := historyToolResultsByID(msgs)
+	return historyMessagesWithPlannerDisplaysAndLookups(msgs, resolveUserContent, plannerTurns, checkpointTurns, replayedTodoArgs, toolResults)
+}
+
+func historyMessagesWithPlannerDisplaysAndLookups(
+	msgs []provider.Message,
+	resolveUserContent func(string) string,
+	plannerTurns []plannerDisplayTurn,
+	checkpointTurns map[int]int,
+	replayedTodoArgs map[string]string,
+	toolResults map[string]provider.Message,
+) []HistoryMessage {
+	out := make([]HistoryMessage, 0, len(msgs))
 	plannerByUserHash := plannerTurnsByUserHash(plannerTurns)
 	for index, m := range msgs {
 		content := m.Content
@@ -3191,6 +3477,100 @@ func historyMessagesWithPlannerDisplays(msgs []provider.Message, resolveUserCont
 				out = append(out, cloneHistoryMessages(turns[0].Messages)...)
 				plannerByUserHash[messageDisplayKey(m.Content)] = turns[1:]
 			}
+		}
+	}
+	return out
+}
+
+func historyPageFromProviderMessages(
+	msgs []provider.Message,
+	resolveUserContent func(string) string,
+	plannerTurns []plannerDisplayTurn,
+	checkpointTurns map[int]int,
+	beforeTurn, limit int,
+) HistoryPage {
+	limit = normalizeHistoryPageLimit(limit)
+	totalTurns := visibleHistoryUserTurns(msgs, resolveUserContent)
+	if beforeTurn <= 0 || beforeTurn > totalTurns {
+		beforeTurn = totalTurns
+	}
+	startTurn := beforeTurn - limit
+	if startTurn < 0 {
+		startTurn = 0
+	}
+	page := HistoryPage{
+		StartTurn:  startTurn,
+		EndTurn:    beforeTurn,
+		TotalTurns: totalTurns,
+		HasOlder:   startTurn > 0,
+	}
+	if len(msgs) == 0 || startTurn >= beforeTurn {
+		page.Messages = []HistoryMessage{}
+		return page
+	}
+	pageMessages, originalIndexes := providerMessagesForVisibleTurnRange(msgs, resolveUserContent, startTurn, beforeTurn)
+	page.Messages = historyMessagesWithPlannerDisplaysAndLookups(
+		pageMessages,
+		resolveUserContent,
+		plannerTurns,
+		checkpointTurnsForProviderWindow(checkpointTurns, originalIndexes),
+		historyTodoArgsWithCompleteSteps(msgs),
+		historyToolResultsByID(msgs),
+	)
+	return page
+}
+
+func visibleHistoryUserTurns(msgs []provider.Message, resolveUserContent func(string) string) int {
+	total := 0
+	for _, msg := range msgs {
+		if isVisibleHistoryUser(msg, resolveUserContent) {
+			total++
+		}
+	}
+	return total
+}
+
+func isVisibleHistoryUser(msg provider.Message, resolveUserContent func(string) string) bool {
+	if msg.Role != provider.RoleUser {
+		return false
+	}
+	if _, isSteer := agent.SteerText(msg.Content); isSteer {
+		return false
+	}
+	return !control.IsSyntheticUserMessage(resolveUserContent(msg.Content))
+}
+
+func providerMessagesForVisibleTurnRange(msgs []provider.Message, resolveUserContent func(string) string, startTurn, endTurn int) ([]provider.Message, []int) {
+	out := make([]provider.Message, 0, len(msgs))
+	indexes := make([]int, 0, len(msgs))
+	turn := -1
+	for index, msg := range msgs {
+		if isVisibleHistoryUser(msg, resolveUserContent) {
+			turn++
+		}
+		if turn < 0 {
+			if startTurn == 0 {
+				out = append(out, msg)
+				indexes = append(indexes, index)
+			}
+			continue
+		}
+		if turn >= startTurn && turn < endTurn {
+			out = append(out, msg)
+			indexes = append(indexes, index)
+		}
+	}
+	return out, indexes
+}
+
+func checkpointTurnsForProviderWindow(checkpointTurns map[int]int, originalIndexes []int) map[int]int {
+	if len(checkpointTurns) == 0 || len(originalIndexes) == 0 {
+		return nil
+	}
+	out := map[int]int{}
+	for pageIndex, originalIndex := range originalIndexes {
+		if turn, ok := checkpointTurns[originalIndex]; ok {
+			out[pageIndex] = turn
 		}
 	}
 	return out
@@ -3297,6 +3677,8 @@ func historyToolSubject(name, args string) string {
 		subject = historyArgString(a, "url")
 	case "task":
 		subject = firstNonEmpty(historyArgString(a, "description"), historyArgString(a, "prompt"))
+	case "run_skill":
+		subject = historyArgString(a, "name")
 	case "move_file":
 		src := historyArgString(a, "source_path")
 		dst := historyArgString(a, "destination_path")
@@ -3538,6 +3920,31 @@ func previewSessionMessages(sessionDir, path string) ([]HistoryMessage, error) {
 		sessionDisplayResolver(sessionDir, sessionPath),
 		sessionPlannerDisplayTurns(sessionDir, sessionPath),
 		nil,
+	), nil
+}
+
+func previewSessionPage(sessionDir, path string, beforeTurn, limit int) (HistoryPage, error) {
+	sessionPath, _, err := validateSessionPath(sessionDir, path)
+	if err != nil {
+		return HistoryPage{}, err
+	}
+	if out, ok, err := previewEventSessionMessages(sessionPath); ok || err != nil {
+		if err != nil {
+			return HistoryPage{}, err
+		}
+		return historyPageFromMessages(out, beforeTurn, limit), nil
+	}
+	loaded, err := agent.LoadSession(sessionPath)
+	if err != nil {
+		return HistoryPage{}, err
+	}
+	return historyPageFromProviderMessages(
+		loaded.Snapshot(),
+		sessionDisplayResolver(sessionDir, sessionPath),
+		sessionPlannerDisplayTurns(sessionDir, sessionPath),
+		nil,
+		beforeTurn,
+		limit,
 	), nil
 }
 
@@ -5588,11 +5995,7 @@ func (a *App) SetModelForTab(tabID, name string) error {
 	newCtrl.SetGoal(tab.goal)
 
 	path := agent.ContinueSessionPath(prevPath, newCtrl.SessionDir(), newCtrl.Label())
-	if len(carried) > 0 {
-		newCtrl.Resume(&agent.Session{Messages: carried}, path)
-	} else if path != "" {
-		newCtrl.SetSessionPath(path)
-	}
+	resumeWithFreshSystemPrompt(newCtrl, carried, path)
 	a.persistTabSessionPath(tab, path)
 	return nil
 }
@@ -5688,11 +6091,7 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 	applyTabToolApprovalModeToController(newCtrl, tab.toolApprovalMode)
 	newCtrl.SetGoal(tab.goal)
 	path := agent.ContinueSessionPath(prevPath, newCtrl.SessionDir(), newCtrl.Label())
-	if len(carried) > 0 {
-		newCtrl.Resume(&agent.Session{Messages: carried}, path)
-	} else if path != "" {
-		newCtrl.SetSessionPath(path)
-	}
+	resumeWithFreshSystemPrompt(newCtrl, carried, path)
 	a.persistTabSessionPath(tab, path)
 	return nil
 }
@@ -5766,11 +6165,7 @@ func (a *App) SetTokenModeForTab(tabID, mode string) error {
 	applyTabToolApprovalModeToController(newCtrl, tab.toolApprovalMode)
 	newCtrl.SetGoal(tab.goal)
 	path := agent.ContinueSessionPath(prevPath, newCtrl.SessionDir(), newCtrl.Label())
-	if len(carried) > 0 {
-		newCtrl.Resume(&agent.Session{Messages: carried}, path)
-	} else if path != "" {
-		newCtrl.SetSessionPath(path)
-	}
+	resumeWithFreshSystemPrompt(newCtrl, carried, path)
 	a.persistTabSessionPath(tab, path)
 	return nil
 }

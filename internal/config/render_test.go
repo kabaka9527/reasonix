@@ -133,6 +133,7 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	orig.UI.Theme = "light"
 	orig.UI.ThemeStyle = "glacier"
 	orig.UI.ShortcutLayout = "desktop"
+	orig.UI.CursorShape = "bar"
 	orig.Desktop.Language = "en"
 	orig.Desktop.LayoutStyle = "workbench"
 	orig.Desktop.Theme = "dark"
@@ -152,6 +153,7 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	orig.Agent.PlannerMaxSteps = 0
 	orig.Agent.AutoPlanClassifier = "deepseek-flash"
 	orig.Agent.ReasoningLanguage = "zh"
+	orig.Agent.ToolResultSnipRatio = 0.65
 	orig.Agent.SubagentModel = "mimo-pro"
 	orig.Agent.SubagentModels = map[string]string{"review": "deepseek-pro"}
 	orig.Agent.Keep = []string{"errors", "user_marked"}
@@ -176,6 +178,8 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 			Password: "${REASONIX_PROXY_PASSWORD}",
 		},
 	}
+	orig.Environment.Enabled = boolPtr(false)
+	orig.Environment.Tools = map[string]string{"go": "/opt/homebrew/bin/go", "python3": "~/.pyenv/shims/python3"}
 	orig.Skills.Paths = []string{"~/my-skills", "../shared/skills"}
 	orig.Skills.ExcludedPaths = []string{"~/.agents/skills"}
 	orig.Skills.DisabledSkills = []string{"review", "explore"}
@@ -248,6 +252,9 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	if got.UI.ShortcutLayout != "desktop" {
 		t.Errorf("ui.shortcut_layout = %q, want desktop", got.UI.ShortcutLayout)
 	}
+	if got.UICursorShape() != "bar" {
+		t.Errorf("ui.cursor_shape = %q, want bar", got.UICursorShape())
+	}
 	if got.Desktop.Language != "en" {
 		t.Errorf("desktop.language = %q, want en", got.Desktop.Language)
 	}
@@ -311,6 +318,9 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	if got.Agent.SoftCompactRatio != orig.Agent.SoftCompactRatio {
 		t.Errorf("soft_compact_ratio = %v, want %v", got.Agent.SoftCompactRatio, orig.Agent.SoftCompactRatio)
 	}
+	if got.Agent.ToolResultSnipRatio != orig.Agent.ToolResultSnipRatio {
+		t.Errorf("tool_result_snip_ratio = %v, want %v", got.Agent.ToolResultSnipRatio, orig.Agent.ToolResultSnipRatio)
+	}
 	if got.Agent.CompactRatio != orig.Agent.CompactRatio {
 		t.Errorf("compact_ratio = %v, want %v", got.Agent.CompactRatio, orig.Agent.CompactRatio)
 	}
@@ -328,6 +338,12 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	}
 	if !got.LSP.Enabled {
 		t.Error("lsp.enabled = false, want true")
+	}
+	if got.Environment.Enabled == nil || *got.Environment.Enabled {
+		t.Errorf("environment.enabled = %+v, want false", got.Environment.Enabled)
+	}
+	if !reflect.DeepEqual(got.Environment.Tools, orig.Environment.Tools) {
+		t.Errorf("environment.tools = %v, want %v", got.Environment.Tools, orig.Environment.Tools)
 	}
 	lua := got.LSP.Servers["lua"]
 	if lua.Command != "lua-language-server" || lua.LanguageID != "lua" || lua.InstallHint != "install lua-language-server" {
@@ -688,6 +704,26 @@ func TestProjectDeltaRendersToolsShellOverrides(t *testing.T) {
 	}
 	if got.Tools.Shell.Prefer != "bash" || got.Tools.Shell.Path != "/usr/local/bin/bash" {
 		t.Fatalf("tools.shell = %+v, want bash with path", got.Tools.Shell)
+	}
+}
+
+func TestProjectDeltaRendersUICursorShape(t *testing.T) {
+	c := Default()
+	c.UI.CursorShape = "block"
+
+	delta := RenderTOMLProjectDelta(c)
+	for _, want := range []string{"[ui]", `cursor_shape = "block"`} {
+		if !strings.Contains(delta, want) {
+			t.Fatalf("project delta missing %q:\n%s", want, delta)
+		}
+	}
+
+	got := Default()
+	if _, err := toml.Decode(delta, got); err != nil {
+		t.Fatalf("decode project delta: %v\n%s", err, delta)
+	}
+	if got.UICursorShape() != "block" {
+		t.Fatalf("ui.cursor_shape = %q, want block", got.UICursorShape())
 	}
 }
 

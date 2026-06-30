@@ -105,6 +105,7 @@ var Chinese = Messages{
 	SlashClearPrompt:   "清空当前上下文且不保存？",
 	SlashClearDone:     "已清空当前上下文",
 	SlashClearFailed:   "清空当前上下文失败",
+	SlashClsDone:       "已清屏（LLM 上下文保留）",
 	SlashUnavailable:   "当前构建不支持该命令",
 	SlashUnknown:       "未知命令",
 	SlashTodoCleared:   "已清除任务清单",
@@ -167,6 +168,7 @@ var Chinese = Messages{
 
 	CmdNew:              "开启新会话并保存历史",
 	CmdClear:            "丢弃当前上下文",
+	CmdCls:              "清屏（保留 LLM 上下文）",
 	CmdCompact:          "压缩上下文",
 	CmdRewind:           "回滚到更早的一轮",
 	CmdTree:             "查看对话分支树",

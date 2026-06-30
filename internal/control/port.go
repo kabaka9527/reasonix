@@ -48,6 +48,7 @@ type Lifecycle interface {
 type TurnControl interface {
 	Submit(input string)
 	SubmitDisplay(display, input string)
+	SubmitEditedDisplay(display, input, original string)
 	SubmitHTTP(input string)
 	SubmitUserTurn(input, display string)
 	Send(input string)

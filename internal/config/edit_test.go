@@ -78,6 +78,25 @@ func TestUIThemeStyleNormalizes(t *testing.T) {
 	}
 }
 
+func TestUICursorShapeNormalizes(t *testing.T) {
+	c := Default()
+	for _, tt := range []struct {
+		in   string
+		want string
+	}{
+		{"", "underline"},
+		{"UNDERLINE", "underline"},
+		{" block ", "block"},
+		{"bar", "bar"},
+		{"unknown", "underline"},
+	} {
+		c.UI.CursorShape = tt.in
+		if got := c.UICursorShape(); got != tt.want {
+			t.Errorf("UICursorShape(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
 func TestUICloseBehaviorNormalizes(t *testing.T) {
 	c := Default()
 	for _, tt := range []struct {

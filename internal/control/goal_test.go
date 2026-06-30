@@ -209,6 +209,25 @@ func TestPlainInputWithWeakResearchSignalDoesNotAutoStartGoal(t *testing.T) {
 	}
 }
 
+func TestCancelStopsIdleGoalWithIncompleteTodos(t *testing.T) {
+	ag := agent.New(nil, nil, agent.NewSession(""), agent.Options{}, event.Discard)
+	ag.SeedTodoState([]evidence.TodoItem{{Content: "finish the migration", Status: "in_progress"}})
+	c := New(Options{Executor: ag, Sink: event.Discard})
+	c.SetGoalWithResearchMode("finish the migration", GoalResearchOn)
+
+	c.Cancel()
+
+	if got := c.GoalStatus(); got != GoalStatusStopped {
+		t.Fatalf("GoalStatus() = %q, want stopped", got)
+	}
+	if got := c.Goal(); got != "finish the migration" {
+		t.Fatalf("Goal() = %q, want stopped goal text to remain for display/persistence", got)
+	}
+	if todos := c.Todos(); len(todos) != 1 || todos[0].Status != "in_progress" {
+		t.Fatalf("Todos() after stopping idle goal = %+v, want incomplete todo retained", todos)
+	}
+}
+
 func TestGoalRepeatedBlockedStopsAfterThreeTurns(t *testing.T) {
 	prov := &scriptedTurns{turns: [][]provider.Chunk{
 		textTurn("Blocked.\n\n[goal:blocked: Needs credentials.]"),

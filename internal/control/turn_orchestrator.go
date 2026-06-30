@@ -18,10 +18,11 @@ type turnOrchestrator struct {
 }
 
 type orchestratedTurn struct {
-	input     string
-	raw       string
-	display   string
-	synthetic bool
+	input          string
+	raw            string
+	display        string
+	editedOriginal string
+	synthetic      bool
 }
 
 func newTurnOrchestrator(c *Controller) *turnOrchestrator {
@@ -30,6 +31,10 @@ func newTurnOrchestrator(c *Controller) *turnOrchestrator {
 
 func (o *turnOrchestrator) runTurnWithRawDisplay(ctx context.Context, input, raw, display string) error {
 	return o.runOrchestratedTurn(ctx, orchestratedTurn{input: input, raw: raw, display: display})
+}
+
+func (o *turnOrchestrator) runEditedTurnWithRawDisplay(ctx context.Context, input, raw, display, original string) error {
+	return o.runOrchestratedTurn(ctx, orchestratedTurn{input: input, raw: raw, display: display, editedOriginal: original})
 }
 
 func (o *turnOrchestrator) runSyntheticTurnWithRawDisplay(ctx context.Context, input, raw, display string) error {
@@ -64,6 +69,9 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 	startMessages := c.messageCount()
 	defer c.snapshotActivityIfChanged(startMessages)
 	defer c.recordDisplayForNewUser(startMessages, turn.display)
+	if turn.editedOriginal != "" {
+		defer c.markEditedForNewUser(startMessages, turn.editedOriginal)
+	}
 	// Open a checkpoint only for visible user turns before the user message is
 	// appended, so the recorded message boundary precedes it and pre-edit
 	// snapshots land here. Synthetic continuations stay attached to the visible
@@ -88,17 +96,25 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 		}
 		defer func() { c.hooks.Stop(context.Background(), lastAssistantText(c.History()), turn) }()
 	}
-	if err := c.runner.Run(ctx, input); err != nil {
+	c.markInFlightTurn(startMessages, !turn.synthetic && !IsSyntheticUserMessage(turn.raw))
+	err := c.runner.Run(ctx, input)
+	if err == nil {
+		c.clearInFlightTurn()
+	} else {
 		// When the user explicitly cancels (Ctrl+C), the incomplete turn's
 		// assistant messages and tool results are already saved to the
-		// session.  If they stay, the next turn's model sees leftover
+		// session. If they stay, the next turn's model sees leftover
 		// in-progress todo items and partial tool calls and may re-execute
-		// the interrupted work (the next user message looks like a
-		// continuation instead of a fresh task).  Strip the turn so the
-		// next prompt starts clean.
+		// the interrupted work. Keep the real user prompt for visible turns so
+		// follow-up questions and resumes do not lose the user's context (#5499).
 		if errors.Is(err, context.Canceled) && c.CancelRequested() {
-			c.stripTurnMessagesAfter(startMessages)
+			if turn.synthetic || IsSyntheticUserMessage(turn.raw) {
+				c.stripTurnMessagesAfter(startMessages)
+			} else {
+				c.stripCancelledVisibleTurnMessagesAfter(startMessages)
+			}
 		}
+		c.clearInFlightTurn()
 		return err
 	}
 	c.mu.Lock()
@@ -128,7 +144,12 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 	// later turn (even "continue") falls back to the normal per-tool approval.
 	c.approval.setPlanAutoApprove(true)
 	defer c.approval.setPlanAutoApprove(false)
-	if err := o.runComposedSyntheticTurn(ctx, planApprovedMessage); err != nil {
+	err = func() error {
+		c.markInFlightTurn(execStart, false)
+		defer c.clearInFlightTurn()
+		return o.runComposedSyntheticTurn(ctx, planApprovedMessage)
+	}()
+	if err != nil {
 		if errors.Is(err, context.Canceled) && c.CancelRequested() {
 			c.stripTurnMessagesAfter(execStart)
 		}
@@ -142,6 +163,16 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 
 func (o *turnOrchestrator) runGoalLoopWithRawDisplay(ctx context.Context, input, raw, display string) error {
 	if err := o.runTurnWithRawDisplay(ctx, input, raw, display); err != nil {
+		if ctx.Err() != nil {
+			o.c.stopGoal(GoalStatusStopped)
+		}
+		return err
+	}
+	return o.continueGoal(ctx)
+}
+
+func (o *turnOrchestrator) runEditedGoalLoopWithRawDisplay(ctx context.Context, input, raw, display, original string) error {
+	if err := o.runEditedTurnWithRawDisplay(ctx, input, raw, display, original); err != nil {
 		if ctx.Err() != nil {
 			o.c.stopGoal(GoalStatusStopped)
 		}

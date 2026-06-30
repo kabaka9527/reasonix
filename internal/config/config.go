@@ -52,6 +52,7 @@ type Config struct {
 	Permissions      PermissionsConfig   `toml:"permissions"`
 	Sandbox          SandboxConfig       `toml:"sandbox"`
 	Network          NetworkConfig       `toml:"network"`
+	Environment      EnvironmentConfig   `toml:"environment"`
 	Plugins          []PluginEntry       `toml:"plugins"`
 	Skills           SkillsConfig        `toml:"skills"`
 	Statusline       StatuslineConfig    `toml:"statusline"`
@@ -79,6 +80,7 @@ type UIConfig struct {
 	ShortcutLayout string `toml:"shortcut_layout"` // classic|desktop; accepted for compatibility
 	CloseBehavior  string `toml:"close_behavior"`  // legacy desktop close behavior; prefer desktop.close_behavior
 	ShowReasoning  bool   `toml:"show_reasoning"`  // Ctrl+O / /verbose: show thinking text in CLI; false = collapsed
+	CursorShape    string `toml:"cursor_shape"`    // block|underline|bar; empty defaults to underline
 }
 
 // DesktopConfig controls desktop-only UI preferences. It is intentionally
@@ -109,6 +111,20 @@ type NotificationsConfig struct {
 	AskRequest      bool `toml:"ask_request"`
 }
 
+// EnvironmentConfig controls the stable startup environment block injected into
+// the model-facing prompt. Enabled nil means the default (enabled); Tools maps a
+// tool name to an explicit executable path when PATH probing is not enough.
+type EnvironmentConfig struct {
+	Enabled *bool             `toml:"enabled"`
+	Tools   map[string]string `toml:"tools"`
+}
+
+// EnvironmentEnabled reports whether startup environment probing should feed the
+// cache-stable system prompt.
+func (c *Config) EnvironmentEnabled() bool {
+	return c == nil || c.Environment.Enabled == nil || *c.Environment.Enabled
+}
+
 // UITheme normalizes ui.theme to a supported value.
 func (c *Config) UITheme() string {
 	switch strings.ToLower(strings.TrimSpace(c.UI.Theme)) {
@@ -136,6 +152,21 @@ func (c *Config) UIShortcutLayout() string {
 		return "desktop"
 	default:
 		return "classic"
+	}
+}
+
+// UICursorShape normalizes ui.cursor_shape. Defaults to "underline" to avoid
+// block-cursor visual corruption with CJK wide characters in the textarea
+// (Bubble Tea real-cursor + CJK column-counting drift). Valid values:
+// "block", "underline", "bar".
+func (c *Config) UICursorShape() string {
+	switch strings.ToLower(strings.TrimSpace(c.UI.CursorShape)) {
+	case "block":
+		return "block"
+	case "bar":
+		return "bar"
+	default:
+		return "underline"
 	}
 }
 
@@ -863,9 +894,10 @@ type AgentConfig struct {
 	// borderline auto-plan decisions. Empty keeps the zero-cost heuristic path.
 	AutoPlanClassifier string `toml:"auto_plan_classifier"`
 	// Compaction window fractions: soft = notice only, compact = trigger, force = hard ceiling.
-	SoftCompactRatio  float64 `toml:"soft_compact_ratio"`
-	CompactRatio      float64 `toml:"compact_ratio"`
-	CompactForceRatio float64 `toml:"compact_force_ratio"`
+	SoftCompactRatio    float64 `toml:"soft_compact_ratio"`
+	ToolResultSnipRatio float64 `toml:"tool_result_snip_ratio"`
+	CompactRatio        float64 `toml:"compact_ratio"`
+	CompactForceRatio   float64 `toml:"compact_force_ratio"`
 	// Keep controls which compactable messages stay verbatim beyond the current
 	// user-fact/digest floor and recent tail. Empty uses the conservative default
 	// of keeping error tool results.
@@ -1293,12 +1325,13 @@ func Default() *Config {
 			// the user cancels, or the provider errors. Context stays bounded by
 			// compaction, not by a round count. Set a positive agent.max_steps only
 			// if you want a hard guard against runaway.
-			MaxSteps:          0,
-			PlannerMaxSteps:   0,
-			AutoPlan:          "off",
-			SoftCompactRatio:  0.5,
-			CompactRatio:      0.8,
-			CompactForceRatio: 0.9,
+			MaxSteps:            0,
+			PlannerMaxSteps:     0,
+			AutoPlan:            "off",
+			SoftCompactRatio:    0.5,
+			ToolResultSnipRatio: 0.6,
+			CompactRatio:        0.8,
+			CompactForceRatio:   0.9,
 		},
 		// Mode "ask" with no rules keeps `reasonix run` autonomous (no TTY → ask
 		// resolves to allow) while `reasonix` prompts before writers. Users add
