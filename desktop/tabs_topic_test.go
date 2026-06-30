@@ -1322,6 +1322,120 @@ func TestRenameTopicRecreatesDeletedProjectTitleIndexFromSessionMeta(t *testing.
 	}
 }
 
+func TestOpenProjectTabRecoversMissingTopicTitleFromSessionMeta(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	projectRoot := robustTempDir(t)
+	app := NewApp()
+	topic, err := app.CreateTopic("project", projectRoot, "旧标题")
+	if err != nil {
+		t.Fatalf("create topic: %v", err)
+	}
+	dir := desktopSessionDir(projectRoot)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	sessionPath := writeTopicSessionWithPrompt(t, dir, "stored-meta.jsonl", topic.ID, "用户保存标题", projectRoot, "first prompt should not win", time.Now())
+	if err := os.Remove(topicTitlesPath(projectRoot)); err != nil {
+		t.Fatalf("remove topic titles: %v", err)
+	}
+	if got := loadTopicTitleSource(projectRoot, topic.ID); got != topicTitleSourceManual {
+		t.Fatalf("precondition title source = %q, want manual", got)
+	}
+
+	meta, err := app.OpenProjectTab(projectRoot, topic.ID)
+	if err != nil {
+		t.Fatalf("open project tab: %v", err)
+	}
+	tab := waitForTabReady(t, app, meta.ID)
+	if got := filepath.Clean(tab.Ctrl.SessionPath()); got != filepath.Clean(sessionPath) {
+		t.Fatalf("opened session path = %q, want %q", got, sessionPath)
+	}
+	if got := meta.TopicTitle; got != "用户保存标题" {
+		t.Fatalf("opened topic title = %q, want 用户保存标题", got)
+	}
+	if got := loadTopicTitle(projectRoot, topic.ID); got != "用户保存标题" {
+		t.Fatalf("stored topic title = %q, want 用户保存标题", got)
+	}
+	if got := loadTopicTitleSource(projectRoot, topic.ID); got != topicTitleSourceManual {
+		t.Fatalf("title source = %q, want manual", got)
+	}
+}
+
+func TestOpenProjectTabRecoversMissingTopicTitleFromSessionTitle(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	projectRoot := robustTempDir(t)
+	app := NewApp()
+	topic, err := app.CreateTopic("project", projectRoot, "旧标题")
+	if err != nil {
+		t.Fatalf("create topic: %v", err)
+	}
+	dir := desktopSessionDir(projectRoot)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	sessionPath := writeTopicSessionWithPrompt(t, dir, "stored-session-title.jsonl", topic.ID, "", projectRoot, "first prompt should not win", time.Now())
+	if err := setSessionTitle(dir, sessionPath, "历史手动标题"); err != nil {
+		t.Fatalf("set session title: %v", err)
+	}
+	if err := os.Remove(topicTitlesPath(projectRoot)); err != nil {
+		t.Fatalf("remove topic titles: %v", err)
+	}
+	if got := loadTopicTitleSource(projectRoot, topic.ID); got != topicTitleSourceManual {
+		t.Fatalf("precondition title source = %q, want manual", got)
+	}
+
+	meta, err := app.OpenProjectTab(projectRoot, topic.ID)
+	if err != nil {
+		t.Fatalf("open project tab: %v", err)
+	}
+	waitForTabReady(t, app, meta.ID)
+	if got := meta.TopicTitle; got != "历史手动标题" {
+		t.Fatalf("opened topic title = %q, want 历史手动标题", got)
+	}
+	if got := loadTopicTitle(projectRoot, topic.ID); got != "历史手动标题" {
+		t.Fatalf("stored topic title = %q, want 历史手动标题", got)
+	}
+	if got := loadTopicTitleSource(projectRoot, topic.ID); got != topicTitleSourceManual {
+		t.Fatalf("title source = %q, want manual", got)
+	}
+}
+
+func TestOpenProjectTabPreservesManualDefaultTopicTitle(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	projectRoot := robustTempDir(t)
+	app := NewApp()
+	topic, err := app.CreateTopic("project", projectRoot, "")
+	if err != nil {
+		t.Fatalf("create topic: %v", err)
+	}
+	if err := app.RenameTopic(topic.ID, defaultTopicTitle); err != nil {
+		t.Fatalf("rename topic: %v", err)
+	}
+	dir := desktopSessionDir(projectRoot)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	writeTopicSessionWithPrompt(t, dir, "manual-default.jsonl", topic.ID, defaultTopicTitle, projectRoot, "first prompt should not replace manual default", time.Now())
+
+	meta, err := app.OpenProjectTab(projectRoot, topic.ID)
+	if err != nil {
+		t.Fatalf("open project tab: %v", err)
+	}
+	waitForTabReady(t, app, meta.ID)
+	if got := meta.TopicTitle; got != defaultTopicTitle {
+		t.Fatalf("opened topic title = %q, want %q", got, defaultTopicTitle)
+	}
+	if got := loadTopicTitle(projectRoot, topic.ID); got != defaultTopicTitle {
+		t.Fatalf("stored topic title = %q, want %q", got, defaultTopicTitle)
+	}
+	if got := loadTopicTitleSource(projectRoot, topic.ID); got != topicTitleSourceManual {
+		t.Fatalf("title source = %q, want manual", got)
+	}
+}
+
 func TestEnsureTopicIndexedPreservesGlobalAutoTitleSource(t *testing.T) {
 	isolateDesktopUserDirs(t)
 

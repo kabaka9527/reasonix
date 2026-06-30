@@ -234,13 +234,7 @@ func (c *client) streamWithReconnect(ctx context.Context, resp *http.Response, n
 			return
 		}
 		if !provider.IsConnReset(err) {
-			// Use a fresh context for the final error chunk: the caller's ctx
-			// may already be cancelled (e.g. TestStreamCancelDoesNotReconnect),
-			// and sendChunk's second select would race <-ctx.Done() against the
-			// channel send, dropping the message ~50% of the time.  The output
-			// channel is unbuffered-when-full but has cap 1 and the reader is
-			// waiting, so background context is safe.
-			sendChunk(context.Background(), out, provider.Chunk{Type: provider.ChunkError, Err: err})
+			sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkError, Err: err})
 			return
 		}
 		if emitted {

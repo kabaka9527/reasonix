@@ -1260,18 +1260,9 @@ func (a *App) openTopicTabWithActivation(scope, workspaceRoot, topicID, sessionP
 
 	tabID := a.newUniqueTabIDLocked()
 	topicTitle := topicTitleForTab(scope, workspaceRoot, topicID)
-
-	// Fallback: if the topic-title file has no entry for this topic, try to
-	// extract a title from the first session found in the session directory.
-	// This covers edge cases where the topic title source was saved under a
-	// different workspace root normalization, such as when switching between
-	// projects in single-surface (creation/workbench) mode.
-	if topicTitle == defaultTopicTitle && sessionPath != "" {
-		if t := topicTitleFromSession(sessionPath); t != "" {
-			topicTitle = t
-			// Persist it back so the topic-titles file is consistent.
-			_ = setTopicTitleWithSource(workspaceRoot, topicID, t, topicTitleSourceAuto)
-		}
+	if t, source, ok := topicTitleFallbackForOpen(workspaceRoot, topicID, sessionPath); ok {
+		topicTitle = t
+		_ = setTopicTitleWithSource(workspaceRoot, topicID, t, source)
 	}
 
 	if sessionPath == "" {
@@ -2547,6 +2538,42 @@ func autoTitleTopicFromSession(workspaceRoot, topicID, sessionPath string) (stri
 		return "", false
 	}
 	return nextTitle, true
+}
+
+func topicTitleFallbackForOpen(workspaceRoot, topicID, sessionPath string) (string, string, bool) {
+	topicID = strings.TrimSpace(topicID)
+	sessionPath = strings.TrimSpace(sessionPath)
+	if topicID == "" || sessionPath == "" {
+		return "", "", false
+	}
+	storedTitle := strings.TrimSpace(loadTopicTitle(workspaceRoot, topicID))
+	storedSource := strings.TrimSpace(loadTopicTitleSource(workspaceRoot, topicID))
+	if storedTitle != "" {
+		if storedSource == topicTitleSourceManual || storedTitle != defaultTopicTitle {
+			return "", "", false
+		}
+	}
+
+	if storedTitle == "" {
+		dir := filepath.Dir(sessionPath)
+		if meta, ok, err := agent.LoadBranchMeta(sessionPath); err == nil && ok {
+			if title := storedSessionTopicTitle(dir, sessionPath, meta); title != "" {
+				return title, topicTitleSourceManual, true
+			}
+		} else if title := topicTitleFromText(loadSessionTitles(dir)[filepath.Base(sessionPath)]); title != "" {
+			return title, topicTitleSourceManual, true
+		}
+	}
+
+	if storedSource == topicTitleSourceManual {
+		return "", "", false
+	}
+	if storedSource == "" || storedSource == topicTitleSourceAuto {
+		if title := topicTitleFromSession(sessionPath); title != "" {
+			return title, topicTitleSourceAuto, true
+		}
+	}
+	return "", "", false
 }
 
 func topicTitleFromSession(path string) string {
@@ -3967,10 +3994,7 @@ func restoreSessionTopicIndex(dir, sessionPath string) error {
 }
 
 func restoredSessionTopicTitle(dir, sessionPath string, meta agent.BranchMeta) string {
-	if title := topicTitleFromText(meta.TopicTitle); title != "" {
-		return title
-	}
-	if title := topicTitleFromText(loadSessionTitles(dir)[filepath.Base(sessionPath)]); title != "" {
+	if title := storedSessionTopicTitle(dir, sessionPath, meta); title != "" {
 		return title
 	}
 	if s, err := agent.LoadSession(sessionPath); err == nil {
@@ -3983,6 +4007,13 @@ func restoredSessionTopicTitle(dir, sessionPath string, meta agent.BranchMeta) s
 		}
 	}
 	return ""
+}
+
+func storedSessionTopicTitle(dir, sessionPath string, meta agent.BranchMeta) string {
+	if title := topicTitleFromText(meta.TopicTitle); title != "" {
+		return title
+	}
+	return topicTitleFromText(loadSessionTitles(dir)[filepath.Base(sessionPath)])
 }
 
 func legacySessionTopicID(path string) string {
