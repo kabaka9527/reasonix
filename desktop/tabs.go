@@ -5156,7 +5156,10 @@ func newTabID() string {
 
 func newTopicID() string {
 	var b [8]byte
-	rand.Read(b[:])
+	if _, err := rand.Read(b[:]); err != nil {
+		now := time.Now().UTC()
+		return "topic_" + now.Format("20060102-150405") + "_" + fmt.Sprintf("%09d", now.Nanosecond())
+	}
 	return "topic_" + time.Now().UTC().Format("20060102-150405") + "_" + hex.EncodeToString(b[:])
 }
 
