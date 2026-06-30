@@ -51,6 +51,7 @@ default_model = "deepseek-flash"   # executor; set [agent].planner_model to add 
 
 [ui]
 # shortcut_layout = "desktop"      # classic|desktop; compatibility setting
+# cursor_shape = "underline"       # block|underline|bar; CLI/TUI text cursor
 
 [agent]
 max_steps = 0                    # user/global only; executor tool-call rounds; 0 = no limit
@@ -200,6 +201,12 @@ paste key.
 
 `[ui].shortcut_layout` is still accepted for old configs, but the shortcut
 behavior below is unified across layouts.
+
+For CLI/TUI text input, `[ui].cursor_shape` accepts `underline`, `block`, or
+`bar`. The default is `underline` because terminal block cursors can visually
+cover double-width CJK characters in some mixed-language input. Set it to
+`block` to keep the old terminal-style cursor, or `bar` for a thin insertion
+cursor. This setting does not change desktop or web text fields.
 
 ### Desktop GUI
 

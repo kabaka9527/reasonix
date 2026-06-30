@@ -52,6 +52,7 @@ credentials_store = "auto"   # legacy compatibility; provider keys are in .env
 
 [ui]
 theme = "auto"
+cursor_shape = "underline"   # CLI/TUI text cursor: underline|block|bar
 
 [desktop]
 provider_access = ["deepseek"]
@@ -76,6 +77,10 @@ command = "example-mcp-server"
 Do not put API key values in `config.toml`. This file is regular configuration:
 it is safe to inspect, edit, migrate, and include in diagnostics after standard
 redaction. Secrets belong in the global `.env` below.
+
+`[ui].cursor_shape` affects only the CLI/TUI composer. The default `underline`
+avoids terminal block-cursor artifacts with double-width CJK characters; use
+`block` or `bar` if you prefer those cursor shapes.
 
 ### Custom provider `api_key_env` names
 
