@@ -215,7 +215,7 @@ func TestDesktopStatusBarItemsNormalizeAndValidate(t *testing.T) {
 	if got, want := Default().DesktopStatusBarItems(), DefaultDesktopStatusBarItems(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("default desktop status bar items = %v, want %v", got, want)
 	}
-	for _, id := range []string{"workspace", "git_branch"} {
+	for _, id := range []string{"workspace", "git_branch", "autoresearch"} {
 		if !slices.Contains(DefaultDesktopStatusBarItems(), id) {
 			t.Fatalf("default desktop status bar items must include configurable item %q", id)
 		}
@@ -241,6 +241,14 @@ func TestDesktopStatusBarItemsNormalizeAndValidate(t *testing.T) {
 	}
 	if got, want := c.DesktopStatusBarItems(), []string{"workspace", "git_branch", "model"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("saved workspace metadata status bar items = %v, want %v", got, want)
+	}
+
+	c = Default()
+	if err := c.SetDesktopStatusBarItems([]string{"autoresearch", "model"}); err != nil {
+		t.Fatalf("SetDesktopStatusBarItems autoresearch: %v", err)
+	}
+	if got, want := c.DesktopStatusBarItems(), []string{"autoresearch", "model"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("saved autoresearch status bar item = %v, want %v", got, want)
 	}
 
 	if err := c.SetDesktopStatusBarItems(nil); err != nil {
