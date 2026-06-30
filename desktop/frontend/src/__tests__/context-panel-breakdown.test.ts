@@ -174,6 +174,52 @@ eq(
 eq(sourceRows[1].requests, 1, "planner source row remains visible without cache metadata");
 eq(sourceRows[1].cacheHitTokens + sourceRows[1].cacheMissTokens, 0, "planner source preserves absent cache metadata as empty");
 
+const executorOnlyRows = contextSourceRows({
+  usedTokens: 0,
+  windowTokens: 0,
+  promptTokens: 0,
+  completionTokens: 0,
+  totalTokens: 0,
+  reasoningTokens: 0,
+  cacheHitTokens: 0,
+  cacheMissTokens: 0,
+  sessionCacheHitTokens: 0,
+  sessionCacheMissTokens: 0,
+  sessionCompletionTokens: 0,
+  readFiles: [],
+  changedFiles: [],
+  sources: {
+    planner: {
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+      reasoningTokens: 0,
+      cacheHitTokens: 0,
+      cacheMissTokens: 0,
+      requestCount: 0,
+    },
+    executor: {
+      promptTokens: 4000,
+      completionTokens: 800,
+      totalTokens: 4800,
+      reasoningTokens: 0,
+      cacheHitTokens: 2500,
+      cacheMissTokens: 500,
+      requestCount: 3,
+    },
+    subagent: {
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+      reasoningTokens: 0,
+      cacheHitTokens: 0,
+      cacheMissTokens: 0,
+      requestCount: 0,
+    },
+  },
+}, "¥");
+eq(executorOnlyRows.map((row) => row.source), ["executor"], "source rows omit unused planner and subagent entries");
+
 console.log("\ncontext panel metric token labels");
 
 const exactMetric = formatMetricTokens(999_999, "en");
