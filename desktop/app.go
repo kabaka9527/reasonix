@@ -30,6 +30,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"reasonix/internal/agent"
+	"reasonix/internal/autoresearch"
 	"reasonix/internal/billing"
 	"reasonix/internal/boot"
 	"reasonix/internal/botruntime"
@@ -4450,23 +4451,78 @@ func (a *App) jobsForCtrl(ctrl control.SessionAPI, out []JobView) []JobView {
 
 // Meta describes the session for the frontend's header and status line.
 type Meta struct {
-	Label             string `json:"label"`
-	Ready             bool   `json:"ready"`
-	StartupErr        string `json:"startupErr,omitempty"`
-	EventChannel      string `json:"eventChannel"`
-	Cwd               string `json:"cwd"`
-	WorkspaceRoot     string `json:"workspaceRoot,omitempty"`
-	WorkspaceName     string `json:"workspaceName,omitempty"`
-	WorkspacePath     string `json:"workspacePath,omitempty"`
-	GitBranch         string `json:"gitBranch,omitempty"`
-	ImageInputEnabled bool   `json:"imageInputEnabled"`
-	AutoApproveTools  bool   `json:"autoApproveTools"`
-	Bypass            bool   `json:"bypass"` // legacy JSON key for YOLO/full-access tool auto-approval
-	CollaborationMode string `json:"collaborationMode"`
-	ToolApprovalMode  string `json:"toolApprovalMode"`
-	TokenMode         string `json:"tokenMode"`
-	Goal              string `json:"goal,omitempty"`
-	GoalStatus        string `json:"goalStatus,omitempty"`
+	Label             string                   `json:"label"`
+	Ready             bool                     `json:"ready"`
+	StartupErr        string                   `json:"startupErr,omitempty"`
+	EventChannel      string                   `json:"eventChannel"`
+	Cwd               string                   `json:"cwd"`
+	WorkspaceRoot     string                   `json:"workspaceRoot,omitempty"`
+	WorkspaceName     string                   `json:"workspaceName,omitempty"`
+	WorkspacePath     string                   `json:"workspacePath,omitempty"`
+	GitBranch         string                   `json:"gitBranch,omitempty"`
+	ImageInputEnabled bool                     `json:"imageInputEnabled"`
+	AutoApproveTools  bool                     `json:"autoApproveTools"`
+	Bypass            bool                     `json:"bypass"` // legacy JSON key for YOLO/full-access tool auto-approval
+	CollaborationMode string                   `json:"collaborationMode"`
+	ToolApprovalMode  string                   `json:"toolApprovalMode"`
+	TokenMode         string                   `json:"tokenMode"`
+	Goal              string                   `json:"goal,omitempty"`
+	GoalStatus        string                   `json:"goalStatus,omitempty"`
+	AutoResearch      *AutoResearchCompactView `json:"autoResearch,omitempty"`
+}
+
+type AutoResearchCompactView struct {
+	TaskID        string `json:"taskId"`
+	Status        string `json:"status"`
+	Iteration     int    `json:"iteration"`
+	PivotRequired bool   `json:"pivotRequired"`
+	StaleCount    int    `json:"staleCount"`
+}
+
+type AutoResearchCriterionView struct {
+	ID            string `json:"id"`
+	Description   string `json:"description"`
+	Required      bool   `json:"required"`
+	EvidenceCount int    `json:"evidenceCount"`
+	Status        string `json:"status"`
+}
+
+type AutoResearchStatusView struct {
+	TaskID             string                      `json:"taskId"`
+	Goal               string                      `json:"goal"`
+	Status             string                      `json:"status"`
+	Iteration          int                         `json:"iteration"`
+	CurrentDirection   string                      `json:"currentDirection"`
+	StaleCount         int                         `json:"staleCount"`
+	PivotCount         int                         `json:"pivotCount"`
+	PivotRequired      bool                        `json:"pivotRequired"`
+	LastHeartbeatAt    string                      `json:"lastHeartbeatAt"`
+	FindingCount       int                         `json:"findingCount"`
+	OpenCriteria       []AutoResearchCriterionView `json:"openCriteria"`
+	Blocker            string                      `json:"blocker"`
+	TaskPath           string                      `json:"taskPath"`
+	NextRequiredAction string                      `json:"nextRequiredAction"`
+}
+
+type AutoResearchFindingView struct {
+	ID        string   `json:"id"`
+	Kind      string   `json:"kind"`
+	Summary   string   `json:"summary"`
+	Source    string   `json:"source"`
+	Command   string   `json:"command,omitempty"`
+	Paths     []string `json:"paths,omitempty"`
+	Accepted  bool     `json:"accepted"`
+	CreatedAt string   `json:"createdAt"`
+}
+
+type AutoResearchEvidenceView struct {
+	ID       string   `json:"id"`
+	Kind     string   `json:"kind"`
+	Summary  string   `json:"summary"`
+	Source   string   `json:"source"`
+	Command  string   `json:"command,omitempty"`
+	Paths    []string `json:"paths,omitempty"`
+	Accepted bool     `json:"accepted"`
 }
 
 // Meta reports the model label, readiness, any startup error, the working
@@ -4529,7 +4585,138 @@ func (a *App) MetaForTab(tabID string) Meta {
 		TokenMode:         tokenMode,
 		Goal:              goal,
 		GoalStatus:        goalStatus,
+		AutoResearch:      compactAutoResearch(tab),
 	}
+}
+
+func compactAutoResearch(tab *WorkspaceTab) *AutoResearchCompactView {
+	if tab == nil || tab.Ctrl == nil {
+		return nil
+	}
+	summary, ok := tab.Ctrl.AutoResearchSummary()
+	if !ok || summary == nil || summary.TaskID == "" {
+		return nil
+	}
+	return &AutoResearchCompactView{
+		TaskID:        summary.TaskID,
+		Status:        summary.Status,
+		Iteration:     summary.Iteration,
+		PivotRequired: summary.PivotRequired,
+		StaleCount:    summary.StaleCount,
+	}
+}
+
+func autoResearchStatusView(summary *autoresearch.Summary) AutoResearchStatusView {
+	if summary == nil {
+		return AutoResearchStatusView{OpenCriteria: []AutoResearchCriterionView{}}
+	}
+	open := make([]AutoResearchCriterionView, 0, len(summary.OpenCriteria))
+	for _, criterion := range summary.OpenCriteria {
+		open = append(open, AutoResearchCriterionView{
+			ID:            criterion.ID,
+			Description:   criterion.Description,
+			Required:      criterion.Required,
+			EvidenceCount: criterion.EvidenceCount,
+			Status:        criterion.Status,
+		})
+	}
+	return AutoResearchStatusView{
+		TaskID:             summary.TaskID,
+		Goal:               summary.Goal,
+		Status:             summary.Status,
+		Iteration:          summary.Iteration,
+		CurrentDirection:   summary.CurrentDirection,
+		StaleCount:         summary.StaleCount,
+		PivotCount:         summary.PivotCount,
+		PivotRequired:      summary.PivotRequired,
+		LastHeartbeatAt:    summary.LastHeartbeatAt.Format(time.RFC3339),
+		FindingCount:       summary.FindingCount,
+		OpenCriteria:       open,
+		Blocker:            summary.Blocker,
+		TaskPath:           summary.TaskPath,
+		NextRequiredAction: summary.NextRequiredAction,
+	}
+}
+
+func (a *App) AutoResearchCurrent() AutoResearchStatusView {
+	return a.AutoResearchStatus("")
+}
+
+func (a *App) AutoResearchStatus(tabID string) AutoResearchStatusView {
+	tab := a.tabByID(tabID)
+	if tab == nil || tab.Ctrl == nil {
+		return AutoResearchStatusView{OpenCriteria: []AutoResearchCriterionView{}}
+	}
+	summary, ok := tab.Ctrl.AutoResearchSummary()
+	if !ok {
+		return AutoResearchStatusView{OpenCriteria: []AutoResearchCriterionView{}}
+	}
+	return autoResearchStatusView(summary)
+}
+
+func (a *App) AutoResearchList(tabID string) []AutoResearchStatusView {
+	tab := a.tabByID(tabID)
+	if tab == nil || tab.Ctrl == nil {
+		return []AutoResearchStatusView{}
+	}
+	summaries, ok := tab.Ctrl.AutoResearchList()
+	if !ok {
+		return []AutoResearchStatusView{}
+	}
+	out := make([]AutoResearchStatusView, 0, len(summaries))
+	for i := range summaries {
+		out = append(out, autoResearchStatusView(&summaries[i]))
+	}
+	return out
+}
+
+func (a *App) AutoResearchFindings(tabID string, limit int) []AutoResearchFindingView {
+	tab := a.tabByID(tabID)
+	if tab == nil || tab.Ctrl == nil {
+		return []AutoResearchFindingView{}
+	}
+	findings, ok := tab.Ctrl.AutoResearchFindings(limit)
+	if !ok {
+		return []AutoResearchFindingView{}
+	}
+	out := make([]AutoResearchFindingView, 0, len(findings))
+	for _, finding := range findings {
+		out = append(out, AutoResearchFindingView{
+			ID:        finding.ID,
+			Kind:      finding.Kind,
+			Summary:   finding.Summary,
+			Source:    finding.Source,
+			Command:   finding.Command,
+			Paths:     append([]string(nil), finding.Paths...),
+			Accepted:  finding.Accepted,
+			CreatedAt: finding.CreatedAt.Format(time.RFC3339),
+		})
+	}
+	return out
+}
+
+func (a *App) AutoResearchOpenTask(tabID string) error {
+	status := a.AutoResearchStatus(tabID)
+	if strings.TrimSpace(status.TaskPath) == "" {
+		return os.ErrInvalid
+	}
+	return a.RevealPath(status.TaskPath)
+}
+
+func (a *App) AutoResearchRecordEvidence(tabID, criterionID string, input AutoResearchEvidenceView) error {
+	tab := a.tabByID(tabID)
+	if tab == nil || tab.Ctrl == nil {
+		return os.ErrInvalid
+	}
+	return tab.Ctrl.RecordAutoResearchEvidence(criterionID, control.AutoResearchEvidenceInput{
+		ID:       input.ID,
+		Kind:     input.Kind,
+		Summary:  input.Summary,
+		Source:   input.Source,
+		Command:  input.Command,
+		Paths:    append([]string(nil), input.Paths...),
+		Accepted: input.Accepted,
+	})
 }
 
 func (a *App) SetGoal(goal string) {
@@ -6837,7 +7024,9 @@ func (a *App) RevealPath(path string) error {
 	return revealPath(path)
 }
 
-func revealPath(path string) error {
+var revealPath = defaultRevealPath
+
+func defaultRevealPath(path string) error {
 	switch goruntime.GOOS {
 	case "darwin":
 		return exec.Command("open", "-R", path).Start()

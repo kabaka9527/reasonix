@@ -1097,33 +1097,34 @@ type wireEventTab struct {
 
 // TabMeta is the frontend-facing shape of one tab.
 type TabMeta struct {
-	ID                string `json:"id"`
-	Scope             string `json:"scope"`
-	WorkspaceRoot     string `json:"workspaceRoot"`
-	WorkspaceName     string `json:"workspaceName"`
-	WorkspacePath     string `json:"workspacePath,omitempty"`
-	GitBranch         string `json:"gitBranch,omitempty"`
-	TopicID           string `json:"topicId"`
-	TopicTitle        string `json:"topicTitle"`
-	SessionPath       string `json:"sessionPath,omitempty"`
-	ReadOnly          bool   `json:"readOnly,omitempty"`
-	ProjectColor      string `json:"projectColor,omitempty"`
-	Label             string `json:"label"`
-	Ready             bool   `json:"ready"`
-	Running           bool   `json:"running"`
-	PendingPrompt     bool   `json:"pendingPrompt,omitempty"`
-	BackgroundJobs    int    `json:"backgroundJobs,omitempty"`
-	CancelRequested   bool   `json:"cancelRequested,omitempty"`
-	Cancellable       bool   `json:"cancellable"`
-	Mode              string `json:"mode"`
-	CollaborationMode string `json:"collaborationMode"`
-	ToolApprovalMode  string `json:"toolApprovalMode"`
-	TokenMode         string `json:"tokenMode"`
-	Goal              string `json:"goal,omitempty"`
-	GoalStatus        string `json:"goalStatus,omitempty"`
-	StartupErr        string `json:"startupErr,omitempty"`
-	Active            bool   `json:"active"`
-	Cwd               string `json:"cwd"`
+	ID                string                   `json:"id"`
+	Scope             string                   `json:"scope"`
+	WorkspaceRoot     string                   `json:"workspaceRoot"`
+	WorkspaceName     string                   `json:"workspaceName"`
+	WorkspacePath     string                   `json:"workspacePath,omitempty"`
+	GitBranch         string                   `json:"gitBranch,omitempty"`
+	TopicID           string                   `json:"topicId"`
+	TopicTitle        string                   `json:"topicTitle"`
+	SessionPath       string                   `json:"sessionPath,omitempty"`
+	ReadOnly          bool                     `json:"readOnly,omitempty"`
+	ProjectColor      string                   `json:"projectColor,omitempty"`
+	Label             string                   `json:"label"`
+	Ready             bool                     `json:"ready"`
+	Running           bool                     `json:"running"`
+	PendingPrompt     bool                     `json:"pendingPrompt,omitempty"`
+	BackgroundJobs    int                      `json:"backgroundJobs,omitempty"`
+	CancelRequested   bool                     `json:"cancelRequested,omitempty"`
+	Cancellable       bool                     `json:"cancellable"`
+	Mode              string                   `json:"mode"`
+	CollaborationMode string                   `json:"collaborationMode"`
+	ToolApprovalMode  string                   `json:"toolApprovalMode"`
+	TokenMode         string                   `json:"tokenMode"`
+	Goal              string                   `json:"goal,omitempty"`
+	GoalStatus        string                   `json:"goalStatus,omitempty"`
+	AutoResearch      *AutoResearchCompactView `json:"autoResearch,omitempty"`
+	StartupErr        string                   `json:"startupErr,omitempty"`
+	Active            bool                     `json:"active"`
+	Cwd               string                   `json:"cwd"`
 }
 
 func enrichTabMeta(meta TabMeta) TabMeta {
@@ -1161,6 +1162,7 @@ func (a *App) tabMeta(tab *WorkspaceTab, active bool) TabMeta {
 		TokenMode:         currentTabTokenMode(tab),
 		Goal:              currentTabGoal(tab),
 		GoalStatus:        currentTabGoalStatus(tab),
+		AutoResearch:      compactAutoResearch(tab),
 		StartupErr:        tab.StartupErr,
 		Active:            active,
 		Cwd:               tab.WorkspaceRoot,

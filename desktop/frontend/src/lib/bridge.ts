@@ -16,6 +16,9 @@ import { DEFAULT_STATUS_BAR_ITEMS, normalizeStatusBarItems } from "./statusBarIt
 import { modeHasAutoApproveTools, modeWithAutoApproveTools, modeWithPlan, normalizeCollaborationMode, normalizeMode, normalizeTokenMode, normalizeToolApprovalMode } from "./types";
 
 import type {
+  AutoResearchFindingView,
+  AutoResearchEvidenceView,
+  AutoResearchStatusView,
   BalanceInfo,
   BotConnectionDiagnostic,
   BotInstallPollResult,
@@ -190,6 +193,12 @@ export interface AppBindings {
   ToolResultForTab(tabID: string, toolID: string): Promise<{ args: string; output: string } | null>;
   Meta(): Promise<Meta>;
   MetaForTab(tabID: string): Promise<Meta>;
+  AutoResearchCurrent(): Promise<AutoResearchStatusView>;
+  AutoResearchStatus(tabID: string): Promise<AutoResearchStatusView>;
+  AutoResearchList(tabID: string): Promise<AutoResearchStatusView[]>;
+  AutoResearchFindings(tabID: string, limit: number): Promise<AutoResearchFindingView[]>;
+  AutoResearchOpenTask(tabID: string): Promise<void>;
+  AutoResearchRecordEvidence(tabID: string, criterionID: string, input: AutoResearchEvidenceView): Promise<void>;
   Commands(): Promise<CommandInfo[]>;
   Capabilities(): Promise<CapabilitiesView>;
   MCPServers(): Promise<ServerView[]>;
@@ -397,6 +406,8 @@ const EVENT_CHANNEL = "agent:event";
 const RECENT_NATIVE_FILE_DRAG_MS = 2000;
 const WAILS_NON_FILE_DRAG_MESSAGE = "additional File object is not a file on the disk";
 const UNCAUGHT_ERROR_PREFIX_RE = /^Uncaught(?:\s+\(in promise\))?(?:\s+\w*Error)?:\s*/i;
+const WAILS_IPC_CONNECTING_RE = /Failed to execute 'send' on 'WebSocket': Still in CONNECTING state/i;
+const WAILS_IPC_NULL_SEND_RE = /Cannot read properties of null \(reading 'send'\)/i;
 
 // Resolve the Wails binding at CALL time, not module-load time: in dev the Wails
 // runtime can inject window.go AFTER this module first evaluates, so snapshotting
@@ -455,6 +466,11 @@ export function isWailsNonFileDragErrorEvent(
   return event.error != null && isWailsNonFileDragError(event.message, recentNativeFileDrag);
 }
 
+export function isTransientWailsIPCError(err: unknown): boolean {
+  const msg = errorMessage(err).trim().replace(UNCAUGHT_ERROR_PREFIX_RE, "");
+  return WAILS_IPC_CONNECTING_RE.test(msg) || WAILS_IPC_NULL_SEND_RE.test(msg);
+}
+
 function dataTransferLooksLikeFileDrag(dt: DataTransfer | null): boolean {
   if (!dt) return false;
   if (dt.files?.length > 0) return true;
@@ -475,12 +491,12 @@ export function installWailsNonFileDragErrorSuppression(): () => void {
     };
     const hasRecentNativeFileDrag = () => Date.now() - lastNativeFileDragAt <= RECENT_NATIVE_FILE_DRAG_MS;
     const suppressNonFileDragError = (e: ErrorEvent) => {
-      if (isWailsNonFileDragErrorEvent(e, hasRecentNativeFileDrag())) {
+      if (isWailsNonFileDragErrorEvent(e, hasRecentNativeFileDrag()) || isTransientWailsIPCError(e.error ?? e.message)) {
         e.preventDefault();
       }
     };
     const suppressNonFileDragRejection = (e: PromiseRejectionEvent) => {
-      if (isWailsNonFileDragError(e.reason, hasRecentNativeFileDrag())) {
+      if (isWailsNonFileDragError(e.reason, hasRecentNativeFileDrag()) || isTransientWailsIPCError(e.reason)) {
         e.preventDefault();
       }
     };
@@ -2012,6 +2028,7 @@ function makeMockApp(): AppBindings {
             tokenMode: normalizeTokenMode(active?.tokenMode),
             goal: active?.goal ?? "",
             goalStatus: active?.goalStatus ?? (active?.goal ? "running" : "stopped"),
+            autoResearch: active?.goal ? { taskId: "mock-autoresearch", status: "running", iteration: 4, pivotRequired: false, staleCount: 0 } : undefined,
           };
         },
         async MetaForTab(tabID) {
@@ -2037,7 +2054,79 @@ function makeMockApp(): AppBindings {
             tokenMode: normalizeTokenMode(tab?.tokenMode),
             goal: tab?.goal ?? "",
             goalStatus: tab?.goalStatus ?? (tab?.goal ? "running" : "stopped"),
+            autoResearch: tab?.goal ? { taskId: "mock-autoresearch", status: "running", iteration: 4, pivotRequired: false, staleCount: 0 } : undefined,
           };
+        },
+        async AutoResearchCurrent() {
+          return {
+            taskId: "mock-autoresearch",
+            goal: "Mock long-running research",
+            status: "running",
+            iteration: 4,
+            currentDirection: "Inspect status chip",
+            staleCount: 0,
+            pivotCount: 0,
+            pivotRequired: false,
+            lastHeartbeatAt: "2026-06-29T00:00:00Z",
+            findingCount: 1,
+            openCriteria: [],
+            blocker: "",
+            taskPath: "/tmp/mock/.reasonix/autoresearch/mock-autoresearch",
+            nextRequiredAction: "continue with the next evidence-producing step",
+          };
+        },
+        async AutoResearchStatus(_tabID) {
+          return {
+            taskId: "mock-autoresearch",
+            goal: "Mock long-running research",
+            status: "running",
+            iteration: 4,
+            currentDirection: "Inspect status chip",
+            staleCount: 0,
+            pivotCount: 0,
+            pivotRequired: false,
+            lastHeartbeatAt: "2026-06-29T00:00:00Z",
+            findingCount: 1,
+            openCriteria: [],
+            blocker: "",
+            taskPath: "/tmp/mock/.reasonix/autoresearch/mock-autoresearch",
+            nextRequiredAction: "continue with the next evidence-producing step",
+          };
+        },
+        async AutoResearchList(_tabID) {
+          return [{
+            taskId: "mock-autoresearch",
+            goal: "Mock long-running research",
+            status: "running",
+            iteration: 4,
+            currentDirection: "Inspect status chip",
+            staleCount: 0,
+            pivotCount: 0,
+            pivotRequired: false,
+            lastHeartbeatAt: "2026-06-29T00:00:00Z",
+            findingCount: 1,
+            openCriteria: [],
+            blocker: "",
+            taskPath: "/tmp/mock/.reasonix/autoresearch/mock-autoresearch",
+            nextRequiredAction: "continue with the next evidence-producing step",
+          }];
+        },
+        async AutoResearchFindings(_tabID, limit) {
+          return [{
+            id: "f1",
+            kind: "test",
+            summary: "Mock accepted finding",
+            source: "command",
+            command: "go test ./...",
+            accepted: true,
+            createdAt: "2026-06-29T00:00:00Z",
+          }].slice(0, Math.max(0, limit || 1));
+        },
+        async AutoResearchOpenTask(_tabID) {
+          console.info("mock AutoResearchOpenTask");
+        },
+        async AutoResearchRecordEvidence(_tabID, _criterionID, _input) {
+          console.info("mock AutoResearchRecordEvidence");
         },
     async Commands() {
       return [

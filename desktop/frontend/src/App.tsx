@@ -904,6 +904,8 @@ export default function App() {
     const unsub = onEvent((e) => {
       if (e.kind === "turn_done") {
         setDockRefreshKey((v) => v + 1);
+      }
+      if (e.kind === "turn_done") {
         if (!e.err) playSuccessChime();
       }
     });
@@ -3385,9 +3387,9 @@ export default function App() {
               modelLabel={state.meta?.label}
               labelStyle={statusBarStyle}
               items={statusBarItems}
-              workspacePath={state.meta?.workspacePath || state.meta?.workspaceRoot || state.meta?.cwd}
-              workspaceName={state.meta?.workspaceName}
-              gitBranch={state.meta?.gitBranch}
+	              workspacePath={state.meta?.workspacePath || state.meta?.workspaceRoot || state.meta?.cwd}
+	              workspaceName={state.meta?.workspaceName}
+	              gitBranch={state.meta?.gitBranch}
             />
           </footer>
           )}

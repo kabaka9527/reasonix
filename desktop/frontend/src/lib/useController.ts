@@ -1290,7 +1290,6 @@ export function useController() {
             .then((turns) => dispatchTo(targetTabId, { type: "history_checkpoint_turns", turns: asArray(turns) }))
             .catch(() => {});
         }
-        void refreshMetaForTab(targetTabId, dispatchTo);
         app
           .ContextUsageForTab(targetTabId)
           .then((context) => dispatchTo(targetTabId, { type: "context", context }))
@@ -1298,6 +1297,7 @@ export function useController() {
         app.BalanceForTab(targetTabId).then((balance) => dispatchTo(targetTabId, { type: "balance", balance })).catch(() => {});
         app.EffortForTab(targetTabId).then((effort) => dispatchTo(targetTabId, { type: "effort", effort })).catch(() => {});
         void refreshCheckpoints(targetTabId);
+        void refreshMetaForTab(targetTabId, dispatchTo);
       }
       if (e.kind === "turn_done" || e.kind === "notice") {
         app.JobsForTab(targetTabId).then((jobs) => dispatchTo(targetTabId, { type: "jobs", jobs: asArray(jobs) })).catch(() => {});

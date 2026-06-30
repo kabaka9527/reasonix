@@ -207,6 +207,7 @@ export interface TabMeta {
   tokenMode?: TokenMode;
   goal?: string;
   goalStatus?: GoalStatus;
+  autoResearch?: AutoResearchCompactView;
   startupErr?: string;
   active: boolean;
   cwd: string;
@@ -434,12 +435,62 @@ export interface Meta {
   tokenMode?: TokenMode;
   goal?: string;
   goalStatus?: GoalStatus;
+  autoResearch?: AutoResearchCompactView;
 }
 
 export type CollaborationMode = "normal" | "plan" | "goal";
 export type ToolApprovalMode = "ask" | "auto" | "yolo";
 export type TokenMode = "full" | "economy";
 export type GoalStatus = "running" | "complete" | "blocked" | "stopped";
+
+export interface AutoResearchCompactView {
+  taskId: string;
+  status: "running" | "blocked" | "complete" | "stopped" | "invalid";
+  iteration: number;
+  pivotRequired: boolean;
+  staleCount: number;
+}
+
+export interface AutoResearchCriterionView {
+  id: string;
+  description: string;
+  required: boolean;
+  evidenceCount: number;
+  status: string;
+}
+
+export interface AutoResearchStatusView extends AutoResearchCompactView {
+  goal: string;
+  currentDirection: string;
+  pivotCount: number;
+  lastHeartbeatAt: string;
+  findingCount: number;
+  openCriteria: AutoResearchCriterionView[];
+  blocker: string;
+  taskPath: string;
+  nextRequiredAction: string;
+}
+
+export interface AutoResearchFindingView {
+  id: string;
+  kind: string;
+  summary: string;
+  source: string;
+  command?: string;
+  paths?: string[];
+  accepted: boolean;
+  createdAt: string;
+}
+
+export interface AutoResearchEvidenceView {
+  id: string;
+  kind: string;
+  summary: string;
+  source: string;
+  command?: string;
+  paths?: string[];
+  accepted: boolean;
+}
 
 export function normalizeCollaborationMode(mode?: string, goal?: string, legacyMode?: Mode): CollaborationMode {
   if (mode === "plan" || mode === "goal" || mode === "normal") return mode;

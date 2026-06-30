@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"reasonix/internal/agent"
+	"reasonix/internal/autoresearch"
 	"reasonix/internal/billing"
 	"reasonix/internal/checkpoint"
 	"reasonix/internal/command"
@@ -93,6 +94,10 @@ type Goals interface {
 	SetGoalWithResearchMode(goal string, researchMode GoalResearchMode)
 	GoalStrict(strict bool)
 	ClearGoal()
+	AutoResearchSummary() (*autoresearch.Summary, bool)
+	AutoResearchList() ([]autoresearch.Summary, bool)
+	AutoResearchFindings(limit int) ([]autoresearch.Finding, bool)
+	RecordAutoResearchEvidence(criterionID string, input AutoResearchEvidenceInput) error
 	AutoStartResearchGoal(input string) (string, bool)
 	ResetPlannerSession()
 	PlanMode() bool
