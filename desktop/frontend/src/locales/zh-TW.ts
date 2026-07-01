@@ -441,6 +441,7 @@ export const zhTW: Record<DictKey, string> = {
   "ask.hideDetails": "收起",
   "ask.back": "返回",
   "ask.next": "下一步",
+  "ask.customAnswer": "其他答案",
   "ask.customPlaceholder": "輸入你自己的答案…",
   "ask.justChat": "只是聊聊",
 

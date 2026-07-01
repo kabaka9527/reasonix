@@ -589,6 +589,7 @@ export const en = {
   "ask.hideDetails": "Hide",
   "ask.back": "Back",
   "ask.next": "Next",
+  "ask.customAnswer": "Other answer",
   "ask.customPlaceholder": "Type your own answer…",
   "ask.justChat": "Just chat",
 

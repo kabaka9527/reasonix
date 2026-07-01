@@ -50,6 +50,7 @@ export function ApprovalModal({
   const isPlanApproval = approval.tool === "exit_plan_mode";
   const [revisionOpen, setRevisionOpen] = useState(false);
   const [revisionText, setRevisionText] = useState("");
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(() => (isPlanApproval ? 1 : 0));
   const cardRef = useRef<HTMLDivElement | null>(null);
   const shelfRef = useRef<HTMLDivElement | null>(null);
@@ -60,6 +61,9 @@ export function ApprovalModal({
   // jarring pop when the API cycles through 4+ pending approvals.
   const closingRef = useRef(false);
   const subject = approval.subject.trim();
+  const subjectSummary = subject.split(/\r?\n/).find((line) => line.trim())?.trim() ?? "";
+  const toolMeta = approval.reason?.trim() || subjectSummary || approval.tool;
+  const hasToolDetails = Boolean(approval.reason || subject);
   const fileMenu = useFileReferenceMenu(revisionText, cwd);
 
   const answerWithExit = (fn: () => void) => {
@@ -98,6 +102,7 @@ export function ApprovalModal({
     cardRef.current?.focus();
     setRevisionOpen(false);
     setRevisionText("");
+    setDetailsOpen(false);
     setSelectedIndex(isPlanApproval ? 1 : 0);
     playAttentionChime();
   }, [approval.id, isPlanApproval]);
@@ -219,6 +224,7 @@ export function ApprovalModal({
     return (
       <div ref={shelfRef}>
         <PromptShelf
+          className="prompt-shelf--compact prompt-shelf--plan-approval"
           barRef={cardRef}
           titleId="plan-approval-title"
           title={t("approval.planReady")}
@@ -280,14 +286,23 @@ export function ApprovalModal({
   return (
     <div ref={shelfRef}>
       <PromptShelf
+        className="prompt-shelf--compact prompt-shelf--tool-approval"
         barRef={cardRef}
         titleId="tool-approval-title"
         title={t("approval.toolPending")}
         badges={<PromptBadge>{approval.tool}</PromptBadge>}
+        meta={toolMeta}
         headerActions={
-          <PromptHeaderAction onClick={() => answerWithExit(onStop)} ariaLabel={t("composer.stopShort")}>
-            Esc
-          </PromptHeaderAction>
+          <>
+            {hasToolDetails && (
+              <PromptHeaderAction onClick={() => setDetailsOpen((open) => !open)}>
+                {t(detailsOpen ? "approval.hideDetails" : "approval.details")}
+              </PromptHeaderAction>
+            )}
+            <PromptHeaderAction onClick={() => answerWithExit(onStop)} ariaLabel={t("composer.stopShort")}>
+              Esc
+            </PromptHeaderAction>
+          </>
         }
         actions={
           <>
@@ -298,9 +313,13 @@ export function ApprovalModal({
           </>
         }
       >
-        {approval.reason && <div className="approval-reason">{approval.reason}</div>}
-        {subject && (
-          <pre className="approval-subject">{subject}</pre>
+        {detailsOpen && (
+          <div className="approval-details">
+            {approval.reason && <div className="approval-reason">{approval.reason}</div>}
+            {subject && (
+              <pre className="approval-subject">{subject}</pre>
+            )}
+          </div>
         )}
       </PromptShelf>
     </div>

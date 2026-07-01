@@ -7105,6 +7105,137 @@ body > .mermaid-diagram--fullscreen {
 .ask-shelf__custom::placeholder {
   color: var(--fg-faint);
 }
+
+.prompt-shelf--compact .prompt-shelf__card {
+  gap: 6px;
+  padding: 8px 10px;
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--border));
+  border-radius: 10px;
+  box-shadow: 0 5px 14px rgba(0, 0, 0, 0.06);
+}
+.prompt-shelf--compact .prompt-shelf__header {
+  align-items: center;
+  gap: 10px;
+}
+.prompt-shelf--compact .prompt-shelf__copy {
+  gap: 2px;
+}
+.prompt-shelf--compact .prompt-shelf__title {
+  align-items: center;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+.prompt-shelf--compact .prompt-shelf__heading {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.prompt-shelf--compact .prompt-shelf__badges {
+  flex: 0 0 auto;
+}
+.prompt-shelf--compact .prompt-shelf__meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+.prompt-shelf--compact .prompt-shelf__header-actions,
+.prompt-shelf--compact .prompt-shelf__quick-actions {
+  align-items: center;
+  flex: 0 0 auto;
+}
+.prompt-shelf--compact .prompt-shelf__header-button {
+  min-height: 26px;
+  padding: 0 9px;
+}
+.prompt-shelf--compact .prompt-shelf__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.prompt-shelf--compact .prompt-action {
+  width: auto;
+  min-height: 28px;
+  align-items: center;
+  border-radius: 999px;
+  padding: 4px 8px;
+  white-space: nowrap;
+}
+.prompt-shelf--compact .prompt-action__key {
+  min-width: 19px;
+  height: 19px;
+  border-radius: 6px;
+}
+.prompt-shelf--compact .prompt-action__copy {
+  display: block;
+}
+.prompt-shelf--compact .prompt-action__label {
+  white-space: nowrap;
+}
+.prompt-shelf--compact .approval-details {
+  display: grid;
+  gap: 6px;
+}
+.prompt-shelf--compact .approval-reason {
+  padding: 7px 9px;
+  font-size: 11.5px;
+}
+.prompt-shelf--compact .approval-subject {
+  max-height: 118px;
+  padding: 7px 9px;
+  font-size: 11px;
+}
+.prompt-shelf--plan-approval .prompt-shelf__body {
+  margin-top: 2px;
+}
+.prompt-shelf--ask .prompt-shelf__card {
+  gap: 6px;
+}
+.prompt-shelf--ask .prompt-shelf__title {
+  flex-wrap: wrap;
+}
+.prompt-shelf--ask .prompt-shelf__header {
+  align-items: flex-start;
+}
+.prompt-shelf--ask .prompt-shelf__meta {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.prompt-shelf--ask .prompt-shelf__actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  max-height: 154px;
+  overflow: auto;
+  padding-right: 2px;
+}
+.prompt-shelf--ask .prompt-action {
+  width: 100%;
+  min-height: 42px;
+  align-items: center;
+  border-radius: 8px;
+  padding: 5px 8px;
+  white-space: normal;
+}
+.prompt-shelf--ask .prompt-action__copy {
+  display: grid;
+  gap: 1px;
+}
+.prompt-shelf--ask .prompt-action__label,
+.prompt-shelf--ask .prompt-action__desc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.prompt-shelf--ask .ask-shelf__custom-row {
+  margin-top: 0;
+}
+.prompt-shelf--ask .ask-shelf__custom {
+  height: 30px;
+  padding: 0 9px;
+}
 .modal__plannote {
   margin: 0 0 16px;
   color: var(--fg-dim);
