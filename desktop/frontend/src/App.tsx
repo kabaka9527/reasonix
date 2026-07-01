@@ -2769,7 +2769,7 @@ export default function App() {
     setProjectRevision((value) => value + 1);
     const tabs = await refreshTabMetas();
     if (activeTabId && !tabs.some((tab) => tab.id === activeTabId)) {
-      await syncActiveTab(true);
+      await syncActiveTab(false);
     }
   }, [activeTabId, refreshTabMetas, syncActiveTab]);
 

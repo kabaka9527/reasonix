@@ -356,6 +356,8 @@ export interface CheckpointMeta {
   turn: number;
   prompt: string;
   files: string[];
+  fileCount?: number;
+  filesTruncated?: boolean;
   turnFileCount?: number;
   time: number; // unix ms
   canCode?: boolean;

@@ -1546,12 +1546,16 @@ func removeDesktopSessionArtifacts(path string) error {
 type CheckpointMeta struct {
 	Turn            int      `json:"turn"`
 	Prompt          string   `json:"prompt"`
-	Files           []string `json:"files"`         // cumulative files RestoreCode would affect from this turn
+	Files           []string `json:"files"`     // stable preview of cumulative files RestoreCode would affect from this turn
+	FileCount       int      `json:"fileCount"` // full cumulative file count, including entries omitted from Files
+	FilesTruncated  bool     `json:"filesTruncated,omitempty"`
 	TurnFileCount   int      `json:"turnFileCount"` // files changed during this turn only
 	Time            int64    `json:"time"`          // unix milliseconds
 	CanCode         bool     `json:"canCode"`
 	CanConversation bool     `json:"canConversation"`
 }
+
+const checkpointFilePreviewLimit = 60
 
 // Checkpoints lists the session's rewind points, oldest first, for the rewind UI.
 func (a *App) Checkpoints() []CheckpointMeta {
@@ -1588,21 +1592,46 @@ func (a *App) CheckpointsForTab(tabID string) []CheckpointMeta {
 	// files RestoreCode would actually affect from this turn.
 	hasCodeAfter := false
 	codeFileSet := make(map[string]bool, len(metas)*2)
+	codeFilePreview := []string{}
 	for i := len(out) - 1; i >= 0; i-- {
 		if len(out[i].Files) > 0 {
 			hasCodeAfter = true
 		}
 		for _, f := range out[i].Files {
+			if codeFileSet[f] {
+				continue
+			}
 			codeFileSet[f] = true
+			codeFilePreview = insertCheckpointFilePreview(codeFilePreview, f, checkpointFilePreviewLimit)
 		}
 		out[i].CanCode = hasCodeAfter
-		out[i].Files = make([]string, 0, len(codeFileSet))
-		for f := range codeFileSet {
-			out[i].Files = append(out[i].Files, f)
-		}
-		sort.Strings(out[i].Files) // map iteration is unordered; keep the list stable
+		out[i].FileCount = len(codeFileSet)
+		out[i].Files = append([]string(nil), codeFilePreview...)
+		out[i].FilesTruncated = out[i].FileCount > len(out[i].Files)
 	}
 	return out
+}
+
+func insertCheckpointFilePreview(preview []string, path string, limit int) []string {
+	if limit <= 0 || path == "" {
+		return preview
+	}
+	idx := sort.SearchStrings(preview, path)
+	if idx < len(preview) && preview[idx] == path {
+		return preview
+	}
+	if len(preview) < limit {
+		preview = append(preview, "")
+		copy(preview[idx+1:], preview[idx:])
+		preview[idx] = path
+		return preview
+	}
+	if idx >= limit {
+		return preview
+	}
+	copy(preview[idx+1:], preview[idx:limit-1])
+	preview[idx] = path
+	return preview
 }
 
 // ToolResultForTab returns the full arguments and output for one tool call that

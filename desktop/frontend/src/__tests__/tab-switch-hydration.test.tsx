@@ -279,6 +279,21 @@ eq(controller?.activeTabId, "tab-a", "late history for another tab does not chan
 ok(controller?.state.items.some((item) => item.kind === "user" && item.text === "cached A") ?? false, "late history for another tab does not overwrite the active transcript");
 ok(!(controller?.state.items.some((item) => item.kind === "user" && item.text === "late B") ?? false), "late history stays scoped to its tab state");
 
+const historyCallsBeforeFallbackSync = historyCalls.length;
+backendActiveId = "tab-b";
+await act(async () => {
+  await controller?.syncActiveTab(false);
+  await flushPromises();
+});
+eq(controller?.activeTabId, "tab-b", "backend fallback sync activates the backend-selected cached tab");
+ok(controller?.state.items.some((item) => item.kind === "user" && item.text === "late B") ?? false, "backend fallback sync keeps the cached transcript");
+eq(historyCalls.length, historyCallsBeforeFallbackSync, "backend fallback sync preserves cached history instead of reloading it");
+await act(async () => {
+  await controller?.switchTab("tab-a", tabA);
+  await flushPromises();
+});
+await waitFor("tab-a restored after fallback sync", () => controller?.activeTabId === "tab-a" && controller.state.items.some((item) => item.kind === "user" && item.text === "cached A"));
+
 failSetActiveFor = "tab-b";
 const historyCallsBeforeFailedSwitch = historyCalls.length;
 await act(async () => {

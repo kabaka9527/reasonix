@@ -43,6 +43,9 @@ export type LiveStream = { id: string; text: string; reasoning: string; reasonin
 export type MessageActionScope = "fork" | "summ-from" | "summ-upto" | "conversation" | "code" | "both";
 export type MessageActionState = { turn: number; scope: MessageActionScope };
 export type HydrateReason = "switch-tab" | "new-session" | "resume-session" | "open-topic" | "startup";
+type SyncActiveTabOptions = {
+  preserveCachedHistory?: boolean;
+};
 
 const HISTORY_PAGE_TURNS = 60;
 
@@ -1109,17 +1112,35 @@ export function useController() {
         return;
       }
       const ancillaryStartedAt = Date.now();
-      const [effort, jobs, checkpoints, context] = await Promise.all([
-        app.EffortForTab(tabId).catch((err) => { noteFailure("effort", err); return undefined; }),
-        app.JobsForTab(tabId).catch((err) => { noteFailure("jobs", err); return undefined; }),
-        app.CheckpointsForTab(tabId).catch((err) => { noteFailure("checkpoints", err); return undefined; }),
-        app.ContextUsageForTab(tabId).catch((err) => { noteFailure("context", err); return undefined; }),
+      const loadAncillary = async <T,>(label: string, load: () => Promise<T>): Promise<T | undefined> => {
+        const startedAt = Date.now();
+        try {
+          const value = await load();
+          addBreadcrumb("tab.hydrate", `ancillary ${label} ${reason} ${tabId} ms=${Date.now() - startedAt}`);
+          return value;
+        } catch (err) {
+          noteFailure(label, err);
+          return undefined;
+        }
+      };
+      const [effort, jobs, context] = await Promise.all([
+        loadAncillary("effort", () => app.EffortForTab(tabId)),
+        loadAncillary("jobs", () => app.JobsForTab(tabId)),
+        loadAncillary("context", () => app.ContextUsageForTab(tabId)),
       ]);
       if (!stillCurrent()) return;
       if (effort !== undefined) dispatchTo(tabId, { type: "effort", effort });
       if (jobs !== undefined) dispatchTo(tabId, { type: "jobs", jobs: asArray(jobs) });
-      if (checkpoints !== undefined) dispatchTo(tabId, { type: "checkpoints", checkpoints: asArray(checkpoints) });
       if (context !== undefined) dispatchTo(tabId, { type: "context", context });
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+      if (!stillCurrent()) return;
+      if (activeTabIdRef.current !== tabId && (reason === "startup" || reason === "switch-tab" || reason === "open-topic")) {
+        addBreadcrumb("tab.hydrate", `checkpoints skipped inactive ${reason} ${tabId}`);
+        return;
+      }
+      const checkpoints = await loadAncillary("checkpoints", () => app.CheckpointsForTab(tabId));
+      if (!stillCurrent()) return;
+      if (checkpoints !== undefined) dispatchTo(tabId, { type: "checkpoints", checkpoints: asArray(checkpoints) });
       addBreadcrumb("tab.hydrate", `ancillary ${reason} ${tabId} ms=${Date.now() - ancillaryStartedAt}`);
       app.BalanceForTab(tabId)
         .then((balance) => {
@@ -1180,7 +1201,7 @@ export function useController() {
     }
   }, []);
 
-  const syncActiveTabFromBackend = useCallback(async (reset = false, guard = false): Promise<string | undefined> => {
+  const syncActiveTabFromBackend = useCallback(async (reset = false, guard = false, options: SyncActiveTabOptions = {}): Promise<string | undefined> => {
     const active = await activeTabFromBackend();
     if (!active) return undefined;
     // When guard is true, skip if the frontend already settled on a
@@ -1194,7 +1215,11 @@ export function useController() {
     activeTabIdRef.current = active.id;
     confirmBackendActiveTab(active.id);
     dispatchTo(active.id, { type: "optimistic_meta", meta: metaFromTab(active, statesRef.current.get(active.id)?.meta) });
-    await loadSessionDataForTab(active.id, reset, "startup");
+    const preserveCachedHistory = options.preserveCachedHistory ?? !reset;
+    await loadSessionDataForTab(active.id, reset, "startup", {
+      preserveCachedHistory,
+      sessionPath: active.sessionPath,
+    });
     return active.id;
   }, [activeTabFromBackend, confirmBackendActiveTab, dispatchTo, loadSessionDataForTab]);
 
@@ -1885,7 +1910,7 @@ export function useController() {
       await app.CloseTab(tabId);
       statesRef.current.delete(tabId);
       bump();
-      if (tabId === activeTabId) await syncActiveTabFromBackend(true);
+      if (tabId === activeTabId) await syncActiveTabFromBackend(false);
     } catch { /* ignore */ }
   }, [activeTabId, bump, syncActiveTabFromBackend]);
 
