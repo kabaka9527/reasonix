@@ -27647,7 +27647,13 @@ body > .mermaid-diagram--fullscreen {
 
 .app--windows-frameless .app-chrome--native-tabs,
 :root[data-theme-style] .app--windows-frameless .app-chrome--native-tabs {
-  padding-right: calc(var(--chrome-right-toggle-offset) + var(--windows-window-controls-safe));
+  --windows-frameless-titlebar-tools-offset: var(--windows-window-controls-safe);
+  padding-right: calc(var(--windows-frameless-titlebar-tools-offset) + var(--chrome-panel-control-size, 30px) + 18px);
+}
+
+.app--windows-frameless .app-chrome--native-tabs .app-chrome__panel-toggle--right,
+:root[data-theme-style] .app--windows-frameless .app-chrome--native-tabs .app-chrome__panel-toggle--right {
+  right: calc(var(--windows-frameless-titlebar-tools-offset) + 8px);
 }
 
 .app--windows-frameless .topicbar,
