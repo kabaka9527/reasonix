@@ -359,6 +359,35 @@ func (l *Ledger) LatestSuccessfulWriteIndex(paths []string) (int, bool) {
 	return latest, latest >= 0
 }
 
+// HasSuccessfulReadAfter reports whether any wanted path was read after the
+// given receipt index. It lets anchor-based edit tools require a fresh file view
+// after a same-turn write changed the text their anchors would match.
+func (l *Ledger) HasSuccessfulReadAfter(paths []string, after int) bool {
+	wanted := pathSet(normalizePaths(paths))
+	if l == nil || len(wanted) == 0 {
+		return false
+	}
+	start := after + 1
+	if start < 0 {
+		start = 0
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for i := start; i < len(l.receipts); i++ {
+		r := l.receipts[i]
+		if !r.Success || !r.Read {
+			continue
+		}
+		for _, p := range r.Paths {
+			if wanted[p] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (l *Ledger) LatestSuccessfulWriterIndex() (int, bool) {
 	if l == nil {
 		return 0, false

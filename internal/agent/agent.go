@@ -2015,6 +2015,13 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 			errMsg:  "blocked by loop guard",
 		}
 	}
+	if out, blocked := a.staleAnchorEditBlock(call); blocked {
+		return toolOutcome{
+			output:  out,
+			blocked: true,
+			errMsg:  "blocked: fresh read required",
+		}
+	}
 	if a.planMode.Load() {
 		// Translate the tool's optional plan-mode self-report into the policy's
 		// tri-state. Mirrors the t.(tool.Previewer) assertion precedent below.
@@ -2240,6 +2247,32 @@ func (a *Agent) repeatedSuccessBlock(call provider.ToolCall, t tool.Tool) (strin
 	return fmt.Sprintf(
 		"blocked: [loop guard] %q has already succeeded %d times with the same write-like arguments in this user turn. Re-running it is unlikely to help and may burn tokens or repeat file writes. Change approach: use edit_file or multi_edit for file changes, verify with a read/test command, or explain the blocker in your final answer.",
 		call.Name, count), true
+}
+
+func (a *Agent) staleAnchorEditBlock(call provider.ToolCall) (string, bool) {
+	if a.evidence == nil || !anchorBasedEditTool(call.Name) {
+		return "", false
+	}
+	rec := evidence.ReceiptFromToolCall(call.Name, json.RawMessage(call.Arguments), true, false)
+	if len(rec.Paths) == 0 {
+		return "", false
+	}
+	writeIndex, ok := a.evidence.LatestSuccessfulWriteIndex(rec.Paths)
+	if !ok || a.evidence.HasSuccessfulReadAfter(rec.Paths, writeIndex) {
+		return "", false
+	}
+	return fmt.Sprintf(
+		"blocked: [fresh read required] %q targets %s, which was already modified earlier this turn. Re-read the current file with read_file before another anchor-based edit, or combine the final same-file changes in one multi_edit call. This prevents stale old_string anchors and half-deleted ranges.",
+		call.Name, strings.Join(rec.Paths, ", ")), true
+}
+
+func anchorBasedEditTool(name string) bool {
+	switch name {
+	case "edit_file", "delete_range":
+		return true
+	default:
+		return false
+	}
 }
 
 func (a *Agent) recordRepeatSuccess(call provider.ToolCall, t tool.Tool) {

@@ -46,6 +46,23 @@ func TestLedgerMatchesFileReadAndWriteReceipts(t *testing.T) {
 	}
 }
 
+func TestLedgerReportsReadsAfterWrites(t *testing.T) {
+	ledger := NewLedger()
+	ledger.Record(Receipt{ToolName: "write_file", Success: true, Paths: []string{`src\a.go`}, Write: true})
+	writeIndex, ok := ledger.LatestSuccessfulWriteIndex([]string{`src/a.go`})
+	if !ok {
+		t.Fatal("expected latest write index")
+	}
+	if ledger.HasSuccessfulReadAfter([]string{`src/a.go`}, writeIndex) {
+		t.Fatal("read-after-write should be false before a read")
+	}
+
+	ledger.Record(Receipt{ToolName: "read_file", Success: true, Paths: []string{`src/a.go`}, Read: true})
+	if !ledger.HasSuccessfulReadAfter([]string{`src/a.go`}, writeIndex) {
+		t.Fatal("read-after-write should be true after a successful read")
+	}
+}
+
 func TestLedgerReportsFinalReadinessReceiptsAfterWriter(t *testing.T) {
 	ledger := NewLedger()
 	ledger.Record(Receipt{ToolName: "bash", Success: true, Command: "go test ./..."})

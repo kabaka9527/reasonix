@@ -104,20 +104,29 @@ func (d deleteRange) preview(args json.RawMessage) (diff.Change, error) {
 	lines := strings.Split(strings.ReplaceAll(original, "\r", ""), "\n")
 	startLine := findUniqueLine(lines, p.StartAnchor)
 	if startLine == -2 {
-		return diff.Change{}, fmt.Errorf("start_anchor is not unique in %s; add more surrounding context", p.Path)
+		return diff.Change{}, fmt.Errorf("start_anchor is not unique in %s%s; add nearby unique code, not just repeated separator lines", p.Path, lineMatchSummary(lines, p.StartAnchor, 5))
 	}
 	if startLine == -1 {
 		return diff.Change{}, fmt.Errorf("start_anchor not found in %s", p.Path)
 	}
 	endLine := findUniqueLine(lines, p.EndAnchor)
 	if endLine == -2 {
-		return diff.Change{}, fmt.Errorf("end_anchor is not unique in %s; add more surrounding context", p.Path)
+		return diff.Change{}, fmt.Errorf("end_anchor is not unique in %s%s; add nearby unique code, not just repeated separator lines", p.Path, lineMatchSummary(lines, p.EndAnchor, 5))
 	}
 	if endLine == -1 {
 		return diff.Change{}, fmt.Errorf("end_anchor not found in %s", p.Path)
 	}
 	if startLine > endLine {
 		return diff.Change{}, fmt.Errorf("start_anchor appears after end_anchor (lines %d and %d)", startLine+1, endLine+1)
+	}
+	deleteStart, deleteEnd, deletesLines, err := deletionLineInterval(startLine, endLine, inclusive, p.Path)
+	if err != nil {
+		return diff.Change{}, err
+	}
+	if deletesLines {
+		if err := validateBraceCompleteDeletion(lines, deleteStart, deleteEnd, p.Path); err != nil {
+			return diff.Change{}, err
+		}
 	}
 
 	// Build new content
@@ -157,4 +166,141 @@ func findUniqueLine(lines []string, target string) int {
 		}
 	}
 	return idx
+}
+
+func deletionLineInterval(startLine, endLine int, inclusive bool, path string) (int, int, bool, error) {
+	if inclusive {
+		return startLine, endLine, true, nil
+	}
+	if startLine == endLine {
+		return 0, 0, false, fmt.Errorf("start_anchor and end_anchor match the same line in %s; with inclusive=false there is nothing between them to delete", path)
+	}
+	start, end := startLine+1, endLine-1
+	if start > end {
+		return start, end, false, nil
+	}
+	return start, end, true, nil
+}
+
+func validateBraceCompleteDeletion(lines []string, deleteStart, deleteEnd int, path string) error {
+	for _, pair := range bracePairsByLine(lines) {
+		if pair.openLine < 0 || pair.closeLine < 0 {
+			continue
+		}
+		openDeleted := lineInRange(pair.openLine, deleteStart, deleteEnd)
+		closeDeleted := lineInRange(pair.closeLine, deleteStart, deleteEnd)
+		switch {
+		case openDeleted && !closeDeleted:
+			if pair.openLine == deleteEnd {
+				return fmt.Errorf("end_anchor in %s appears to open a code block at line %d; delete_range would delete that header but leave its closing line %d outside the range. Use an end_anchor on the block's closing line, or use edit_file/multi_edit with the full exact block", path, pair.openLine+1, pair.closeLine+1)
+			}
+			return fmt.Errorf("delete_range in %s would cut a code block: opening brace at line %d is deleted but its closing brace at line %d is kept. Choose anchors that include the whole block, or use edit_file/multi_edit with the full exact block", path, pair.openLine+1, pair.closeLine+1)
+		case !openDeleted && closeDeleted:
+			return fmt.Errorf("delete_range in %s would cut a code block: closing brace at line %d is deleted but its opening brace at line %d is kept. Choose anchors that include the whole block, or use edit_file/multi_edit with the full exact block", path, pair.closeLine+1, pair.openLine+1)
+		}
+	}
+	return nil
+}
+
+func lineInRange(line, start, end int) bool {
+	return line >= start && line <= end
+}
+
+type bracePair struct {
+	openLine  int
+	closeLine int
+}
+
+func bracePairsByLine(lines []string) []bracePair {
+	var pairs []bracePair
+	var stack []int
+	inBlockComment := false
+	var quote byte
+	escaped := false
+
+	for lineNo, line := range lines {
+		for i := 0; i < len(line); i++ {
+			c := line[i]
+			if inBlockComment {
+				if c == '*' && i+1 < len(line) && line[i+1] == '/' {
+					inBlockComment = false
+					i++
+				}
+				continue
+			}
+			if quote != 0 {
+				if escaped {
+					escaped = false
+					continue
+				}
+				if c == '\\' {
+					escaped = true
+					continue
+				}
+				if c == quote {
+					quote = 0
+				}
+				continue
+			}
+			if c == '/' && i+1 < len(line) {
+				switch line[i+1] {
+				case '/':
+					i = len(line)
+					continue
+				case '*':
+					inBlockComment = true
+					i++
+					continue
+				}
+			}
+			switch c {
+			case '\'', '"', '`':
+				quote = c
+			case '{':
+				stack = append(stack, lineNo)
+			case '}':
+				if len(stack) == 0 {
+					pairs = append(pairs, bracePair{openLine: -1, closeLine: lineNo})
+					continue
+				}
+				openLine := stack[len(stack)-1]
+				stack = stack[:len(stack)-1]
+				pairs = append(pairs, bracePair{openLine: openLine, closeLine: lineNo})
+			}
+		}
+		if quote == '\'' || quote == '"' {
+			quote = 0
+			escaped = false
+		}
+	}
+	for _, openLine := range stack {
+		pairs = append(pairs, bracePair{openLine: openLine, closeLine: -1})
+	}
+	return pairs
+}
+
+func lineMatchSummary(lines []string, target string, limit int) string {
+	var matches []int
+	for i, line := range lines {
+		if line == target {
+			matches = append(matches, i+1)
+		}
+	}
+	if len(matches) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(" (matching lines include ")
+	for i, line := range matches {
+		if i >= limit {
+			b.WriteString(", ...")
+			break
+		}
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(fmt.Sprint(line))
+	}
+	b.WriteString(")")
+	return b.String()
 }
