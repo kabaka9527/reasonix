@@ -291,6 +291,9 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 				fmt.Fprintf(&b, "models_url  = %q   # auto-fetch models from this URL on startup\n", p.ModelsURL)
 			}
 			fmt.Fprintf(&b, "api_key_env = %q\n", p.APIKeyEnv)
+			if len(p.Headers) > 0 {
+				fmt.Fprintf(&b, "headers     = %s   # extra static request headers; keep secrets in api_key_env\n", renderStringMap(p.Headers))
+			}
 			if p.BalanceURL != "" {
 				fmt.Fprintf(&b, "balance_url = %q   # optional; wallet-balance endpoint shown in the status bar\n", p.BalanceURL)
 			}
@@ -326,6 +329,9 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 			}
 			if p.DefaultEffort != "" {
 				fmt.Fprintf(&b, "default_effort    = %q   # used when /effort is auto or unset; must be one of supported_efforts\n", p.DefaultEffort)
+			}
+			if len(p.ModelOverrides) > 0 {
+				fmt.Fprintf(&b, "model_overrides   = %s   # per-model reasoning/vision overrides for mixed gateways\n", renderModelOverrides(p.ModelOverrides))
 			}
 			if p.NoProxy {
 				b.WriteString("no_proxy    = true   # reach this base_url directly, never via the proxy\n")
@@ -769,6 +775,9 @@ func RenderTOMLProjectDelta(c *Config) string {
 				fmt.Fprintf(&b, "models_url  = %q\n", p.ModelsURL)
 			}
 			fmt.Fprintf(&b, "api_key_env = %q\n", p.APIKeyEnv)
+			if len(p.Headers) > 0 {
+				fmt.Fprintf(&b, "headers     = %s\n", renderStringMap(p.Headers))
+			}
 			if p.BalanceURL != "" {
 				fmt.Fprintf(&b, "balance_url = %q\n", p.BalanceURL)
 			}
@@ -804,6 +813,9 @@ func RenderTOMLProjectDelta(c *Config) string {
 			}
 			if p.DefaultEffort != "" {
 				fmt.Fprintf(&b, "default_effort    = %q\n", p.DefaultEffort)
+			}
+			if len(p.ModelOverrides) > 0 {
+				fmt.Fprintf(&b, "model_overrides   = %s\n", renderModelOverrides(p.ModelOverrides))
 			}
 			if p.NoProxy {
 				b.WriteString("no_proxy    = true\n")
@@ -1181,6 +1193,48 @@ func renderStringMap(m map[string]string) string {
 	}
 	b.WriteString(" }")
 	return b.String()
+}
+
+func renderModelOverrides(m map[string]ProviderModelOverride) string {
+	keys := make([]string, 0, len(m))
+	for k, ov := range m {
+		if k == "" || modelOverrideEmpty(ov) {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	b.WriteString("{ ")
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "%q = %s", k, renderModelOverride(m[k]))
+	}
+	b.WriteString(" }")
+	return b.String()
+}
+
+func renderModelOverride(ov ProviderModelOverride) string {
+	var parts []string
+	if ov.ReasoningProtocol != "" {
+		parts = append(parts, fmt.Sprintf("reasoning_protocol = %q", ov.ReasoningProtocol))
+	}
+	if len(ov.SupportedEfforts) > 0 {
+		parts = append(parts, "supported_efforts = "+renderStringArray(ov.SupportedEfforts))
+	}
+	if ov.DefaultEffort != "" {
+		parts = append(parts, fmt.Sprintf("default_effort = %q", ov.DefaultEffort))
+	}
+	if ov.Vision != nil {
+		parts = append(parts, fmt.Sprintf("vision = %t", *ov.Vision))
+	}
+	return "{ " + strings.Join(parts, ", ") + " }"
+}
+
+func modelOverrideEmpty(ov ProviderModelOverride) bool {
+	return ov.ReasoningProtocol == "" && len(ov.SupportedEfforts) == 0 && ov.DefaultEffort == "" && ov.Vision == nil
 }
 
 func hasPositiveIntMap(m map[string]int) bool {

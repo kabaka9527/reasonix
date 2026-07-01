@@ -177,6 +177,54 @@ func TestStreamUsesConfiguredChatURL(t *testing.T) {
 	}
 }
 
+func TestStreamSendsCustomHeaders(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer real-key" {
+			http.Error(w, "authorization was not preserved", http.StatusUnauthorized)
+			return
+		}
+		if r.Header.Get("HTTP-Referer") != "https://app.example" || r.Header.Get("X-Title") != "Reasonix" {
+			http.Error(w, "custom headers missing", http.StatusForbidden)
+			return
+		}
+		if r.Header.Get("Accept") != "text/event-stream" {
+			http.Error(w, "reserved Accept header was overwritten", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	p, err := New(provider.Config{
+		Name:    "custom",
+		BaseURL: srv.URL,
+		Model:   "model-a",
+		APIKey:  "real-key",
+		Extra: map[string]any{"headers": map[string]string{
+			"Authorization": "Bearer wrong",
+			"Accept":        "application/json",
+			"HTTP-Referer":  "https://app.example",
+			"X-Title":       "Reasonix",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ch, err := p.Stream(context.Background(), provider.Request{
+		Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for chunk := range ch {
+		if chunk.Type == provider.ChunkError {
+			t.Fatalf("stream error: %v", chunk.Err)
+		}
+	}
+}
+
 // TestBuildRequestAlwaysSerializesContent guards the DeepSeek 400 regression:
 // DeepSeek rejects a message missing the `content` field, so every message must
 // serialize one. A pure tool_calls assistant turn carries null (OpenAI-spec,

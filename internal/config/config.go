@@ -962,15 +962,16 @@ func NormalizeMemoryCompilerVerbosity(v string) string {
 // token budget; the harness compacts older history as a turn's prompt approaches
 // it (see agent compaction). 0 disables compaction for the instance.
 type ProviderEntry struct {
-	Name           string   `toml:"name"`
-	Kind           string   `toml:"kind"`
-	BaseURL        string   `toml:"base_url"`
-	ChatURL        string   `toml:"chat_url"`
-	Model          string   `toml:"model"`      // a single model (back-compat)
-	Models         []string `toml:"models"`     // a vendor's model list (one base_url/key, many models)
-	ModelsURL      string   `toml:"models_url"` // auto-fetch models from this URL on startup
-	Default        string   `toml:"default"`    // default model when Models is set (else Models[0])
-	APIKeyEnv      string   `toml:"api_key_env"`
+	Name           string            `toml:"name"`
+	Kind           string            `toml:"kind"`
+	BaseURL        string            `toml:"base_url"`
+	ChatURL        string            `toml:"chat_url"`
+	Model          string            `toml:"model"`      // a single model (back-compat)
+	Models         []string          `toml:"models"`     // a vendor's model list (one base_url/key, many models)
+	ModelsURL      string            `toml:"models_url"` // auto-fetch models from this URL on startup
+	Default        string            `toml:"default"`    // default model when Models is set (else Models[0])
+	APIKeyEnv      string            `toml:"api_key_env"`
+	Headers        map[string]string `toml:"headers"` // optional extra HTTP headers for OpenAI-compatible gateways; secrets should stay in api_key_env.
 	resolvedAPIKey string
 	resolvedSource CredentialSource
 	BalanceURL     string                       `toml:"balance_url"` // optional; a provider-specific wallet-balance endpoint (DeepSeek: https://api.deepseek.com/user/balance). Empty = no balance readout.
@@ -1012,9 +1013,22 @@ type ProviderEntry struct {
 	// DefaultEffort is the /effort level used when the user picks "auto" or
 	// has not set Effort. Ignored when SupportedEfforts is empty.
 	DefaultEffort string `toml:"default_effort"`
+	// ModelOverrides customizes capability metadata after ResolveModel selects a
+	// concrete model from a multi-model provider. Use it when a gateway exposes
+	// mixed DeepSeek/OpenAI/no-reasoning or mixed vision/text models under one
+	// base_url/key.
+	ModelOverrides map[string]ProviderModelOverride `toml:"model_overrides"`
+	visionOverride *bool
 	// NoProxy reaches this provider's base_url directly, never through the proxy.
 	// For China-only endpoints a foreign-exit proxy resets the TLS handshake (#2803).
 	NoProxy bool `toml:"no_proxy"`
+}
+
+type ProviderModelOverride struct {
+	ReasoningProtocol string   `toml:"reasoning_protocol"`
+	SupportedEfforts  []string `toml:"supported_efforts"`
+	DefaultEffort     string   `toml:"default_effort"`
+	Vision            *bool    `toml:"vision"`
 }
 
 // ModelList returns the models this provider exposes: the explicit `models` list,
@@ -1138,6 +1152,44 @@ func (e *ProviderEntry) applyModelPrice() {
 		return
 	}
 	e.Price = e.PriceForModel(e.Model)
+}
+
+func (e *ProviderEntry) applyModelOverride() {
+	if e == nil || len(e.ModelOverrides) == 0 {
+		return
+	}
+	ov, ok := e.modelOverrideForModel(e.Model)
+	if !ok {
+		return
+	}
+	if ov.ReasoningProtocol != "" {
+		e.ReasoningProtocol = ov.ReasoningProtocol
+	}
+	if ov.SupportedEfforts != nil {
+		e.SupportedEfforts = append([]string(nil), ov.SupportedEfforts...)
+	}
+	if ov.DefaultEffort != "" || ov.SupportedEfforts != nil {
+		e.DefaultEffort = ov.DefaultEffort
+	}
+	if ov.Vision != nil {
+		e.visionOverride = ov.Vision
+	}
+}
+
+func (e *ProviderEntry) modelOverrideForModel(model string) (ProviderModelOverride, bool) {
+	model = strings.TrimSpace(model)
+	if e == nil || model == "" || len(e.ModelOverrides) == 0 {
+		return ProviderModelOverride{}, false
+	}
+	if ov, ok := e.ModelOverrides[model]; ok {
+		return ov, true
+	}
+	for k, ov := range e.ModelOverrides {
+		if strings.EqualFold(strings.TrimSpace(k), model) {
+			return ov, true
+		}
+	}
+	return ProviderModelOverride{}, false
 }
 
 func clonePricing(p *provider.Pricing) *provider.Pricing {
@@ -1433,6 +1485,7 @@ func (c *Config) ResolveModel(ref string) (*ProviderEntry, bool) {
 			cp := *e
 			cp.Model = model
 			cp.applyModelPrice()
+			cp.applyModelOverride()
 			return &cp, true
 		}
 	}
@@ -1441,6 +1494,7 @@ func (c *Config) ResolveModel(ref string) (*ProviderEntry, bool) {
 		cp := *e
 		cp.Model = e.DefaultModel()
 		cp.applyModelPrice()
+		cp.applyModelOverride()
 		return &cp, true
 	}
 	// a bare model name → the provider that lists it
@@ -1449,6 +1503,7 @@ func (c *Config) ResolveModel(ref string) (*ProviderEntry, bool) {
 			cp := c.Providers[i]
 			cp.Model = ref
 			cp.applyModelPrice()
+			cp.applyModelOverride()
 			return &cp, true
 		}
 	}

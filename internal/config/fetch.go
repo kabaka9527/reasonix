@@ -38,7 +38,7 @@ func (e *ProviderEntry) FetchModels(ctx context.Context) ([]string, error) {
 	var lastErr error
 	var firstHardErr error
 	for _, u := range candidates {
-		models, err := openai.FetchModels(ctx, u, key)
+		models, err := openai.FetchModels(ctx, u, key, e.Headers)
 		if err == nil {
 			return models, nil
 		}

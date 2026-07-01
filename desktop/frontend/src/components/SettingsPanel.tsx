@@ -631,10 +631,9 @@ function toRef(model: string, s: SettingsView): string {
 
 const PROXY_MODES = ["auto", "custom", "off"] as const;
 
-// EFFORT_PRESETS is the canonical union of /effort levels the kernel
-// recognises. The settings UI exposes these as toggleable checkboxes; users
-// can additionally add arbitrary custom names via the "Add" input. The order
-// here is what the user sees in the dropdown.
+// EFFORT_PRESETS is the canonical union of /effort levels the kernel recognises.
+// The settings UI uses it for subagent defaults; provider-specific levels are
+// inferred by the backend or edited in TOML for rare gateways.
 const EFFORT_PRESETS: readonly string[] = ["low", "medium", "high", "xhigh", "max"];
 const REASONING_PROTOCOLS: readonly string[] = ["", "deepseek", "openai", "none"];
 const PROXY_TYPES = ["http", "https", "socks5", "socks5h"] as const;
@@ -689,6 +688,47 @@ export function providerBaseURLFromChatURL(chatUrl: string): string {
     if (full.endsWith(suffix)) return trimmedURL(full.slice(0, -suffix.length));
   }
   return full;
+}
+
+function formatProviderHeaders(headers: Record<string, string> | null | undefined): string {
+  const entries = Object.entries(headers ?? {})
+    .map(([key, value]) => [key.trim(), String(value ?? "").trim()] as const)
+    .filter(([key, value]) => key && value)
+    .sort(([a], [b]) => a.localeCompare(b));
+  return entries.map(([key, value]) => `${key}: ${value}`).join("\n");
+}
+
+function parseProviderHeaders(raw: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const colon = trimmed.indexOf(":");
+    const eq = trimmed.indexOf("=");
+    const cut = colon >= 0 && (eq < 0 || colon < eq) ? colon : eq;
+    if (cut <= 0) continue;
+    const key = trimmed.slice(0, cut).trim();
+    const value = trimmed.slice(cut + 1).trim();
+    if (key && value) out[key] = value;
+  }
+  return out;
+}
+
+function providerModelFetchFallbackMessage(error: unknown, t: ReturnType<typeof useT>): string {
+  const message = String((error as Error)?.message ?? error);
+  if (/\bstatus\s+(401|403)\b/i.test(message)) {
+    return t("settings.fetchModelsManualFallbackAuth");
+  }
+  if (/\bstatus\s+(404|405)\b/i.test(message)) {
+    return t("settings.fetchModelsManualFallbackUnsupported");
+  }
+  if (/\b(status\s+5\d\d|request failed|network|timeout|timed out|connection|deadline|fetch failed)\b/i.test(message)) {
+    return t("settings.fetchModelsManualFallbackNetwork");
+  }
+  if (/\b(decode response|invalid character|unexpected end|unexpected format)\b/i.test(message)) {
+    return t("settings.fetchModelsManualFallbackDecode");
+  }
+  return t("settings.fetchModelsManualFallbackGeneric", { err: message });
 }
 
 function normalizeReasoningLanguage(lang: string | undefined): string {
@@ -816,6 +856,17 @@ function normalizeBotMappingScope(scope: unknown, workspaceRoot: unknown): "glob
   return String(workspaceRoot ?? "").trim() ? "project" : "global";
 }
 
+function normalizeStringMap(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out: Record<string, string> = {};
+  for (const [rawKey, rawValue] of Object.entries(value as Record<string, unknown>)) {
+    const key = rawKey.trim();
+    const val = String(rawValue ?? "").trim();
+    if (key && val) out[key] = val;
+  }
+  return out;
+}
+
 function normalizeProviderView(p: ProviderView): ProviderView {
   const visionModels = asArray(p.visionModels);
   const requiresKey = providerRequiresKey(p);
@@ -828,8 +879,10 @@ function normalizeProviderView(p: ProviderView): ProviderView {
     visionModels,
     visionModelsConfigured: Boolean(p.visionModelsConfigured ?? visionModels.length > 0),
     modelsUrl: p.modelsUrl ?? "",
+    headers: normalizeStringMap(p.headers),
     reasoningProtocol: normalizeReasoningProtocol(p.reasoningProtocol),
     supportedEfforts: asArray(p.supportedEfforts),
+    modelOverrides: asArray(p.modelOverrides),
     requiresKey,
     configured: providerIsConfigured({ ...p, requiresKey }),
     keySource: p.keySource ?? "",
@@ -4293,19 +4346,93 @@ function parseBotListInput(value: string): string[] {
     .filter(Boolean));
 }
 
-// Memoized model chips for ProviderEditor — prevents re-render when typing
-// in name/key/baseUrl fields.
-const ModelChips = memo(function ModelChips({ modelNames }: { modelNames: string[] }) {
+const ProviderEditorModelPicker = memo(function ProviderEditorModelPicker({
+  candidates,
+  selectedModels,
+  visionModels,
+  disabled,
+  onToggleModel,
+  onToggleVision,
+  onSelectAll,
+  onClear,
+}: {
+  candidates: string[];
+  selectedModels: string[];
+  visionModels: string[];
+  disabled: boolean;
+  onToggleModel: (model: string) => void;
+  onToggleVision: (model: string) => void;
+  onSelectAll: () => void;
+  onClear: () => void;
+}) {
   const t = useT();
-  if (modelNames.length === 0) return null;
+  const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(query), 150);
+    return () => clearTimeout(timer);
+  }, [query]);
+  if (candidates.length === 0) return null;
+  const selected = new Set(selectedModels);
+  const vision = new Set(visionModels);
+  const q = debouncedQuery.trim().toLowerCase();
+  const visibleCandidates = q
+    ? candidates.filter((model) => model.toLowerCase().includes(q))
+    : candidates;
   return (
-    <div className="provider-model-chips">
-      {modelNames.slice(0, 8).map((model) => (
-        <span className="provider-model-chip" key={model}>{model}</span>
-      ))}
-      {modelNames.length > 8 && (
-        <span className="provider-model-chip provider-model-chip--more">{t("settings.moreModels", { n: modelNames.length - 8 })}</span>
+    <div className="provider-model-draft provider-model-draft--inline">
+      <div className="provider-model-draft__head">
+        <div>
+          <div className="provider-card-block__label">{t("settings.modelCandidates")}</div>
+          <span>{t("settings.modelCandidatesSelected", { n: selectedModels.length })}</span>
+        </div>
+        <div className="provider-model-draft__tools">
+          <button type="button" className="btn btn--small" disabled={disabled || selectedModels.length === candidates.length} onClick={onSelectAll}>
+            {t("settings.selectAllModels")}
+          </button>
+          <button type="button" className="btn btn--small" disabled={disabled || selectedModels.length === 0} onClick={onClear}>
+            {t("settings.clearModelSelection")}
+          </button>
+        </div>
+      </div>
+      {candidates.length > 8 && (
+        <input
+          className="mem-input provider-model-draft__search"
+          placeholder={t("settings.modelCandidateSearch")}
+          value={query}
+          disabled={disabled}
+          onChange={(e) => setQuery(e.target.value)}
+        />
       )}
+      <div className="provider-model-draft__list" role="list" aria-label={t("settings.modelCandidates")}>
+        {visibleCandidates.length > 0 ? visibleCandidates.map((model) => {
+          const enabled = selected.has(model);
+          return (
+            <div className="provider-model-draft__option" key={model}>
+              <label className="provider-model-draft__model">
+                <input
+                  type="checkbox"
+                  checked={enabled}
+                  disabled={disabled}
+                  onChange={() => onToggleModel(model)}
+                />
+                <span>{model}</span>
+              </label>
+              <label className="provider-model-draft__vision">
+                <input
+                  type="checkbox"
+                  checked={enabled && vision.has(model)}
+                  disabled={disabled || !enabled}
+                  onChange={() => onToggleVision(model)}
+                />
+                <span>{t("settings.visionModel")}</span>
+              </label>
+            </div>
+          );
+        }) : (
+          <div className="provider-model-draft__empty">{t("settings.noMatchingCandidateModels")}</div>
+        )}
+      </div>
     </div>
   );
 });
@@ -4329,29 +4456,30 @@ function ProviderEditor({
 }) {
   const t = useT();
   const [name, setName] = useState(initial?.name ?? "");
-  const [kind, setKind] = useState(initial?.kind ?? "openai");
+  const [kind] = useState(initial?.kind ?? "openai");
   const [baseUrl, setBaseUrl] = useState(initial?.baseUrl ?? "");
   const [chatUrl, setChatUrl] = useState(initial?.chatUrl ?? "");
   const [fullChatUrl, setFullChatUrl] = useState(Boolean((initial?.chatUrl ?? "").trim()));
   const [models, setModels] = useState((initial?.models ?? []).join(", "));
+  const [modelCandidates, setModelCandidates] = useState<string[]>(initial?.models ?? []);
   const [visionModels, setVisionModels] = useState((initial?.visionModels ?? []).join(", "));
   const [visionModelsConfigured, setVisionModelsConfigured] = useState(
     Boolean(initial?.visionModelsConfigured ?? ((initial?.visionModels ?? []).length > 0)),
   );
   const [modelsUrl, setModelsUrl] = useState(initial?.modelsUrl ?? "");
   const [apiKeyEnv, setApiKeyEnv] = useState(initial?.apiKeyEnv ?? "");
+  const [headersDraft, setHeadersDraft] = useState(formatProviderHeaders(initial?.headers));
   const [keyDraft, setKeyDraft] = useState("");
   const [balanceUrl, setBalanceUrl] = useState(initial?.balanceUrl ?? "");
   // Empty when unset so the placeholder (and its "0 = default" hint) reads instead
   // of a bare "0"; saved back as 0.
   const [ctx, setCtx] = useState(initial?.contextWindow ? String(initial.contextWindow) : "");
   const [reasoningProtocol, setReasoningProtocol] = useState(normalizeReasoningProtocol(initial?.reasoningProtocol));
-  const [supportedEfforts, setSupportedEfforts] = useState<string[]>(initial?.supportedEfforts ?? []);
-  const [customEffortDraft, setCustomEffortDraft] = useState("");
-  const [defaultEffort, setDefaultEffort] = useState(initial?.defaultEffort ?? "");
+  const [supportedEfforts] = useState<string[]>(initial?.supportedEfforts ?? []);
+  const [defaultEffort] = useState(initial?.defaultEffort ?? "");
   const [fetchingModels, setFetchingModels] = useState(false);
   const [fetchStatus, setFetchStatus] = useState<string | null>(null);
-  const [fetchErr, setFetchErr] = useState<string | null>(null);
+  const [fetchFallback, setFetchFallback] = useState<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const builtIn = initial?.builtIn ?? false;
   const isNewCustomProvider = !initial;
@@ -4359,45 +4487,26 @@ function ProviderEditor({
   const effectiveBaseUrl = fullChatUrl ? providerBaseURLFromChatURL(chatUrl) : baseUrl.trim();
   const effectiveChatUrl = fullChatUrl ? trimmedURL(chatUrl) : "";
   const effectiveModelsUrl = modelsUrl.trim();
+  const effectiveHeaders = parseProviderHeaders(headersDraft);
   const previewChatUrl = providerChatURLPreview(baseUrl, chatUrl, fullChatUrl);
 
-  // Offer the kinds the kernel actually registered; if the stored kind is a
-  // legacy/unknown one, keep it as an option so editing doesn't silently change it.
-  const kindOptions = kind && !kinds.includes(kind) ? [kind, ...kinds] : kinds;
-
-  // Split supportedEfforts into the 5 canonical presets (for checkbox UI) and
-  // any user-added custom names (rendered as removable chips). The preset order
-  // is fixed; custom names keep insertion order.
-  const presetEfforts = supportedEfforts.filter((e) => EFFORT_PRESETS.includes(e));
-  const customEfforts = supportedEfforts.filter((e) => !EFFORT_PRESETS.includes(e));
-
-  const togglePreset = (level: string) => {
-    const has = presetEfforts.includes(level);
-    const nextPresets = has ? presetEfforts.filter((e) => e !== level) : [...presetEfforts, level];
-    setSupportedEfforts([...nextPresets, ...customEfforts]);
-    // If the removed preset was the default, fall back to "auto" (empty string).
-    if (has && defaultEffort === level) setDefaultEffort("");
-  };
-
-  const addCustomEffort = () => {
-    const v = customEffortDraft.trim().toLowerCase();
-    if (!v || supportedEfforts.includes(v)) {
-      setCustomEffortDraft("");
-      return;
-    }
-    setSupportedEfforts([...presetEfforts, ...customEfforts, v]);
-    setCustomEffortDraft("");
-  };
-
-  const removeCustomEffort = (level: string) => {
-    setSupportedEfforts(supportedEfforts.filter((e) => e !== level));
-    if (defaultEffort === level) setDefaultEffort("");
-  };
+  // Empty supportedEfforts means "use protocol defaults". The simplified
+  // provider flow no longer edits these levels directly, but it preserves
+  // existing advanced TOML unless the user explicitly disables reasoning.
+  const cleanedSupportedEfforts = reasoningProtocol !== "none"
+    ? uniqueStrings(
+        supportedEfforts
+          .map((level) => level.toLowerCase().trim())
+          .filter((level) => level && level !== "auto")
+      )
+    : [];
+  const normalizedDefaultEffort = defaultEffort.toLowerCase().trim();
+  const cleanDefaultEffort = cleanedSupportedEfforts.includes(normalizedDefaultEffort) ? normalizedDefaultEffort : "";
 
   const fetchModels = async () => {
     setFetchingModels(true);
     setFetchStatus(null);
-    setFetchErr(null);
+    setFetchFallback(null);
     try {
       const effectiveApiKeyEnv = providerApiKeyEnvForSave(name, apiKeyEnv, keyDraft);
       if (!apiKeyEnv.trim()) setApiKeyEnv(effectiveApiKeyEnv);
@@ -4415,14 +4524,20 @@ function ProviderEditor({
         visionModelsConfigured: false,
         default: "",
         apiKeyEnv: effectiveApiKeyEnv,
+        headers: effectiveHeaders,
         keySet: Boolean(keyDraft.trim()) || (initial?.keySet ?? false),
         balanceUrl: balanceUrl.trim(),
         contextWindow: Number(ctx) || 0,
         reasoningProtocol,
-        supportedEfforts,
-        defaultEffort,
+        supportedEfforts: cleanedSupportedEfforts,
+        defaultEffort: cleanDefaultEffort,
+        modelOverrides: initial?.modelOverrides ?? [],
       });
-      if (fetched.length === 0) throw new Error(t("settings.fetchModelsEmpty"));
+      if (fetched.length === 0) {
+        setFetchFallback(t("settings.fetchModelsManualFallbackEmpty"));
+        return;
+      }
+      setModelCandidates(fetched);
       setModels(fetched.join(", "));
       setVisionModels((current) => {
         const existing = parseProviderListInput(current).filter((model) => fetched.includes(model));
@@ -4430,10 +4545,9 @@ function ProviderEditor({
       });
       setVisionModelsConfigured(true);
       if (keyDraft.trim()) setKeyDraft("");
-      setDefaultEffort((v) => v);
       setFetchStatus(t("settings.fetchModelsSuccess", { n: fetched.length }));
     } catch (e) {
-      setFetchErr(String((e as Error)?.message ?? e));
+      setFetchFallback(providerModelFetchFallbackMessage(e, t));
     } finally {
       setFetchingModels(false);
     }
@@ -4456,15 +4570,17 @@ function ProviderEditor({
       visionModelsConfigured: visionModelsConfigured || vms.length > 0,
       default: ms[0] ?? "",
       apiKeyEnv: effectiveApiKeyEnv,
+      headers: effectiveHeaders,
       modelsUrl: effectiveModelsUrl,
       keySet: Boolean(keyDraft.trim()) || (initial?.keySet ?? false),
       balanceUrl: balanceUrl.trim(),
       contextWindow: Number(ctx) || 0,
       reasoningProtocol,
-      supportedEfforts,
+      supportedEfforts: cleanedSupportedEfforts,
       // Clear the stored default if no levels are selected; the backend's
       // NormalizeEffort would otherwise silently ignore an unsupported value.
-      defaultEffort: supportedEfforts.length > 0 ? defaultEffort : "",
+      defaultEffort: cleanedSupportedEfforts.length > 0 ? cleanDefaultEffort : "",
+      modelOverrides: initial?.modelOverrides ?? [],
     });
   };
 
@@ -4503,29 +4619,75 @@ function ProviderEditor({
   }
 
   const modelNames = useMemo(
-    () => models.split(",").map((m) => m.trim()).filter(Boolean),
+    () => parseProviderListInput(models),
     [models],
+  );
+  const modelCandidateNames = useMemo(
+    () => uniqueStrings([...modelCandidates, ...modelNames]),
+    [modelCandidates, modelNames],
+  );
+  const visionModelNames = useMemo(
+    () => parseProviderListInput(visionModels).filter((model) => modelNames.includes(model)),
+    [modelNames, visionModels],
   );
   const canFetch = Boolean(name.trim() && effectiveBaseUrl);
 
-  const protocolField = initial ? (
-    <select className="mem-select" value={kind} onChange={(e) => setKind(e.target.value)}>
-      {kindOptions.map((k) => (
-        <option key={k} value={k}>
-          {k === "openai" ? t("settings.providerProtocolOpenAI") : k}
-        </option>
-      ))}
-    </select>
-  ) : (
-    <div className="provider-readonly-field provider-readonly-field--stacked" aria-readonly="true">
-      <strong>{t("settings.providerProtocolOpenAI")}</strong>
-      <span>{t("settings.providerProtocolOpenAIHint")}</span>
-    </div>
-  );
+  const setModelsFromList = (nextModels: string[]) => {
+    setModels(uniqueStrings(nextModels).join(", "));
+  };
+
+  const updateManualModels = (value: string) => {
+    setModels(value);
+    const typedModels = parseProviderListInput(value);
+    if (typedModels.length > 0) {
+      setModelCandidates((current) => uniqueStrings([...current, ...typedModels]));
+    }
+  };
+
+  const toggleEditorModel = (model: string) => {
+    const selected = new Set(modelNames);
+    if (selected.has(model)) {
+      selected.delete(model);
+      setVisionModels(visionModelNames.filter((candidate) => candidate !== model).join(", "));
+    } else {
+      selected.add(model);
+    }
+    setModelsFromList(modelCandidateNames.filter((candidate) => selected.has(candidate)));
+    setVisionModelsConfigured(true);
+  };
+
+  const toggleEditorVisionModel = (model: string) => {
+    if (!modelNames.includes(model)) return;
+    const vision = new Set(visionModelNames);
+    if (vision.has(model)) vision.delete(model);
+    else vision.add(model);
+    setVisionModels(modelCandidateNames.filter((candidate) => vision.has(candidate)).join(", "));
+    setVisionModelsConfigured(true);
+  };
+
+  const selectAllEditorModels = () => {
+    setModelsFromList(modelCandidateNames);
+    setVisionModels(visionModelNames.filter((model) => modelCandidateNames.includes(model)).join(", "));
+    setVisionModelsConfigured(true);
+  };
+
+  const clearEditorModels = () => {
+    setModels("");
+    setVisionModels("");
+    setVisionModelsConfigured(true);
+  };
 
   const advancedFields = (
     <details className="provider-editor-advanced" open={advancedOpen} onToggle={(e) => setAdvancedOpen(e.currentTarget.open)}>
-      <summary>{t("settings.providerAdvancedSettings")}</summary>
+      <summary>
+        <span className="provider-editor-advanced__title">
+          <ChevronDown className="provider-editor-advanced__icon" size={16} aria-hidden="true" />
+          {t("settings.providerAdvancedSettings")}
+        </span>
+        <span className="provider-editor-advanced__hint">
+          {advancedOpen ? t("settings.providerAdvancedCollapseHint") : t("settings.providerAdvancedExpandHint")}
+        </span>
+      </summary>
       <div className="provider-editor-advanced__body">
         <label className="set-label">{t("settings.providerApiKeyEnv")}</label>
         <input
@@ -4543,23 +4705,15 @@ function ProviderEditor({
           onChange={(e) => setModelsUrl(e.target.value)}
         />
         <div className="mem-hint">{t("settings.providerModelsUrlHint")}</div>
-        <label className="set-label">{t("settings.providerBalanceUrl")}</label>
-        <input className="mem-input" placeholder={t("settings.balanceUrlPlaceholder")} value={balanceUrl} onChange={(e) => setBalanceUrl(e.target.value)} />
-        <div className="mem-hint">{t("settings.balanceUrlHint")}</div>
-        <label className="set-label">{t("settings.providerContextWindow")}</label>
-        <input className="mem-input" placeholder={t("settings.contextWindowPlaceholder")} value={ctx} onChange={(e) => setCtx(e.target.value)} inputMode="numeric" />
-        <div className="mem-hint">{t("settings.contextWindowHint")}</div>
-        <label className="set-label">{t("settings.visionModels")}</label>
-        <input
-          className="mem-input"
-          placeholder={t("settings.providerModels")}
-          value={visionModels}
-          onChange={(e) => {
-            setVisionModelsConfigured(true);
-            setVisionModels(e.target.value);
-          }}
+        <label className="set-label">{t("settings.providerHeaders")}</label>
+        <textarea
+          className="mem-textarea provider-headers-textarea"
+          placeholder={t("settings.providerHeadersPlaceholder")}
+          value={headersDraft}
+          onChange={(e) => setHeadersDraft(e.target.value)}
+          rows={3}
         />
-        <div className="mem-hint">{t("settings.visionModelsHint")}</div>
+        <div className="mem-hint">{t("settings.providerHeadersHint")}</div>
         <label className="set-label">{t("settings.reasoningProtocol")}</label>
         <select className="mem-select" value={reasoningProtocol} onChange={(e) => setReasoningProtocol(e.target.value)}>
           {REASONING_PROTOCOLS.map((protocol) => (
@@ -4569,81 +4723,25 @@ function ProviderEditor({
           ))}
         </select>
         <div className="mem-hint">{t("settings.reasoningProtocolHint")}</div>
-        <label className="set-label">{t("settings.supportedEfforts")}</label>
-        {EFFORT_PRESETS.map((level) => (
-          <label key={level} className="set-check">
-            <input
-              type="checkbox"
-              checked={presetEfforts.includes(level)}
-              onChange={() => togglePreset(level)}
-            />
-            {level}
-          </label>
-        ))}
-        <div className="set-row">
-          <input
-            className="mem-input set-grow"
-            placeholder={t("settings.supportedEffortsCustomPlaceholder")}
-            value={customEffortDraft}
-            onChange={(e) => setCustomEffortDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                addCustomEffort();
-              }
-            }}
-          />
-          <button
-            type="button"
-            className="btn btn--small"
-            disabled={
-              !customEffortDraft.trim() || supportedEfforts.includes(customEffortDraft.trim().toLowerCase())
-            }
-            onClick={addCustomEffort}
-          >
-            {t("common.add")}
-          </button>
-        </div>
-        {customEfforts.length > 0 && (
-          <div className="set-rules__chips">
-            {customEfforts.map((level) => (
-              <span className="set-rule" key={level}>
-                {level}
-                <Tooltip label={t("common.delete")}>
-                  <button
-                    type="button"
-                    className="set-rule__x"
-                    disabled={busy}
-                    onClick={() => removeCustomEffort(level)}
-                  >
-                    ×
-                  </button>
-                </Tooltip>
-              </span>
-            ))}
-          </div>
-        )}
-        <div className="mem-hint">{t("settings.supportedEffortsHint")}</div>
-        <label className="set-label">{t("settings.defaultEffort")}</label>
-        {supportedEfforts.length > 0 ? (
-          <select
-            className="mem-select"
-            value={defaultEffort}
-            onChange={(e) => setDefaultEffort(e.target.value)}
-          >
-            <option value="">{t("settings.defaultEffortAuto")}</option>
-            {supportedEfforts.map((level) => (
-              <option key={level} value={level}>
-                {level}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <select className="mem-select" value="" disabled>
-            <option value="">{t("settings.defaultEffortAuto")}</option>
-          </select>
-        )}
-        <div className="mem-hint">{t("settings.defaultEffortHint")}</div>
+        <label className="set-label">{t("settings.providerBalanceUrl")}</label>
+        <input
+          className="mem-input"
+          placeholder={t("settings.balanceUrlPlaceholder")}
+          value={balanceUrl}
+          onChange={(e) => setBalanceUrl(e.target.value)}
+        />
+        <div className="mem-hint">{t("settings.balanceUrlHint")}</div>
+        <label className="set-label">{t("settings.providerContextWindow")}</label>
+        <input
+          className="mem-input"
+          inputMode="numeric"
+          min={0}
+          placeholder={t("settings.contextWindowPlaceholder")}
+          type="number"
+          value={ctx}
+          onChange={(e) => setCtx(e.target.value)}
+        />
+        <div className="mem-hint">{t("settings.contextWindowHint")}</div>
       </div>
     </details>
   );
@@ -4652,8 +4750,6 @@ function ProviderEditor({
     <div className={`provider-editor${isNewCustomProvider ? " provider-editor--wizard" : ""}`}>
       <label className="set-label">{t("settings.customProviderName")}</label>
       <input className="mem-input" placeholder={t("settings.customProviderNamePlaceholder")} value={name} onChange={(e) => setName(e.target.value)} disabled={!!initial} />
-      <label className="set-label">{t("settings.providerProtocol")}</label>
-      {protocolField}
       <div className="set-row">
         <label className="set-label set-grow">
           {t(fullChatUrl ? "settings.providerChatUrlLabel" : "settings.providerBaseUrlLabel")}
@@ -4732,16 +4828,20 @@ function ProviderEditor({
         <span>{t("settings.testFetchModelsHint")}</span>
       </div>
       {fetchStatus && <div className="provider-fetch-status provider-fetch-status--ok">{fetchStatus}</div>}
-      {fetchErr && <div className="provider-fetch-status provider-fetch-status--error">{fetchErr}</div>}
-      {modelNames.length > 0 && (
-        <div className="provider-card-block">
-          <div className="provider-card-block__label">{t("settings.availableModels")}</div>
-          <ModelChips modelNames={modelNames} />
-        </div>
-      )}
+      {fetchFallback && <div className="provider-fetch-status provider-fetch-status--warn">{fetchFallback}</div>}
       <label className="set-label">{t("settings.manualModels")}</label>
-      <input className="mem-input" placeholder={t("settings.providerModels")} value={models} onChange={(e) => setModels(e.target.value)} />
+      <input className="mem-input" placeholder={t("settings.providerModels")} value={models} onChange={(e) => updateManualModels(e.target.value)} />
       <div className="mem-hint">{t("settings.manualModelsHint")}</div>
+      <ProviderEditorModelPicker
+        candidates={modelCandidateNames}
+        selectedModels={modelNames}
+        visionModels={visionModelNames}
+        disabled={busy || fetchingModels}
+        onToggleModel={toggleEditorModel}
+        onToggleVision={toggleEditorVisionModel}
+        onSelectAll={selectAllEditorModels}
+        onClear={clearEditorModels}
+      />
       {advancedFields}
       <div className="prov-card__actions">
         <button className="btn btn--small" onClick={onCancel} disabled={busy}>

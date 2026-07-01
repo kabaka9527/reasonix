@@ -828,6 +828,54 @@ func TestRenderTOMLRoundTripsVisionModels(t *testing.T) {
 	}
 }
 
+func TestRenderTOMLRoundTripsProviderHeadersAndModelOverrides(t *testing.T) {
+	orig := Default()
+	orig.Providers = []ProviderEntry{{
+		Name:      "gateway",
+		Kind:      "openai",
+		BaseURL:   "https://gateway.example/v1",
+		Models:    []string{"deepseek-v4-flash", "plain-chat"},
+		Default:   "plain-chat",
+		APIKeyEnv: "GATEWAY_API_KEY",
+		Headers: map[string]string{
+			"HTTP-Referer": "https://app.example",
+			"X-Title":      "Reasonix",
+		},
+		ModelOverrides: map[string]ProviderModelOverride{
+			"deepseek-v4-flash": {
+				ReasoningProtocol: ReasoningProtocolDeepSeek,
+				SupportedEfforts:  []string{"high", "max"},
+				DefaultEffort:     "high",
+				Vision:            boolPtr(false),
+			},
+		},
+	}}
+
+	rendered := RenderTOML(orig)
+	if !strings.Contains(rendered, `headers     = { HTTP-Referer = "https://app.example", X-Title = "Reasonix" }`) {
+		t.Fatalf("rendered TOML missing headers:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, `model_overrides`) || !strings.Contains(rendered, `reasoning_protocol = "deepseek"`) {
+		t.Fatalf("rendered TOML missing model overrides:\n%s", rendered)
+	}
+
+	var got Config
+	if _, err := toml.Decode(rendered, &got); err != nil {
+		t.Fatalf("rendered TOML does not parse: %v\n%s", err, rendered)
+	}
+	p, ok := got.Provider("gateway")
+	if !ok {
+		t.Fatal("gateway provider missing after round trip")
+	}
+	if p.Headers["HTTP-Referer"] != "https://app.example" || p.Headers["X-Title"] != "Reasonix" {
+		t.Fatalf("headers after round trip = %+v", p.Headers)
+	}
+	ov := p.ModelOverrides["deepseek-v4-flash"]
+	if ov.ReasoningProtocol != ReasoningProtocolDeepSeek || !reflect.DeepEqual(ov.SupportedEfforts, []string{"high", "max"}) || ov.DefaultEffort != "high" || ov.Vision == nil || *ov.Vision {
+		t.Fatalf("model override after round trip = %+v", ov)
+	}
+}
+
 func boolPtr(v bool) *bool { return &v }
 
 func intPtr(v int) *int { return &v }

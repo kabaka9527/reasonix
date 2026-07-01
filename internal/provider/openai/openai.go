@@ -64,6 +64,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 	protocol = normalizeReasoningProtocol(protocol)
 	chatURL, _ := cfg.Extra["chat_url"].(string)
 	chatURL = normalizeChatURL(cfg.BaseURL, chatURL)
+	headers, _ := cfg.Extra["headers"].(map[string]string)
 	vision, _ := cfg.Extra["vision"].(bool)
 	visionDetail, _ := cfg.Extra["vision_detail"].(string)
 	visionDetail = strings.ToLower(strings.TrimSpace(visionDetail))
@@ -119,6 +120,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 		keySource:    keySource,
 		baseURL:      strings.TrimRight(cfg.BaseURL, "/"),
 		chatURL:      chatURL,
+		headers:      cleanCustomHeaders(headers),
 		model:        cfg.Model,
 		deepseek:     deepseek,
 		minimax:      minimax,
@@ -147,6 +149,7 @@ type client struct {
 	keySource    string // source of keyEnv, surfaced in auth errors
 	baseURL      string
 	chatURL      string
+	headers      map[string]string
 	model        string
 	http         *http.Client
 	deepseek     bool
@@ -186,6 +189,40 @@ func normalizeChatURL(baseURL, chatURL string) string {
 	return strings.TrimRight(strings.TrimSpace(baseURL), "/") + "/chat/completions"
 }
 
+func cleanCustomHeaders(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for rawName, rawValue := range in {
+		name := strings.TrimSpace(rawName)
+		value := strings.TrimSpace(rawValue)
+		if name == "" || value == "" || reservedCustomHeader(name) {
+			continue
+		}
+		out[name] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func applyCustomHeaders(h http.Header, headers map[string]string) {
+	for name, value := range cleanCustomHeaders(headers) {
+		h.Set(name, value)
+	}
+}
+
+func reservedCustomHeader(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "authorization", "content-type", "accept", "host":
+		return true
+	default:
+		return false
+	}
+}
+
 // bufPool reuses byte buffers for JSON-marshalled request bodies. Each turn
 // allocates a buffer, marshals the request, and sends it — pooling avoids the
 // GC churn from repeated alloc/free of ~10-100KB buffers. The pool is
@@ -215,6 +252,7 @@ func (c *client) Stream(ctx context.Context, req provider.Request) (<-chan provi
 			httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
 		}
 		httpReq.Header.Set("Accept", "text/event-stream")
+		applyCustomHeaders(httpReq.Header, c.headers)
 		return httpReq, nil
 	}
 	resp, err := provider.SendWithRetry(ctx, c.http, c.sendOpts(), newReq)

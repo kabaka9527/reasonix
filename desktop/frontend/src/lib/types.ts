@@ -807,6 +807,7 @@ export interface ProviderView {
   modelsUrl: string; // optional override for model discovery; empty derives from baseUrl
   default: string;
   apiKeyEnv: string;
+  headers?: Record<string, string> | null; // optional extra request headers for compatible gateways
   keySet: boolean; // the env var currently resolves to a value
   requiresKey?: boolean; // false for explicit no-auth providers
   configured?: boolean; // selectable: key is set or no key is required
@@ -817,6 +818,15 @@ export interface ProviderView {
   reasoningProtocol: string; // auto|deepseek|openai|none; empty = auto/model registry
   supportedEfforts: string[]; // custom /effort levels; empty = use built-in Kind/BaseURL default
   defaultEffort: string; // /effort level when user picks "auto" or unset; "" = supportedEfforts[0]
+  modelOverrides?: ProviderModelOverrideView[] | null;
+}
+
+export interface ProviderModelOverrideView {
+  model: string;
+  reasoningProtocol: string;
+  supportedEfforts: string[];
+  defaultEffort: string;
+  vision?: boolean | null;
 }
 
 // BalanceInfo is the wallet-balance readout (desktop/app.go Balance). available

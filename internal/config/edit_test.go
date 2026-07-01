@@ -688,6 +688,50 @@ func TestEffectiveVisionUsesPerModelVisionList(t *testing.T) {
 	}
 }
 
+func TestResolveModelAppliesModelOverrides(t *testing.T) {
+	visionOff := false
+	c := &Config{Providers: []ProviderEntry{{
+		Name:              "gateway",
+		Kind:              "openai",
+		BaseURL:           "https://proxy.example.com/v1",
+		Models:            []string{"deepseek-v4-flash", "plain-chat"},
+		Default:           "plain-chat",
+		ReasoningProtocol: ReasoningProtocolOpenAI,
+		SupportedEfforts:  []string{"low", "medium", "high"},
+		ModelOverrides: map[string]ProviderModelOverride{
+			"deepseek-v4-flash": {
+				ReasoningProtocol: ReasoningProtocolDeepSeek,
+				SupportedEfforts:  []string{"high", "max"},
+				DefaultEffort:     "max",
+				Vision:            &visionOff,
+			},
+		},
+	}}}
+
+	deepseek, ok := c.ResolveModel("gateway/deepseek-v4-flash")
+	if !ok {
+		t.Fatal("ResolveModel did not find gateway/deepseek-v4-flash")
+	}
+	if protocol := ReasoningProtocolForEntry(deepseek); protocol != ReasoningProtocolDeepSeek {
+		t.Fatalf("deepseek protocol = %q, want deepseek", protocol)
+	}
+	cap := EffortCapabilityForEntry(deepseek)
+	if cap.Default != "max" || !containsString(cap.Levels, "max") || containsString(cap.Levels, "low") {
+		t.Fatalf("deepseek effort capability = %+v, want high|max default max", cap)
+	}
+	if EffectiveVision(deepseek) {
+		t.Fatalf("vision override false should disable image input")
+	}
+
+	plain, ok := c.ResolveModel("gateway/plain-chat")
+	if !ok {
+		t.Fatal("ResolveModel did not find gateway/plain-chat")
+	}
+	if protocol := ReasoningProtocolForEntry(plain); protocol != ReasoningProtocolOpenAI {
+		t.Fatalf("plain protocol = %q, want provider-level openai", protocol)
+	}
+}
+
 func TestRemoveProvider(t *testing.T) {
 	c := Default()
 	c.Agent.PlannerModel = "deepseek-pro"

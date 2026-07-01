@@ -1145,7 +1145,7 @@ func fetchModelListCompat(ctx context.Context, baseURL, apiKey string) ([]string
 	var lastErr error
 	var firstHardErr error
 	for _, u := range candidates {
-		models, err := openai.FetchModels(ctx, u, apiKey)
+		models, err := openai.FetchModels(ctx, u, apiKey, nil)
 		if err == nil {
 			return models, nil
 		}
