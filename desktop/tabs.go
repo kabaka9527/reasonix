@@ -1554,19 +1554,7 @@ func (a *App) EnsureBlankTab(scope, workspaceRoot string) (TabMeta, error) {
 		a.mu.Unlock()
 		return TabMeta{}, err
 	}
-	f := loadProjectsFile()
-	if workspaceRoot == "" {
-		f.GlobalTopics = prependUniqueString(f.GlobalTopics, topicID)
-		_ = saveProjectsFile(f)
-	} else {
-		for i, p := range f.Projects {
-			if p.Root == workspaceRoot {
-				f.Projects[i].Topics = prependUniqueString(p.Topics, topicID)
-				_ = saveProjectsFile(f)
-				break
-			}
-		}
-	}
+	_ = prependTopicInProjectsFile(workspaceRoot, topicID, false)
 
 	tabID := a.newUniqueTabIDLocked()
 	created = &WorkspaceTab{
@@ -2778,6 +2766,8 @@ const tabsFileName = "desktop-tabs.json"
 const desktopGlobalOrderToken = "__global__"
 const legacyProjectSidebarRecoveryMarker = "desktop-projects-legacy-recovered"
 
+var desktopProjectsFileMu sync.Mutex
+
 type desktopProject struct {
 	Root         string   `json:"root"`
 	Title        string   `json:"title,omitempty"`
@@ -2996,40 +2986,40 @@ func recoverLegacyProjectSidebarRoots(tabs desktopTabsFile) (bool, error) {
 		return false, nil
 	}
 
-	f := loadProjectsFile()
-	seen := map[string]bool{}
-	for _, project := range f.Projects {
-		root := normalizeProjectRoot(project.Root)
-		if root != "" {
-			seen[root] = true
-		}
-	}
-
 	changed := false
-	add := func(root string) {
-		root = normalizeProjectRoot(root)
-		if root == "" || seen[root] || !existingDirectory(root) {
-			return
+	err := updateProjectsFile(func(f *desktopProjectFile) (bool, error) {
+		seen := map[string]bool{}
+		for _, project := range f.Projects {
+			root := normalizeProjectRoot(project.Root)
+			if root != "" {
+				seen[root] = true
+			}
 		}
-		seen[root] = true
-		f.Projects = append(f.Projects, desktopProject{Root: root})
-		changed = true
-	}
-	if cur := loadWorkspace(); cur != "" {
-		add(cur)
-	}
-	for _, root := range loadWorkspaces() {
-		add(root)
-	}
-	for _, entry := range tabs.Tabs {
-		if entry.Scope == "project" {
-			add(entry.WorkspaceRoot)
+
+		add := func(root string) {
+			root = normalizeProjectRoot(root)
+			if root == "" || seen[root] || !existingDirectory(root) {
+				return
+			}
+			seen[root] = true
+			f.Projects = append(f.Projects, desktopProject{Root: root})
+			changed = true
 		}
-	}
-	if changed {
-		if err := saveProjectsFile(f); err != nil {
-			return false, err
+		if cur := loadWorkspace(); cur != "" {
+			add(cur)
 		}
+		for _, root := range loadWorkspaces() {
+			add(root)
+		}
+		for _, entry := range tabs.Tabs {
+			if entry.Scope == "project" {
+				add(entry.WorkspaceRoot)
+			}
+		}
+		return changed, nil
+	})
+	if err != nil {
+		return false, err
 	}
 	return changed, writeLegacyProjectSidebarRecoveryMarker(markerPath)
 }
@@ -3073,6 +3063,88 @@ func saveProjectsFile(f desktopProjectFile) error {
 		return err
 	}
 	return fileutil.ReplaceFile(tmp, path)
+}
+
+func updateProjectsFile(mutator func(*desktopProjectFile) (bool, error)) error {
+	desktopProjectsFileMu.Lock()
+	defer desktopProjectsFileMu.Unlock()
+
+	f := loadProjectsFile()
+	changed, err := mutator(&f)
+	if err != nil {
+		return err
+	}
+	if !changed {
+		return nil
+	}
+	return saveProjectsFile(f)
+}
+
+func prependTopicInProjectsFile(workspaceRoot, topicID string, ensureProject bool) error {
+	return prependTopicsInProjectsFile(workspaceRoot, []string{topicID}, ensureProject)
+}
+
+func prependTopicsInProjectsFile(workspaceRoot string, topicIDs []string, ensureProject bool) error {
+	workspaceRoot = normalizeProjectRoot(workspaceRoot)
+	topicIDs = uniqueStrings(topicIDs)
+	if len(topicIDs) == 0 {
+		return nil
+	}
+	return updateProjectsFile(func(f *desktopProjectFile) (bool, error) {
+		if workspaceRoot == "" {
+			next := uniqueStrings(append(append([]string(nil), topicIDs...), f.GlobalTopics...))
+			if sameStringList(next, f.GlobalTopics) {
+				return false, nil
+			}
+			f.GlobalTopics = next
+			return true, nil
+		}
+		for i, p := range f.Projects {
+			if p.Root != workspaceRoot {
+				continue
+			}
+			next := uniqueStrings(append(append([]string(nil), topicIDs...), p.Topics...))
+			if sameStringList(next, p.Topics) {
+				return false, nil
+			}
+			f.Projects[i].Topics = next
+			return true, nil
+		}
+		if !ensureProject {
+			return false, nil
+		}
+		f.Projects = append(f.Projects, desktopProject{Root: workspaceRoot, Topics: topicIDs})
+		return true, nil
+	})
+}
+
+func removeTopicFromProjectsFile(topicID string) error {
+	topicID = strings.TrimSpace(topicID)
+	if topicID == "" {
+		return nil
+	}
+	return updateProjectsFile(func(f *desktopProjectFile) (bool, error) {
+		changed := false
+		if next := removeString(f.GlobalTopics, topicID); !sameStringList(next, f.GlobalTopics) {
+			f.GlobalTopics = next
+			changed = true
+		}
+		if next := removeString(f.GlobalPinnedTopics, topicID); !sameStringList(next, f.GlobalPinnedTopics) {
+			f.GlobalPinnedTopics = next
+			changed = true
+		}
+		for i, p := range f.Projects {
+			if next := removeString(p.Topics, topicID); !sameStringList(next, p.Topics) {
+				f.Projects[i].Topics = next
+				changed = true
+			}
+			if next := removeString(p.PinnedTopics, topicID); !sameStringList(next, p.PinnedTopics) {
+				f.Projects[i].PinnedTopics = next
+				changed = true
+			}
+		}
+		return changed, nil
+	})
 }
 
 func normalizeProjectRoot(root string) string {
@@ -3158,6 +3230,18 @@ func normalizeSidebarOrder(order []string, projects []desktopProject) []string {
 		out = append(out, root)
 	}
 	return out
+}
+
+func sameProjectOrder(a, b []desktopProject) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Root != b[i].Root {
+			return false
+		}
+	}
+	return true
 }
 
 func uniqueStrings(values []string) []string {
@@ -3383,67 +3467,86 @@ func addProject(root, title string) error {
 		return fmt.Errorf("project root is required")
 	}
 	title = strings.TrimSpace(title)
-	f := loadProjectsFile()
-	for i, p := range f.Projects {
-		if p.Root == root {
-			if title != "" {
+	return updateProjectsFile(func(f *desktopProjectFile) (bool, error) {
+		for i, p := range f.Projects {
+			if p.Root == root {
+				if title == "" || f.Projects[i].Title == title {
+					return false, nil
+				}
 				f.Projects[i].Title = title
+				return true, nil
 			}
-			return saveProjectsFile(f)
 		}
-	}
-	f.Projects = append(f.Projects, desktopProject{Root: root, Title: title})
-	return saveProjectsFile(f)
+		f.Projects = append(f.Projects, desktopProject{Root: root, Title: title})
+		return true, nil
+	})
 }
 
 func renameProject(root, title string) error {
 	title = strings.TrimSpace(title)
-	f := loadProjectsFile()
-	if strings.TrimSpace(root) == "" {
-		f.GlobalTitle = title
-		return saveProjectsFile(f)
-	}
 	root = normalizeProjectRoot(root)
-	for i, p := range f.Projects {
-		if p.Root == root {
-			f.Projects[i].Title = title
-			return saveProjectsFile(f)
+	return updateProjectsFile(func(f *desktopProjectFile) (bool, error) {
+		if root == "" {
+			if f.GlobalTitle == title {
+				return false, nil
+			}
+			f.GlobalTitle = title
+			return true, nil
 		}
-	}
-	f.Projects = append(f.Projects, desktopProject{Root: root, Title: title})
-	return saveProjectsFile(f)
+		for i, p := range f.Projects {
+			if p.Root == root {
+				if f.Projects[i].Title == title {
+					return false, nil
+				}
+				f.Projects[i].Title = title
+				return true, nil
+			}
+		}
+		f.Projects = append(f.Projects, desktopProject{Root: root, Title: title})
+		return true, nil
+	})
 }
 
 func setProjectColor(root, color string) error {
 	root = normalizeProjectRoot(root)
 	color = normalizeProjectColor(color)
-	if root == "" {
-		f := loadProjectsFile()
-		f.GlobalColor = color
-		return saveProjectsFile(f)
-	}
-	f := loadProjectsFile()
-	for i, p := range f.Projects {
-		if p.Root == root {
-			f.Projects[i].Color = color
-			return saveProjectsFile(f)
+	return updateProjectsFile(func(f *desktopProjectFile) (bool, error) {
+		if root == "" {
+			if f.GlobalColor == color {
+				return false, nil
+			}
+			f.GlobalColor = color
+			return true, nil
 		}
-	}
-	f.Projects = append(f.Projects, desktopProject{Root: root, Color: color})
-	return saveProjectsFile(f)
+		for i, p := range f.Projects {
+			if p.Root == root {
+				if f.Projects[i].Color == color {
+					return false, nil
+				}
+				f.Projects[i].Color = color
+				return true, nil
+			}
+		}
+		f.Projects = append(f.Projects, desktopProject{Root: root, Color: color})
+		return true, nil
+	})
 }
 
 func removeProject(root string) error {
 	root = normalizeProjectRoot(root)
-	f := loadProjectsFile()
-	projects := make([]desktopProject, 0, len(f.Projects))
-	for _, p := range f.Projects {
-		if p.Root != root {
-			projects = append(projects, p)
+	return updateProjectsFile(func(f *desktopProjectFile) (bool, error) {
+		projects := make([]desktopProject, 0, len(f.Projects))
+		for _, p := range f.Projects {
+			if p.Root != root {
+				projects = append(projects, p)
+			}
 		}
-	}
-	f.Projects = projects
-	return saveProjectsFile(f)
+		if len(projects) == len(f.Projects) {
+			return false, nil
+		}
+		f.Projects = projects
+		return true, nil
+	})
 }
 
 // --- topic helpers ----------------------------------------------------------
@@ -3753,19 +3856,7 @@ func ensureTopicIndexed(scope, workspaceRoot, topicID, title, source string) err
 	if err := setTopicTitleWithSource(workspaceRoot, topicID, title, source); err != nil {
 		return err
 	}
-	f := loadProjectsFile()
-	if workspaceRoot == "" {
-		f.GlobalTopics = prependUniqueString(f.GlobalTopics, topicID)
-		return saveProjectsFile(f)
-	}
-	for i, p := range f.Projects {
-		if p.Root == workspaceRoot {
-			f.Projects[i].Topics = prependUniqueString(p.Topics, topicID)
-			return saveProjectsFile(f)
-		}
-	}
-	f.Projects = append(f.Projects, desktopProject{Root: workspaceRoot, Topics: []string{topicID}})
-	return saveProjectsFile(f)
+	return prependTopicInProjectsFile(workspaceRoot, topicID, true)
 }
 
 // --- telemetry --------------------------------------------------------------
@@ -4043,19 +4134,7 @@ func migrateLegacySessionsIntoGlobalTopics(dir string) []string {
 		}
 		return nil
 	}
-	f := loadProjectsFile()
-	if scope == "global" {
-		f.GlobalTopics = uniqueStrings(append(migratedTopicIDs, f.GlobalTopics...))
-	} else {
-		// Find the project entry and add topics.
-		for i, p := range f.Projects {
-			if p.Root == workspaceRoot {
-				f.Projects[i].Topics = uniqueStrings(append(migratedTopicIDs, f.Projects[i].Topics...))
-				break
-			}
-		}
-	}
-	_ = saveProjectsFile(f)
+	_ = prependTopicsInProjectsFile(workspaceRoot, migratedTopicIDs, false)
 	if topicTitles != nil {
 		_ = saveTopicTitles(topicTitleRoot, topicTitles)
 	}
@@ -4165,33 +4244,16 @@ func restoreSessionTopicIndex(dir, sessionPath string) error {
 		return err
 	}
 
-	f := loadProjectsFile()
 	if scope == "global" {
-		f.GlobalTopics = prependUniqueString(f.GlobalTopics, topicID)
 		meta.Scope = "global"
 		meta.WorkspaceRoot = ""
 	} else {
-		found := false
-		for i, p := range f.Projects {
-			if p.Root != workspaceRoot {
-				continue
-			}
-			f.Projects[i].Topics = prependUniqueString(p.Topics, topicID)
-			found = true
-			break
-		}
-		if !found {
-			f.Projects = append(f.Projects, desktopProject{
-				Root:   workspaceRoot,
-				Topics: []string{topicID},
-			})
-		}
 		meta.Scope = "project"
 		meta.WorkspaceRoot = workspaceRoot
 	}
 	meta.TopicID = topicID
 	meta.TopicTitle = title
-	if err := saveProjectsFile(f); err != nil {
+	if err := prependTopicInProjectsFile(workspaceRoot, topicID, scope == "project"); err != nil {
 		return err
 	}
 	if err := agent.SaveBranchMetaPreserveUpdated(sessionPath, meta); err != nil {
@@ -4274,7 +4336,6 @@ func (a *App) CreateTopic(scope, workspaceRoot, title string) (TopicMeta, error)
 		if abs, err := filepath.Abs(workspaceRoot); err == nil {
 			workspaceRoot = abs
 		}
-		_ = addProject(workspaceRoot, "")
 	}
 	if err := setTopicTitleWithSource(workspaceRoot, topicID, trimmedTitle, titleSource); err != nil {
 		return TopicMeta{}, err
@@ -4284,19 +4345,7 @@ func (a *App) CreateTopic(scope, workspaceRoot, title string) (TopicMeta, error)
 	}
 	// New topics should appear first in their project/global group so the item
 	// just created is immediately visible and selected in the sidebar.
-	f := loadProjectsFile()
-	if workspaceRoot == "" {
-		f.GlobalTopics = prependUniqueString(f.GlobalTopics, topicID)
-		_ = saveProjectsFile(f)
-	} else {
-		for i, p := range f.Projects {
-			if p.Root == workspaceRoot {
-				f.Projects[i].Topics = prependUniqueString(p.Topics, topicID)
-				_ = saveProjectsFile(f)
-				break
-			}
-		}
-	}
+	_ = prependTopicInProjectsFile(workspaceRoot, topicID, workspaceRoot != "")
 	a.emitProjectTreeChanged()
 	return TopicMeta{ID: topicID, Title: trimmedTitle, CreatedAt: createdAt}, nil
 }
@@ -4328,23 +4377,27 @@ func (a *App) SetProjectPinned(workspaceRoot string, pinned bool) error {
 	if root == "" {
 		return fmt.Errorf("workspaceRoot is required")
 	}
-	f := loadProjectsFile()
-	found := false
-	for _, project := range f.Projects {
-		if project.Root == root {
-			found = true
-			break
+	if err := updateProjectsFile(func(f *desktopProjectFile) (bool, error) {
+		found := false
+		for _, project := range f.Projects {
+			if project.Root == root {
+				found = true
+				break
+			}
 		}
-	}
-	if !found {
-		return fmt.Errorf("project %q not found", root)
-	}
-	if pinned {
-		f.PinnedProjects = prependUniqueString(f.PinnedProjects, root)
-	} else {
-		f.PinnedProjects = removeString(f.PinnedProjects, root)
-	}
-	if err := saveProjectsFile(f); err != nil {
+		if !found {
+			return false, fmt.Errorf("project %q not found", root)
+		}
+		next := removeString(f.PinnedProjects, root)
+		if pinned {
+			next = prependUniqueString(f.PinnedProjects, root)
+		}
+		if sameStringList(next, f.PinnedProjects) {
+			return false, nil
+		}
+		f.PinnedProjects = next
+		return true, nil
+	}); err != nil {
 		return err
 	}
 	a.emitProjectTreeChanged()
@@ -4354,48 +4407,56 @@ func (a *App) SetProjectPinned(workspaceRoot string, pinned bool) error {
 // ReorderProjects persists the user-defined order of project folders and,
 // when present, the virtual Global sidebar section.
 func (a *App) ReorderProjects(workspaceRoots []string) error {
-	f := loadProjectsFile()
-	byRoot := make(map[string]desktopProject, len(f.Projects))
-	for _, project := range f.Projects {
-		byRoot[project.Root] = project
-	}
-	seen := make(map[string]bool, len(workspaceRoots))
-	next := make([]desktopProject, 0, len(workspaceRoots))
-	sidebarOrder := make([]string, 0, len(workspaceRoots))
-	hasGlobalOrder := false
-	for _, root := range workspaceRoots {
-		root = strings.TrimSpace(root)
-		if root == desktopGlobalOrderToken {
+	if err := updateProjectsFile(func(f *desktopProjectFile) (bool, error) {
+		byRoot := make(map[string]desktopProject, len(f.Projects))
+		for _, project := range f.Projects {
+			byRoot[project.Root] = project
+		}
+		seen := make(map[string]bool, len(workspaceRoots))
+		next := make([]desktopProject, 0, len(workspaceRoots))
+		sidebarOrder := make([]string, 0, len(workspaceRoots))
+		hasGlobalOrder := false
+		for _, root := range workspaceRoots {
+			root = strings.TrimSpace(root)
+			if root == desktopGlobalOrderToken {
+				if seen[root] {
+					return false, fmt.Errorf("duplicate global section")
+				}
+				seen[root] = true
+				hasGlobalOrder = true
+				sidebarOrder = append(sidebarOrder, root)
+				continue
+			}
+			root = normalizeProjectRoot(root)
+			project, ok := byRoot[root]
+			if !ok {
+				return false, fmt.Errorf("project %q not found", root)
+			}
 			if seen[root] {
-				return fmt.Errorf("duplicate global section")
+				return false, fmt.Errorf("duplicate project %q", root)
 			}
 			seen[root] = true
-			hasGlobalOrder = true
+			next = append(next, project)
 			sidebarOrder = append(sidebarOrder, root)
-			continue
 		}
-		root = normalizeProjectRoot(root)
-		project, ok := byRoot[root]
-		if !ok {
-			return fmt.Errorf("project %q not found", root)
+		if len(next) != len(f.Projects) {
+			return false, fmt.Errorf("project order length mismatch")
 		}
-		if seen[root] {
-			return fmt.Errorf("duplicate project %q", root)
+		changed := !sameProjectOrder(next, f.Projects)
+		f.Projects = next
+		if hasGlobalOrder {
+			if !sameStringList(sidebarOrder, f.SidebarOrder) {
+				changed = true
+			}
+			f.SidebarOrder = sidebarOrder
+		} else {
+			if len(f.SidebarOrder) > 0 {
+				changed = true
+			}
+			f.SidebarOrder = nil
 		}
-		seen[root] = true
-		next = append(next, project)
-		sidebarOrder = append(sidebarOrder, root)
-	}
-	if len(next) != len(f.Projects) {
-		return fmt.Errorf("project order length mismatch")
-	}
-	f.Projects = next
-	if hasGlobalOrder {
-		f.SidebarOrder = sidebarOrder
-	} else {
-		f.SidebarOrder = nil
-	}
-	if err := saveProjectsFile(f); err != nil {
+		return changed, nil
+	}); err != nil {
 		return err
 	}
 	a.emitProjectTreeChanged()
@@ -4590,26 +4651,15 @@ func (a *App) DeleteTopic(topicID string) error {
 				return err
 			}
 			deleteTopicCreatedAt("", topicID)
-			f.GlobalTopics = removeString(f.GlobalTopics, topicID)
-			f.GlobalPinnedTopics = removeString(f.GlobalPinnedTopics, topicID)
 			found = true
 		}
 	}
 	if !found {
 		return fmt.Errorf("topic %q not found", topicID)
 	}
-	// Remove from project topic list.
-	f.GlobalPinnedTopics = removeString(f.GlobalPinnedTopics, topicID)
-	for i, p := range f.Projects {
-		for j, tid := range p.Topics {
-			if tid == topicID {
-				f.Projects[i].Topics = append(f.Projects[i].Topics[:j], f.Projects[i].Topics[j+1:]...)
-				break
-			}
-		}
-		f.Projects[i].PinnedTopics = removeString(f.Projects[i].PinnedTopics, topicID)
+	if err := removeTopicFromProjectsFile(topicID); err != nil {
+		return err
 	}
-	_ = saveProjectsFile(f)
 	a.emitProjectTreeChanged()
 	return nil
 }
@@ -4621,33 +4671,36 @@ func (a *App) SetTopicPinned(topicID string, pinned bool) error {
 	if topicID == "" {
 		return fmt.Errorf("topicID is required")
 	}
-	f := loadProjectsFile()
-	for i, p := range f.Projects {
-		m := loadTopicTitles(p.Root)
-		if _, ok := m[topicID]; !ok && !containsDesktopString(p.Topics, topicID) {
-			continue
+	if err := updateProjectsFile(func(f *desktopProjectFile) (bool, error) {
+		for i, p := range f.Projects {
+			m := loadTopicTitles(p.Root)
+			if _, ok := m[topicID]; !ok && !containsDesktopString(p.Topics, topicID) {
+				continue
+			}
+			next := removeString(f.Projects[i].PinnedTopics, topicID)
+			if pinned {
+				next = prependUniqueString(f.Projects[i].PinnedTopics, topicID)
+			}
+			if sameStringList(next, f.Projects[i].PinnedTopics) {
+				return false, nil
+			}
+			f.Projects[i].PinnedTopics = next
+			return true, nil
 		}
+		globalTitles := loadTopicTitles("")
+		if _, ok := globalTitles[topicID]; !ok && !containsDesktopString(f.GlobalTopics, topicID) {
+			return false, fmt.Errorf("topic %q not found", topicID)
+		}
+		next := removeString(f.GlobalPinnedTopics, topicID)
 		if pinned {
-			f.Projects[i].PinnedTopics = prependUniqueString(f.Projects[i].PinnedTopics, topicID)
-		} else {
-			f.Projects[i].PinnedTopics = removeString(f.Projects[i].PinnedTopics, topicID)
+			next = prependUniqueString(f.GlobalPinnedTopics, topicID)
 		}
-		if err := saveProjectsFile(f); err != nil {
-			return err
+		if sameStringList(next, f.GlobalPinnedTopics) {
+			return false, nil
 		}
-		a.emitProjectTreeChanged()
-		return nil
-	}
-	globalTitles := loadTopicTitles("")
-	if _, ok := globalTitles[topicID]; !ok && !containsDesktopString(f.GlobalTopics, topicID) {
-		return fmt.Errorf("topic %q not found", topicID)
-	}
-	if pinned {
-		f.GlobalPinnedTopics = prependUniqueString(f.GlobalPinnedTopics, topicID)
-	} else {
-		f.GlobalPinnedTopics = removeString(f.GlobalPinnedTopics, topicID)
-	}
-	if err := saveProjectsFile(f); err != nil {
+		f.GlobalPinnedTopics = next
+		return true, nil
+	}); err != nil {
 		return err
 	}
 	a.emitProjectTreeChanged()

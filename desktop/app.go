@@ -3316,24 +3316,23 @@ func migrateLegacyWorkspacesIntoProjects() {
 	if len(legacy) == 0 {
 		return
 	}
-	f := loadProjectsFile()
-	seen := make(map[string]bool, len(f.Projects)+len(legacy))
-	for _, p := range f.Projects {
-		seen[p.Root] = true
-	}
-	changed := false
-	for _, path := range legacy {
-		root := normalizeProjectRoot(path)
-		if root == "" || seen[root] {
-			continue
+	_ = updateProjectsFile(func(f *desktopProjectFile) (bool, error) {
+		seen := make(map[string]bool, len(f.Projects)+len(legacy))
+		for _, p := range f.Projects {
+			seen[p.Root] = true
 		}
-		f.Projects = append(f.Projects, desktopProject{Root: root})
-		seen[root] = true
-		changed = true
-	}
-	if changed {
-		_ = saveProjectsFile(f)
-	}
+		changed := false
+		for _, path := range legacy {
+			root := normalizeProjectRoot(path)
+			if root == "" || seen[root] {
+				continue
+			}
+			f.Projects = append(f.Projects, desktopProject{Root: root})
+			seen[root] = true
+			changed = true
+		}
+		return changed, nil
+	})
 }
 
 func workspaceName(path string) string {

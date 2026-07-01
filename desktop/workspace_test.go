@@ -187,6 +187,70 @@ func TestRecoverLegacyProjectSidebarRootsPreservesUpgradeProjects(t *testing.T) 
 	}
 }
 
+func TestProjectFileUpdatesSerializeReadModifyWrite(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	active := t.TempDir()
+	added := t.TempDir()
+
+	if err := saveProjectsFile(desktopProjectFile{Projects: []desktopProject{{Root: active, Title: "Active"}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	updateErr := make(chan error, 1)
+	go func() {
+		updateErr <- updateProjectsFile(func(f *desktopProjectFile) (bool, error) {
+			close(entered)
+			<-release
+			for i, project := range f.Projects {
+				if project.Root == normalizeProjectRoot(active) {
+					f.Projects[i].Title = "Active edited"
+					return true, nil
+				}
+			}
+			return false, nil
+		})
+	}()
+	<-entered
+
+	addErr := make(chan error, 1)
+	go func() {
+		addErr <- addProject(added, "Added")
+	}()
+	select {
+	case err := <-addErr:
+		t.Fatalf("addProject completed while another project update was in progress: %v", err)
+	case <-time.After(10 * time.Millisecond):
+	}
+	close(release)
+	if err := <-updateErr; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-addErr; err != nil {
+		t.Fatal(err)
+	}
+
+	projects := loadProjectsFile().Projects
+	if len(projects) != 2 {
+		t.Fatalf("project count = %d, want 2: %+v", len(projects), projects)
+	}
+	if projects[0].Root != normalizeProjectRoot(active) || projects[0].Title != "Active edited" {
+		t.Fatalf("active project was not preserved with edited title: %+v", projects)
+	}
+	if projects[1].Root != normalizeProjectRoot(added) || projects[1].Title != "Added" {
+		t.Fatalf("concurrent project add was lost: %+v", projects)
+	}
+
+	if err := addProject(active, ""); err != nil {
+		t.Fatal(err)
+	}
+	projects = loadProjectsFile().Projects
+	if len(projects) != 2 || projects[1].Root != normalizeProjectRoot(added) {
+		t.Fatalf("no-op addProject overwrote the added project: %+v", projects)
+	}
+}
+
 func TestDialogDefaultDirectoryFallsBackFromMissingWorkspace(t *testing.T) {
 	parent := t.TempDir()
 	missing := filepath.Join(parent, "deleted", "project")
