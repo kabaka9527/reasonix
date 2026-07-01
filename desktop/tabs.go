@@ -59,9 +59,10 @@ type WorkspaceTab struct {
 	ActivityStatus string // transient project-tree status for the in-flight turn
 
 	// Per-turn autosave per tab.
-	saveMu    sync.Mutex
-	saving    bool
-	saveAgain bool
+	saveMu       sync.Mutex
+	saving       bool
+	saveAgain    bool
+	saveFailures int
 
 	// closing is set under saveMu when the tab is being torn down. Once set,
 	// tabSnapshotLoop stops taking new snapshot work and CloseTab waits on
@@ -1761,6 +1762,21 @@ func (a *App) indexedBlankTopicIDLocked(scope, workspaceRoot string) string {
 // SetActiveTab switches the frontend's active tab. A no-op when tabID is
 // already active or unknown.
 func (a *App) SetActiveTab(tabID string) error {
+	a.mu.RLock()
+	_, ok := a.tabs[tabID]
+	active := a.tabs[a.activeTabID]
+	alreadyActive := a.activeTabID == tabID
+	a.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("tab %q not found", tabID)
+	}
+	if alreadyActive {
+		return nil
+	}
+	if err := a.snapshotTabForAction(active, "switching tabs"); err != nil {
+		return err
+	}
+
 	a.mu.Lock()
 	if _, ok := a.tabs[tabID]; !ok {
 		a.mu.Unlock()
@@ -1823,10 +1839,16 @@ func (a *App) CloseTab(tabID string) error {
 	// This closes a race window with DeleteSession: if Snapshot runs
 	// after delete(a.tabs, tabID), a concurrent DeleteSession can delete
 	// the session files, and the deferred Snapshot recreates them.
-	if tab.Ctrl != nil && !tab.ReadOnly {
-		_ = tab.Ctrl.Snapshot()
+	if err := snapshotTabDirect(tab); err != nil {
+		a.mu.Unlock()
+		slog.Warn("desktop: snapshot before closing tab failed", "tab", tabID, "err", err)
+		return fmt.Errorf("save current session before closing tab: %w", err)
 	}
-	saveTabSessionMetaForCurrentSession(tab)
+	if err := saveTabSessionMetaForCurrentSession(tab); err != nil {
+		a.mu.Unlock()
+		slog.Warn("desktop: session metadata before closing tab failed", "tab", tabID, "err", err)
+		return fmt.Errorf("save current session metadata before closing tab: %w", err)
+	}
 	if tab.Ctrl == nil || !tab.hasActiveRuntimeWork() {
 		a.markTabRemovedLocked(tab)
 	}
@@ -1897,10 +1919,16 @@ func (a *App) keepOnlyVisibleTab(tabID string) (TabMeta, error) {
 		if id == tabID {
 			continue
 		}
-		if tab.Ctrl != nil && !tab.ReadOnly {
-			_ = tab.Ctrl.Snapshot()
+		if err := snapshotTabDirect(tab); err != nil {
+			a.mu.Unlock()
+			slog.Warn("desktop: snapshot before pruning hidden tab failed", "tab", id, "err", err)
+			return TabMeta{}, fmt.Errorf("save current session before switching tabs: %w", err)
 		}
-		saveTabSessionMetaForCurrentSession(tab)
+		if err := saveTabSessionMetaForCurrentSession(tab); err != nil {
+			a.mu.Unlock()
+			slog.Warn("desktop: session metadata before pruning hidden tab failed", "tab", id, "err", err)
+			return TabMeta{}, fmt.Errorf("save current session metadata before switching tabs: %w", err)
+		}
 		if tab.Ctrl == nil || !tab.hasActiveRuntimeWork() {
 			a.markTabRemovedLocked(tab)
 		}
@@ -1952,8 +1980,8 @@ func (a *App) removeVisibleTabRuntime(tab *WorkspaceTab) {
 	if tab == nil {
 		return
 	}
-	if tab.Ctrl != nil && !tab.ReadOnly {
-		_ = tab.Ctrl.Snapshot()
+	if err := a.snapshotTab(tab); err != nil {
+		slog.Warn("desktop: snapshot before removing visible tab runtime failed", "tab", tab.ID, "err", err)
 	}
 	discardPath, discardTransientBlank := transientBlankSessionArtifactPath(tab)
 	if tab.Ctrl != nil && tab.hasActiveRuntimeWork() && a.detachSessionRuntime(tab) {
@@ -2591,6 +2619,19 @@ func (a *App) ctrlByTabID(tabID string) control.SessionAPI {
 
 // --- autosave per tab -------------------------------------------------------
 
+const maxTabSnapshotFailureRetries = 2
+
+func tabSnapshotRetryDelay(failures int) time.Duration {
+	switch {
+	case failures <= 1:
+		return 100 * time.Millisecond
+	case failures == 2:
+		return 250 * time.Millisecond
+	default:
+		return 500 * time.Millisecond
+	}
+}
+
 func (a *App) scheduleTabSnapshot(tabID string) {
 	a.mu.RLock()
 	tab := a.tabByEventSinkIDLocked(tabID)
@@ -2610,6 +2651,7 @@ func (a *App) scheduleTabSnapshot(tabID string) {
 		return
 	}
 	tab.saving = true
+	tab.saveFailures = 0
 	go a.tabSnapshotLoop(tab)
 }
 
@@ -2641,6 +2683,7 @@ func (a *App) quiesceTabAutosave(tab *WorkspaceTab) {
 func (a *App) tabSnapshotLoop(tab *WorkspaceTab) {
 	defer a.recoverToPending("tabSnapshotLoop")
 	for {
+		var snapshotErr error
 		a.mu.RLock()
 		ctrl := tab.Ctrl
 		a.mu.RUnlock()
@@ -2649,11 +2692,19 @@ func (a *App) tabSnapshotLoop(tab *WorkspaceTab) {
 				if !a.maybeAutoTitleTopic(tab) {
 					a.emitProjectTreeChanged()
 				}
+			} else {
+				snapshotErr = err
+				a.reportTabSnapshotError(tab, "autosave", err)
 			}
 		}
 		tab.saveMu.Lock()
 		if tab.saveCond == nil {
 			tab.saveCond = sync.NewCond(&tab.saveMu)
+		}
+		if snapshotErr == nil {
+			tab.saveFailures = 0
+		} else {
+			tab.saveFailures++
 		}
 		if tab.closing {
 			// Tab is being torn down: stop without picking up saveAgain work.
@@ -2665,6 +2716,12 @@ func (a *App) tabSnapshotLoop(tab *WorkspaceTab) {
 		if tab.saveAgain {
 			tab.saveAgain = false
 			tab.saveMu.Unlock()
+			continue
+		}
+		if snapshotErr != nil && tab.saveFailures <= maxTabSnapshotFailureRetries {
+			delay := tabSnapshotRetryDelay(tab.saveFailures)
+			tab.saveMu.Unlock()
+			time.Sleep(delay)
 			continue
 		}
 		tab.saving = false
@@ -5664,18 +5721,18 @@ func tabSessionMetaPathForCurrentSession(tab *WorkspaceTab) string {
 	return ""
 }
 
-func saveTabSessionMetaForCurrentSession(tab *WorkspaceTab) {
+func saveTabSessionMetaForCurrentSession(tab *WorkspaceTab) error {
 	if tab == nil || tab.ReadOnly {
-		return
+		return nil
 	}
 	if _, discard := transientBlankSessionArtifactPath(tab); discard {
-		return
+		return nil
 	}
 	path := tabSessionMetaPathForCurrentSession(tab)
 	if path == "" {
-		return
+		return nil
 	}
-	_ = saveTabSessionMeta(tab, path)
+	return saveTabSessionMeta(tab, path)
 }
 
 type tabSessionProfile struct {

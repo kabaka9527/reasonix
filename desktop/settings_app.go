@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -873,7 +874,9 @@ func (a *App) rebuild() error {
 		if prevPath == "" {
 			prevPath = tab.Ctrl.SessionPath()
 		}
-		_ = a.snapshotTab(tab)
+		if err := a.snapshotTabForAction(tab, "rebuilding settings"); err != nil {
+			return err
+		}
 		carried = tab.Ctrl.History()
 		tab.Ctrl.Close()
 	}
@@ -1408,6 +1411,14 @@ func (a *App) removeBuiltInProviderAccessAndRetargetTabs(name string) error {
 			return err
 		}
 	}
+	for _, item := range affected {
+		if item.ctrl != nil && !item.readOnly {
+			if err := item.ctrl.Snapshot(); err != nil {
+				slog.Warn("desktop: snapshot before removing provider access failed", "tab", item.id, "provider", name, "err", err)
+				return fmt.Errorf("save current session before removing provider access: %w", err)
+			}
+		}
+	}
 	retargetProviderReferences(cfg, name, fallbackRef)
 	removeProviderAccess(cfg, name)
 	if err := cfg.SaveTo(path); err != nil {
@@ -1418,9 +1429,6 @@ func (a *App) removeBuiltInProviderAccessAndRetargetTabs(name string) error {
 	}
 	for _, item := range affected {
 		if item.ctrl != nil {
-			if !item.readOnly {
-				_ = item.ctrl.Snapshot()
-			}
 			item.ctrl.Close()
 		}
 	}
@@ -1491,6 +1499,14 @@ func (a *App) deleteProviderAndRetargetTabs(name string) error {
 			return err
 		}
 	}
+	for _, item := range affected {
+		if item.ctrl != nil && !item.readOnly {
+			if err := item.ctrl.Snapshot(); err != nil {
+				slog.Warn("desktop: snapshot before deleting provider failed", "tab", item.id, "provider", name, "err", err)
+				return fmt.Errorf("save current session before deleting provider: %w", err)
+			}
+		}
+	}
 	if err := cfg.RemoveProvider(name); err != nil {
 		return err
 	}
@@ -1504,9 +1520,6 @@ func (a *App) deleteProviderAndRetargetTabs(name string) error {
 	}
 	for _, item := range affected {
 		if item.ctrl != nil {
-			if !item.readOnly {
-				_ = item.ctrl.Snapshot()
-			}
 			item.ctrl.Close()
 		}
 	}

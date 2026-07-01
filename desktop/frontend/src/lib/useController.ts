@@ -1738,6 +1738,7 @@ export function useController() {
   // Tab management: switch preserves per-tab state; open creates it.
   const switchTab = useCallback(async (tabId: string, optimisticTab?: TabMeta): Promise<TabMeta[] | undefined> => {
     const startedAt = Date.now();
+    const previousTabId = activeTabIdRef.current;
     const targetSessionPath = optimisticTab?.sessionPath ?? statesRef.current.get(tabId)?.meta?.sessionPath;
     const preserveCachedHistory = hasReusableCachedTranscript(statesRef.current.get(tabId), targetSessionPath);
     addBreadcrumb("tab.switch", `click ${tabId}`);
@@ -1758,6 +1759,11 @@ export function useController() {
       .catch((err) => {
         dispatchTo(tabId, { type: "backend_activation_done" });
         dispatchTo(tabId, { type: "hydrate_error", reason: "switch-tab", error: errorMessage(err) });
+        if (previousTabId && activeTabIdRef.current === tabId) {
+          setActiveTabId(previousTabId);
+          activeTabIdRef.current = previousTabId;
+          addBreadcrumb("tab.switch", `set-active-failed-reverted ${tabId} -> ${previousTabId} ms=${Date.now() - startedAt}`);
+        }
         return false;
       });
     trackBackendActivation(tabId, backendActivation);

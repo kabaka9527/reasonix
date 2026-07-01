@@ -635,7 +635,9 @@ func (a *App) snapshotAllTabs() {
 	tabs := a.runtimeTabsLocked()
 	a.mu.RUnlock()
 	for _, t := range tabs {
-		_ = a.snapshotTab(t)
+		if err := a.snapshotTab(t); err != nil {
+			slog.Warn("desktop: snapshot all tabs failed", "tab", t.ID, "err", err)
+		}
 	}
 }
 
@@ -657,7 +659,9 @@ func (a *App) shutdown(context.Context) {
 	a.mu.RUnlock()
 	for _, t := range tabs {
 		if t.Ctrl != nil {
-			_ = a.snapshotTab(t)
+			if err := a.snapshotTab(t); err != nil {
+				slog.Warn("desktop: shutdown snapshot failed", "tab", t.ID, "err", err)
+			}
 			t.Ctrl.Close()
 		}
 	}
@@ -913,6 +917,43 @@ func (a *App) snapshotTab(tab *WorkspaceTab) error {
 		return nil
 	}
 	return ctrl.Snapshot()
+}
+
+func snapshotTabDirect(tab *WorkspaceTab) error {
+	if tab == nil || tab.ReadOnly || tab.Ctrl == nil {
+		return nil
+	}
+	return tab.Ctrl.Snapshot()
+}
+
+func (a *App) snapshotTabForAction(tab *WorkspaceTab, action string) error {
+	if err := a.snapshotTab(tab); err != nil {
+		a.reportTabSnapshotError(tab, action, err)
+		if strings.TrimSpace(action) == "" {
+			return fmt.Errorf("save current session: %w", err)
+		}
+		return fmt.Errorf("save current session before %s: %w", action, err)
+	}
+	return nil
+}
+
+func (a *App) reportTabSnapshotError(tab *WorkspaceTab, action string, err error) {
+	if err == nil {
+		return
+	}
+	tabID := ""
+	if tab != nil {
+		tabID = tab.ID
+	}
+	slog.Warn("desktop: session snapshot failed", "tab", tabID, "action", action, "err", err)
+	if tab == nil || tab.sink == nil {
+		return
+	}
+	prefix := "Session autosave failed"
+	if strings.TrimSpace(action) != "" && action != "autosave" {
+		prefix = "Session save failed before " + action
+	}
+	tab.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: prefix + ": " + err.Error()})
 }
 
 func (a *App) reconciledSessionPathForTab(tab *WorkspaceTab) string {
@@ -2722,9 +2763,13 @@ func (a *App) rebindTabToLoadedSessionPath(tab *WorkspaceTab, sessionPath string
 		return nil
 	}
 
-	_ = a.snapshotTab(tab) // persist writable sessions before switching the view.
+	if err := a.snapshotTabForAction(tab, "switching sessions"); err != nil {
+		return err
+	}
 	if oldPath := a.reconciledSessionPathForTab(tab); oldPath != "" {
-		_ = saveTabSessionMeta(tab, oldPath)
+		if err := saveTabSessionMeta(tab, oldPath); err != nil {
+			return fmt.Errorf("save current session metadata before switching sessions: %w", err)
+		}
 	}
 	if tab.hasActiveRuntimeWork() {
 		if !a.detachRuntimeForReplacement(tab) {
@@ -3345,8 +3390,10 @@ func (a *App) RemoveWorkspace(dir string) error {
 		if !tabInWorkspace(tab, dir) {
 			continue
 		}
-		if tab.Ctrl != nil && !tab.ReadOnly {
-			_ = tab.Ctrl.Snapshot()
+		if err := snapshotTabDirect(tab); err != nil {
+			a.mu.Unlock()
+			slog.Warn("desktop: snapshot before removing workspace failed", "tab", id, "workspace", dir, "err", err)
+			return fmt.Errorf("save current session before removing workspace: %w", err)
 		}
 		a.markTabRemovedLocked(tab)
 		closeTabs = append(closeTabs, tab)
@@ -6466,7 +6513,9 @@ func (a *App) SetModelForTab(tabID, name string) error {
 		if prevPath == "" {
 			prevPath = tab.Ctrl.SessionPath()
 		}
-		_ = a.snapshotTab(tab)
+		if err := a.snapshotTabForAction(tab, "changing model"); err != nil {
+			return err
+		}
 		carried = tab.Ctrl.History()
 		tab.Ctrl.Close()
 	}
@@ -6570,7 +6619,9 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 		if prevPath == "" {
 			prevPath = tab.Ctrl.SessionPath()
 		}
-		_ = a.snapshotTab(tab)
+		if err := a.snapshotTabForAction(tab, "changing effort"); err != nil {
+			return err
+		}
 		carried = tab.Ctrl.History()
 		tab.Ctrl.Close()
 	}
@@ -6647,7 +6698,9 @@ func (a *App) SetTokenModeForTab(tabID, mode string) error {
 		if prevPath == "" {
 			prevPath = oldCtrl.SessionPath()
 		}
-		_ = a.snapshotTab(tab)
+		if err := a.snapshotTabForAction(tab, "changing token mode"); err != nil {
+			return err
+		}
 		carried = oldCtrl.History()
 	}
 	sharedHost := a.lookupSharedHost(tab.SharedHostKey)

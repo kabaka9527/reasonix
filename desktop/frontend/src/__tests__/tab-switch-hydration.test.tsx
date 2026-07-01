@@ -141,6 +141,7 @@ let contextDCalls = 0;
 let holdNextContextForD = false;
 let setActiveCalls = 0;
 let newSessionCalls = 0;
+let failSetActiveFor = "";
 const runningTabs = new Set<string>();
 const tabsById = new Map([tabA, tabB, tabC, tabD].map((tab) => [tab.id, tab]));
 const eventHandlers: Array<(e: WireEvent) => void> = [];
@@ -198,6 +199,7 @@ window.go = {
       SetActiveTab: async (tabID: string) => {
         setActiveCalls += 1;
         if (tabID === "tab-b") await setActiveBGate.promise;
+        if (tabID === failSetActiveFor) throw new Error("persist failed");
         backendActiveId = tabID;
       },
       SubmitToTab: async (tabID: string) => {
@@ -276,6 +278,17 @@ await act(async () => {
 eq(controller?.activeTabId, "tab-a", "late history for another tab does not change the active tab");
 ok(controller?.state.items.some((item) => item.kind === "user" && item.text === "cached A") ?? false, "late history for another tab does not overwrite the active transcript");
 ok(!(controller?.state.items.some((item) => item.kind === "user" && item.text === "late B") ?? false), "late history stays scoped to its tab state");
+
+failSetActiveFor = "tab-b";
+const historyCallsBeforeFailedSwitch = historyCalls.length;
+await act(async () => {
+  await controller?.switchTab("tab-b", tabB);
+  await flushPromises();
+});
+eq(controller?.activeTabId, "tab-a", "failed backend tab switch reverts to the previous active tab");
+ok(controller?.state.items.some((item) => item.kind === "user" && item.text === "cached A") ?? false, "failed backend tab switch keeps the previous transcript visible");
+eq(historyCalls.length, historyCallsBeforeFailedSwitch, "failed backend tab switch does not hydrate the rejected target");
+failSetActiveFor = "";
 
 await act(async () => {
   for (const handler of eventHandlers) handler({ kind: "phase", text: "Planner is thinking", tabId: "tab-a" });
