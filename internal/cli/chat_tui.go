@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -1428,6 +1429,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	beforeInput := m.input.Value()
 	var ic tea.Cmd
 	m.input, ic = m.input.Update(msg)
 	cmds = append(cmds, ic)
@@ -1436,8 +1438,23 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if _, ok := msg.(tea.KeyPressMsg); ok {
 		m.updateCompletion()
 	}
+	if shouldClearWideInputChange(beforeInput, m.input.Value()) {
+		cmds = append(cmds, tea.ClearScreen)
+	}
 
 	return m, finalize(m, cmds)
+}
+
+var clearWideInputChanges = runtime.GOOS == "windows"
+
+func shouldClearWideInputChange(before, after string) bool {
+	return clearWideInputChanges &&
+		before != after &&
+		(hasWideInputCells(before) || hasWideInputCells(after))
+}
+
+func hasWideInputCells(s string) bool {
+	return s != "" && visibleWidth(s) != utf8.RuneCountInString(s)
 }
 
 // finalize drains the committed-line queue and batches the turn's commands. In
