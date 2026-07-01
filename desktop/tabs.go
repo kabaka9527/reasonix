@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -1857,6 +1858,7 @@ func (a *App) CloseTab(tabID string) error {
 	a.mu.Unlock()
 
 	// Tear down outside the lock.
+	discardPath, discardTransientBlank := transientBlankSessionArtifactPath(tab)
 	if tab.Ctrl != nil {
 		if tab.hasActiveRuntimeWork() && a.detachSessionRuntime(tab) {
 			// Detached runtimes keep running and must keep saving: do not
@@ -1874,6 +1876,9 @@ func (a *App) CloseTab(tabID string) error {
 	}
 	if tab.sink != nil {
 		tab.sink.clearContext() // stop further emissions (nil ctx -> Emit becomes no-op)
+	}
+	if discardTransientBlank {
+		discardTransientBlankSessionArtifacts(discardPath)
 	}
 	return nil
 }
@@ -1948,11 +1953,38 @@ func (a *App) removeVisibleTabRuntime(tab *WorkspaceTab) {
 	if tab.Ctrl != nil && !tab.ReadOnly {
 		_ = tab.Ctrl.Snapshot()
 	}
+	discardPath, discardTransientBlank := transientBlankSessionArtifactPath(tab)
 	if tab.Ctrl != nil && tab.hasActiveRuntimeWork() && a.detachSessionRuntime(tab) {
 		return
 	}
 	a.markTabRemoved(tab)
 	a.closeTabRuntime(tab)
+	if discardTransientBlank {
+		discardTransientBlankSessionArtifacts(discardPath)
+	}
+}
+
+func transientBlankSessionArtifactPath(tab *WorkspaceTab) (string, bool) {
+	if tab == nil || tab.ReadOnly || strings.TrimSpace(tab.TopicID) != "" || tab.hasActiveRuntimeWork() {
+		return "", false
+	}
+	if strings.TrimSpace(tab.SessionPath) == "" || !blankTabSessionPathHasNoContent(tab) {
+		return "", false
+	}
+	path, ok := pinnedTabSessionPath(tabSessionDir(tab), tab.SessionPath)
+	if !ok {
+		return "", false
+	}
+	return path, true
+}
+
+func discardTransientBlankSessionArtifacts(path string) {
+	if strings.TrimSpace(path) == "" {
+		return
+	}
+	if err := removeDesktopSessionArtifacts(path); err != nil {
+		slog.Warn("desktop: discard transient blank session artifacts failed", "path", path, "err", err)
+	}
 }
 
 func (a *App) markTabRemoved(tab *WorkspaceTab) {

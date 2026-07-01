@@ -3201,8 +3201,8 @@ func TestDeleteLastTopicSessionFallbackDoesNotReuseDeletedTopic(t *testing.T) {
 		if tab.TopicID == topicID {
 			t.Fatalf("fallback tab %q reused deleted topic %q", id, topicID)
 		}
-		if strings.TrimSpace(tab.TopicID) == "" {
-			t.Fatalf("fallback tab %q has empty topic ID", id)
+		if strings.TrimSpace(tab.TopicID) != "" {
+			t.Fatalf("fallback tab %q topic ID = %q, want transient unindexed blank", id, tab.TopicID)
 		}
 	}
 	trashPath := filepath.Join(dir, sessionTrashDir, "delete-last.jsonl", "delete-last.jsonl")

@@ -739,6 +739,7 @@ func (a *App) SubmitToTab(tabID, input string) error {
 	if ctrl == nil {
 		return workspaceNotReadyErr(tab)
 	}
+	a.ensureTabTopicIndexedForUserTurn(tab)
 	ctrl.SubmitDisplay(input, input)
 	return nil
 }
@@ -755,6 +756,7 @@ func (a *App) submitUserTurnToTab(tabID, input string) bool {
 	if ctrl == nil {
 		return false
 	}
+	a.ensureTabTopicIndexedForUserTurn(tab)
 	ctrl.SubmitUserTurn(input, input)
 	return true
 }
@@ -780,6 +782,7 @@ func (a *App) RunShellForTab(tabID, command string) error {
 	if ctrl == nil {
 		return workspaceNotReadyErr(tab)
 	}
+	a.ensureTabTopicIndexedForUserTurn(tab)
 	ctrl.RunShell(command)
 	return nil
 }
@@ -805,6 +808,7 @@ func (a *App) SubmitDisplayToTab(tabID, display, input string) error {
 	if ctrl == nil {
 		return workspaceNotReadyErr(tab)
 	}
+	a.ensureTabTopicIndexedForUserTurn(tab)
 	ctrl.SubmitDisplay(display, input)
 	return nil
 }
@@ -824,6 +828,7 @@ func (a *App) SubmitEditedDisplayToTab(tabID, display, input, original string) e
 	if ctrl == nil {
 		return workspaceNotReadyErr(tab)
 	}
+	a.ensureTabTopicIndexedForUserTurn(tab)
 	ctrl.SubmitEditedDisplay(display, input, original)
 	return nil
 }
@@ -1309,6 +1314,45 @@ func (a *App) assignFreshSessionTopic(tab *WorkspaceTab) {
 	// "new session failed" error to the frontend.
 	_ = ensureTopicIndexed(scope, workspaceRoot, topicID, defaultTopicTitle, topicTitleSourceAuto)
 	_ = setTopicCreatedAt(topicTitleRoot(scope, workspaceRoot), topicID, time.Now().UnixMilli())
+}
+
+func (a *App) ensureTabTopicIndexedForUserTurn(tab *WorkspaceTab) {
+	if tab == nil || strings.TrimSpace(tab.TopicID) != "" {
+		return
+	}
+	scope := tab.Scope
+	workspaceRoot := tab.WorkspaceRoot
+	if strings.TrimSpace(scope) == "global" {
+		scope = "global"
+		workspaceRoot = ""
+	} else {
+		scope = "project"
+		workspaceRoot = normalizeProjectRoot(workspaceRoot)
+	}
+	topicID := newTopicID()
+	a.mu.Lock()
+	if current := a.tabs[tab.ID]; current == tab {
+		if strings.TrimSpace(tab.TopicID) != "" {
+			a.mu.Unlock()
+			return
+		}
+		tab.TopicID = topicID
+		tab.TopicTitle = defaultTopicTitle
+		a.saveTabsLocked()
+	} else {
+		if strings.TrimSpace(tab.TopicID) != "" {
+			a.mu.Unlock()
+			return
+		}
+		tab.TopicID = topicID
+		tab.TopicTitle = defaultTopicTitle
+	}
+	a.mu.Unlock()
+
+	_ = ensureTopicIndexed(scope, workspaceRoot, topicID, defaultTopicTitle, topicTitleSourceAuto)
+	_ = setTopicCreatedAt(topicTitleRoot(scope, workspaceRoot), topicID, time.Now().UnixMilli())
+	a.persistTabSessionPath(tab, tab.currentSessionPath())
+	a.emitProjectTreeChanged()
 }
 
 func messagesHaveConversationContent(messages []provider.Message) bool {
@@ -2315,11 +2359,7 @@ func (a *App) openFallbackRuntime(target fallbackRuntimeTarget) error {
 		root = ""
 	}
 	if topicID == "" {
-		topic, err := a.CreateTopic(scope, root, "")
-		if err != nil {
-			return err
-		}
-		topicID = topic.ID
+		return a.openTransientBlankRuntime(scope, root)
 	}
 	var err error
 	if a.singleSurfaceLayoutEnabled() {
@@ -2330,6 +2370,56 @@ func (a *App) openFallbackRuntime(target fallbackRuntimeTarget) error {
 		_, err = a.OpenProjectTab(root, topicID)
 	}
 	return err
+}
+
+func (a *App) openTransientBlankRuntime(scope, workspaceRoot string) error {
+	scope = strings.TrimSpace(scope)
+	if scope != "project" {
+		scope = "global"
+	}
+	actualRoot := ""
+	if scope == "project" {
+		workspaceRoot = normalizeProjectRoot(workspaceRoot)
+		if workspaceRoot == "" {
+			return fmt.Errorf("workspaceRoot is required")
+		}
+		saveWorkspace(workspaceRoot)
+		_ = addProject(workspaceRoot, "")
+		actualRoot = workspaceRoot
+	} else {
+		actualRoot = globalWorkspaceRoot()
+		if err := os.MkdirAll(actualRoot, 0o755); err != nil {
+			return fmt.Errorf("create global workspace: %w", err)
+		}
+	}
+
+	model, toolApprovalMode := desktopNewSessionDefaults()
+	sessionPath, err := createEmptySessionFile(desktopSessionDir(actualRoot), model)
+	if err != nil {
+		return err
+	}
+	tab := &WorkspaceTab{
+		Scope:            scope,
+		WorkspaceRoot:    actualRoot,
+		TopicTitle:       defaultTopicTitle,
+		SessionPath:      sessionPath,
+		model:            model,
+		tokenMode:        boot.TokenModeFull,
+		mode:             tabModeFromAxes(false, toolApprovalMode == control.ToolApprovalYolo),
+		toolApprovalMode: toolApprovalMode,
+		disabledMCP:      map[string]ServerView{},
+	}
+	a.mu.Lock()
+	tab.ID = a.newUniqueTabIDLocked()
+	tab.sink = &tabEventSink{tabID: tab.ID, app: a}
+	a.tabs[tab.ID] = tab
+	a.tabOrder = append(a.tabOrder, tab.ID)
+	a.activeTabID = tab.ID
+	a.saveTabsLocked()
+	a.mu.Unlock()
+
+	a.startTabControllerBuild(tab)
+	return nil
 }
 
 func (a *App) beginDestroySessionJobs(dir, sessionPath string) []control.SessionDestroyHandle {
