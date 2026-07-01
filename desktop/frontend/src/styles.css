@@ -7735,6 +7735,14 @@ body > .mermaid-diagram--fullscreen {
   width: 100%;
   max-width: none;
 }
+.workspace-preview__body--code .code-block__wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  width: 100%;
+  max-width: none;
+}
 .workspace-preview__body--code .code {
   flex: 1 1 auto;
   min-width: 0;
