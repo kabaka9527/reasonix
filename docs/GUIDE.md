@@ -226,6 +226,22 @@ model list manually.
 **Full URL** still uses the OpenAI-compatible chat request body. It does not
 switch the request schema to the OpenAI Responses API.
 
+Some OpenAI-compatible gateways require non-standard top-level request body
+fields. Add them with `extra_body` on the provider entry:
+
+```toml
+[[providers]]
+name        = "spark"
+kind        = "openai"
+base_url    = "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2"
+models      = ["xopglm52"]
+api_key_env = "SPARK_API_KEY"
+extra_body  = { enable_thinking = true }
+```
+
+`extra_body` is merged into the chat JSON request body. Reasonix keeps core
+fields such as `model`, `messages`, `tools`, and `stream` under its own control.
+
 ## Keyboard shortcuts
 
 Shortcuts are documented by client because users usually look for the keys that

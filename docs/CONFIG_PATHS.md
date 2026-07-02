@@ -117,6 +117,11 @@ complete chat request URL, set `chat_url`; Reasonix will use it directly and wil
 not append `/chat/completions`. If model discovery needs a separate address, set
 `models_url`.
 
+If a gateway requires vendor-specific top-level request body fields, set
+`extra_body`, for example `extra_body = { enable_thinking = true }`. These values
+are merged into the OpenAI-compatible chat JSON request body without allowing
+core fields such as `model`, `messages`, `tools`, or `stream` to be overridden.
+
 ## Global `.env`
 
 `<Reasonix home>/.env` is the single runtime source for provider API keys saved

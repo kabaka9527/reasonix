@@ -841,6 +841,13 @@ func TestRenderTOMLRoundTripsProviderHeadersAndModelOverrides(t *testing.T) {
 			"HTTP-Referer": "https://app.example",
 			"X-Title":      "Reasonix",
 		},
+		ExtraBody: map[string]any{
+			"enable_thinking": true,
+			"top_p":           0.8,
+			"metadata": map[string]any{
+				"mode": "fast",
+			},
+		},
 		ModelOverrides: map[string]ProviderModelOverride{
 			"deepseek-v4-flash": {
 				ReasoningProtocol: ReasoningProtocolDeepSeek,
@@ -854,6 +861,9 @@ func TestRenderTOMLRoundTripsProviderHeadersAndModelOverrides(t *testing.T) {
 	rendered := RenderTOML(orig)
 	if !strings.Contains(rendered, `headers     = { HTTP-Referer = "https://app.example", X-Title = "Reasonix" }`) {
 		t.Fatalf("rendered TOML missing headers:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, `extra_body`) || !strings.Contains(rendered, `"enable_thinking" = true`) {
+		t.Fatalf("rendered TOML missing extra_body:\n%s", rendered)
 	}
 	if !strings.Contains(rendered, `model_overrides`) || !strings.Contains(rendered, `reasoning_protocol = "deepseek"`) {
 		t.Fatalf("rendered TOML missing model overrides:\n%s", rendered)
@@ -869,6 +879,13 @@ func TestRenderTOMLRoundTripsProviderHeadersAndModelOverrides(t *testing.T) {
 	}
 	if p.Headers["HTTP-Referer"] != "https://app.example" || p.Headers["X-Title"] != "Reasonix" {
 		t.Fatalf("headers after round trip = %+v", p.Headers)
+	}
+	if p.ExtraBody["enable_thinking"] != true || p.ExtraBody["top_p"] != 0.8 {
+		t.Fatalf("extra_body after round trip = %+v", p.ExtraBody)
+	}
+	metadata, ok := p.ExtraBody["metadata"].(map[string]any)
+	if !ok || metadata["mode"] != "fast" {
+		t.Fatalf("extra_body metadata after round trip = %+v", p.ExtraBody["metadata"])
 	}
 	ov := p.ModelOverrides["deepseek-v4-flash"]
 	if ov.ReasoningProtocol != ReasoningProtocolDeepSeek || !reflect.DeepEqual(ov.SupportedEfforts, []string{"high", "max"}) || ov.DefaultEffort != "high" || ov.Vision == nil || *ov.Vision {

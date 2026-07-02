@@ -971,7 +971,8 @@ type ProviderEntry struct {
 	ModelsURL      string            `toml:"models_url"` // auto-fetch models from this URL on startup
 	Default        string            `toml:"default"`    // default model when Models is set (else Models[0])
 	APIKeyEnv      string            `toml:"api_key_env"`
-	Headers        map[string]string `toml:"headers"` // optional extra HTTP headers for OpenAI-compatible gateways; secrets should stay in api_key_env.
+	Headers        map[string]string `toml:"headers"`    // optional extra HTTP headers for OpenAI-compatible gateways; secrets should stay in api_key_env.
+	ExtraBody      map[string]any    `toml:"extra_body"` // optional extra top-level JSON request body fields for OpenAI-compatible gateways.
 	resolvedAPIKey string
 	resolvedSource CredentialSource
 	BalanceURL     string                       `toml:"balance_url"` // optional; a provider-specific wallet-balance endpoint (DeepSeek: https://api.deepseek.com/user/balance). Empty = no balance readout.

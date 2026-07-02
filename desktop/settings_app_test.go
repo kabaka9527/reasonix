@@ -443,6 +443,7 @@ func TestSaveProviderPreservesHiddenProviderFields(t *testing.T) {
 		Thinking:     "adaptive",
 		Effort:       "high",
 		VisionDetail: "low",
+		ExtraBody:    map[string]any{"enable_thinking": true},
 		NoProxy:      true,
 	}}
 	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
@@ -484,6 +485,9 @@ func TestSaveProviderPreservesHiddenProviderFields(t *testing.T) {
 	}
 	if got.VisionDetail != "low" {
 		t.Fatalf("vision_detail = %q, want low", got.VisionDetail)
+	}
+	if got.ExtraBody["enable_thinking"] != true {
+		t.Fatalf("extra_body = %+v, want enable_thinking=true", got.ExtraBody)
 	}
 	if !got.NoProxy {
 		t.Fatal("no_proxy = false, want preserved true")

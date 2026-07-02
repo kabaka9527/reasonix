@@ -225,6 +225,64 @@ func TestStreamSendsCustomHeaders(t *testing.T) {
 	}
 }
 
+func TestStreamSendsExtraBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "read body", http.StatusBadRequest)
+			return
+		}
+		var req map[string]any
+		if err := json.Unmarshal(body, &req); err != nil {
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		if req["enable_thinking"] != true {
+			http.Error(w, "extra enable_thinking missing", http.StatusBadRequest)
+			return
+		}
+		if got, ok := req["top_p"].(float64); !ok || got != 0.7 {
+			http.Error(w, "extra top_p missing", http.StatusBadRequest)
+			return
+		}
+		if req["model"] != "model-a" || req["stream"] != true {
+			http.Error(w, "reserved fields were overwritten", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	p, err := New(provider.Config{
+		Name:    "custom",
+		BaseURL: srv.URL,
+		Model:   "model-a",
+		APIKey:  "real-key",
+		Extra: map[string]any{"extra_body": map[string]any{
+			"enable_thinking": true,
+			"top_p":           0.7,
+			"model":           "wrong",
+			"stream":          false,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ch, err := p.Stream(context.Background(), provider.Request{
+		Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for chunk := range ch {
+		if chunk.Type == provider.ChunkError {
+			t.Fatalf("stream error: %v", chunk.Err)
+		}
+	}
+}
+
 // TestBuildRequestAlwaysSerializesContent guards the DeepSeek 400 regression:
 // DeepSeek rejects a message missing the `content` field, so every message must
 // serialize one. A pure tool_calls assistant turn carries null (OpenAI-spec,
