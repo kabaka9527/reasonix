@@ -58,6 +58,7 @@ export function AppChrome({
 }: AppChromeProps) {
   const t = useT();
   const darwinChrome = platform === "darwin";
+  const titlebarDragRail = darwinChrome || platform === "windows";
   const chromeClassName = [
     "app-chrome",
     "app-chrome--tabs",
@@ -90,7 +91,7 @@ export function AppChrome({
           <span />
         </div>
       )}
-      {darwinChrome && <span className="app-chrome__drag-rail" aria-hidden="true" />}
+      {titlebarDragRail && <span className="app-chrome__drag-rail" aria-hidden="true" />}
       <button
         className={[
           "app-chrome__panel-toggle",

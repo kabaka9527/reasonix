@@ -16931,18 +16931,28 @@ body > .mermaid-diagram--fullscreen {
   --wails-draggable: no-drag;
 }
 
-.app--darwin .app-chrome--tabs .app-chrome__drag-rail {
+.app--darwin .app-chrome--tabs .app-chrome__drag-rail,
+.app--windows-frameless:not(.app--workbench):not(.app--creation) .app-chrome--native-tabs .app-chrome__drag-rail {
   display: block;
   position: absolute;
   top: 0;
-  left: calc(var(--chrome-left-toggle-offset) + var(--chrome-toggle-size) + 12px);
-  right: calc(var(--chrome-toggle-size) + var(--chrome-toggle-size) + 20px);
   z-index: var(--z-local-handle);
   height: 10px;
   --wails-draggable: drag;
 }
 
-.app--darwin .app-chrome--tabs .app-chrome__drag-rail::before {
+.app--darwin .app-chrome--tabs .app-chrome__drag-rail {
+  left: calc(var(--chrome-left-toggle-offset) + var(--chrome-toggle-size) + 12px);
+  right: calc(var(--chrome-toggle-size) + var(--chrome-toggle-size) + 20px);
+}
+
+.app--windows-frameless:not(.app--workbench):not(.app--creation) .app-chrome--native-tabs .app-chrome__drag-rail {
+  left: calc(var(--chrome-toggle-size) + 16px);
+  right: calc(var(--windows-window-controls-safe) + var(--chrome-toggle-size) + 18px);
+}
+
+.app--darwin .app-chrome--tabs .app-chrome__drag-rail::before,
+.app--windows-frameless:not(.app--workbench):not(.app--creation) .app-chrome--native-tabs .app-chrome__drag-rail::before {
   content: "";
   position: absolute;
   top: 3px;
@@ -16960,11 +16970,13 @@ body > .mermaid-diagram--fullscreen {
     opacity 0.12s ease;
 }
 
-.app--darwin .app-chrome--tabs .app-chrome__drag-rail:hover::before {
+.app--darwin .app-chrome--tabs .app-chrome__drag-rail:hover::before,
+.app--windows-frameless:not(.app--workbench):not(.app--creation) .app-chrome--native-tabs .app-chrome__drag-rail:hover::before {
   opacity: 0.72;
 }
 
-.app--darwin .app-chrome--tabs .app-chrome__drag-rail:active::before {
+.app--darwin .app-chrome--tabs .app-chrome__drag-rail:active::before,
+.app--windows-frameless:not(.app--workbench):not(.app--creation) .app-chrome--native-tabs .app-chrome__drag-rail:active::before {
   background: var(--accent);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 68%, transparent);
   opacity: 0.95;

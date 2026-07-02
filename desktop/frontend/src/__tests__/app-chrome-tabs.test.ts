@@ -70,6 +70,12 @@ ok(
 );
 
 ok(
+  /const titlebarDragRail = darwinChrome \|\| platform === "windows";/.test(appChromeSource) &&
+    /\{titlebarDragRail && <span className="app-chrome__drag-rail"/.test(appChromeSource),
+  "AppChrome exposes the classic drag rail on macOS and Windows",
+);
+
+ok(
   /const WORKSPACE_PANEL_DEFAULT_OPEN = false;/.test(layoutStoreSource) &&
     /workspacePanelOpen:\s*WORKSPACE_PANEL_DEFAULT_OPEN/.test(layoutStoreSource),
   "right dock starts collapsed on launch",
@@ -275,6 +281,13 @@ for (const selector of [
     `${selector} stays fixed outside the Windows window controls`,
   );
 }
+
+ok(
+  finalDeclaration(".app--windows-frameless:not(.app--workbench):not(.app--creation) .app-chrome--native-tabs .app-chrome__drag-rail", "--wails-draggable") === "drag" &&
+    finalDeclaration(".app--windows-frameless:not(.app--workbench):not(.app--creation) .app-chrome--native-tabs .app-chrome__drag-rail", "right")?.includes("--windows-window-controls-safe") &&
+    finalDeclaration(".app--windows .app-chrome--native-tabs .tabbar", "--wails-draggable") === "no-drag",
+  "Windows classic chrome keeps a draggable rail while tabs remain clickable",
+);
 
 for (const selector of [
   ".layout--workbench-chrome-hidden",
