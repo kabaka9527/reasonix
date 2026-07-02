@@ -1818,7 +1818,7 @@ export function PluginsSettingsPage() {
 						{t("caps.pluginPreview")}
 					</button>
 					<button className="btn btn--primary btn--small" type="button" disabled={!canPlan} onClick={install}>
-						{installMode === "local" ? t("caps.pluginAddLocal") : t("caps.pluginInstall")}
+						{t("caps.pluginInstall")}
 					</button>
 				</div>
 			</div>

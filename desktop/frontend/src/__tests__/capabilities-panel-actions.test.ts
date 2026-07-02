@@ -388,7 +388,7 @@ console.log("capabilities panel plugin actions");
   ok(planCalls === 1, "clicking Preview invokes plugin install planning once");
   ok(plannedSources[0] === "git:github.com/obra/superpowers", "plugin preview receives the entered Git source");
 
-  const install = findButton("Install");
+  const install = findButton("Install plugin");
   if (!install) throw new Error("missing plugin install button");
   await act(async () => {
     install.click();
