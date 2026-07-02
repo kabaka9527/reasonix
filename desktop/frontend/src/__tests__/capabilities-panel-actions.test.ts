@@ -355,6 +355,10 @@ console.log("capabilities panel plugin actions");
   });
   await waitFor("superpowers plugin row", () => Boolean(document.querySelector(".cap-row__name")?.textContent?.includes("superpowers")));
   ok(Boolean(document.querySelector(".cap-plugin-form-grid .cap-plugin-fields--local")), "local plugin install mode uses the shared form grid");
+  const localOptionTexts = Array.from(document.querySelectorAll(".cap-plugin-installer__options > .cap-plugin-option-block"))
+    .map((option) => option.textContent ?? "");
+  ok(localOptionTexts[0]?.includes("Overwrite same-name plugin"), "local install mode shows overwrite before link mode");
+  ok(localOptionTexts[1]?.includes("Developer mode: link source folder"), "local install mode shows link mode after overwrite");
 
   const chooseFolder = findButton("Choose plugin folder");
   if (!chooseFolder) throw new Error("missing plugin folder picker button");

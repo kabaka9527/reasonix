@@ -1800,15 +1800,14 @@ export function PluginsSettingsPage() {
 							</div>
 						</div>
 					)}
-					<div className="cap-plugin-installer__actions">
-						<button className="btn btn--small" type="button" disabled={!canPlan} onClick={previewInstall}>
-							{t("caps.pluginPreview")}
-						</button>
-						<button className="btn btn--primary btn--small" type="button" disabled={!canPlan} onClick={install}>
-							{t("caps.pluginInstall")}
-						</button>
-					</div>
 					<div className="cap-plugin-installer__options">
+						<div className="cap-plugin-option-block">
+							<label className="cap-plugin-option">
+								<input type="checkbox" checked={replace} disabled={actionBusy} onChange={(e) => setReplace(e.target.checked)} />
+								<span>{t("caps.pluginReplace")}</span>
+							</label>
+							<div className="cap-plugin-option-hint">{t("caps.pluginReplaceHint")}</div>
+						</div>
 						{installMode === "local" && (
 							<div className="cap-plugin-option-block">
 								<label className="cap-plugin-option">
@@ -1818,13 +1817,14 @@ export function PluginsSettingsPage() {
 								<div className="cap-plugin-option-hint">{t("caps.pluginLinkHint")}</div>
 							</div>
 						)}
-						<div className="cap-plugin-option-block">
-							<label className="cap-plugin-option">
-								<input type="checkbox" checked={replace} disabled={actionBusy} onChange={(e) => setReplace(e.target.checked)} />
-								<span>{t("caps.pluginReplace")}</span>
-							</label>
-							<div className="cap-plugin-option-hint">{t("caps.pluginReplaceHint")}</div>
-						</div>
+					</div>
+					<div className="cap-plugin-installer__actions">
+						<button className="btn btn--small" type="button" disabled={!canPlan} onClick={previewInstall}>
+							{t("caps.pluginPreview")}
+						</button>
+						<button className="btn btn--primary btn--small" type="button" disabled={!canPlan} onClick={install}>
+							{t("caps.pluginInstall")}
+						</button>
 					</div>
 				</div>
 			</div>
