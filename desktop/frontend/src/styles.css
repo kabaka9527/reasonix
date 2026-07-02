@@ -10336,6 +10336,12 @@ body > .mermaid-diagram--fullscreen {
   margin: 0;
   accent-color: var(--accent);
 }
+.cap-plugin-option-hint {
+  margin-top: -4px;
+  color: var(--fg-faint);
+  font-size: 11px;
+  line-height: 1.35;
+}
 .cap-plugin-plan {
   display: flex;
   flex-direction: column;

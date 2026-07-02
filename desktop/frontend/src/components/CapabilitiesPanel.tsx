@@ -1807,6 +1807,7 @@ export function PluginsSettingsPage() {
 						<span>{t("caps.pluginReplace")}</span>
 					</label>
 				</div>
+				<div className="cap-plugin-option-hint">{t("caps.pluginReplaceHint")}</div>
 				<div className="cap-plugin-installer__actions">
 					<button className="btn btn--small" type="button" disabled={!canPlan} onClick={previewInstall}>
 						{t("caps.pluginPreview")}
