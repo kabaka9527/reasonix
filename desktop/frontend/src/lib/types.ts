@@ -683,10 +683,31 @@ export interface CapabilitiesView {
   servers: ServerView[];
   skills: SkillView[];
   skillRoots: SkillRootView[];
+  plugins: PluginView[];
 }
 export interface SkillsSettingsView {
   skills: SkillView[];
   skillRoots: SkillRootView[];
+}
+export interface PluginView {
+  name: string;
+  version?: string;
+  description?: string;
+  source?: string;
+  root: string;
+  manifestKind?: string;
+  enabled: boolean;
+  skills: number;
+  hooks: number;
+  mcpServers: number;
+  warnings?: string[];
+  error?: string;
+}
+export interface PluginInstallOptions {
+  dryRun?: boolean;
+  link?: boolean;
+  replace?: boolean;
+  name?: string;
 }
 export interface MCPServerInput {
   name: string;

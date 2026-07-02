@@ -48,6 +48,8 @@ import type {
   Mode,
   ModelInfo,
   NetworkView,
+  PluginInstallOptions,
+  PluginView,
   ProjectNode,
   PromptHistoryEntry,
   PromptHistoryResult,
@@ -207,6 +209,13 @@ export interface AppBindings {
   Capabilities(): Promise<CapabilitiesView>;
   MCPServers(): Promise<ServerView[]>;
   SkillsSettings(): Promise<SkillsSettingsView>;
+  Plugins(): Promise<PluginView[]>;
+  PlanPluginInstall(source: string, options: PluginInstallOptions): Promise<string>;
+  InstallPlugin(source: string, options: PluginInstallOptions): Promise<string>;
+  RemovePlugin(name: string): Promise<void>;
+  SetPluginEnabled(name: string, enabled: boolean): Promise<void>;
+  UpdatePlugin(name: string): Promise<string>;
+  PluginDoctor(name: string): Promise<PluginView>;
   AddMCPServer(input: MCPServerInput): Promise<number>;
   UpdateMCPServer(name: string, input: MCPServerInput): Promise<void>;
   RemoveMCPServer(name: string): Promise<void>;
@@ -789,6 +798,7 @@ function makeMockApp(): AppBindings {
       ],
     },
   ];
+  let capPlugins: PluginView[] = [];
   const mockSwitchWorkspace = async (path: string) => {
     cwd = path || "~";
     workspaces = [cwd, ...workspaces.filter((p) => p !== cwd)].slice(0, 12);
@@ -2165,6 +2175,7 @@ function makeMockApp(): AppBindings {
         servers: capServers.map((s) => ({ ...s })),
         skills: capSkills.map((s) => ({ ...s })),
         skillRoots: capSkillRoots.map((s) => ({ ...s })),
+        plugins: capPlugins.map((p) => ({ ...p })),
       };
     },
     async MCPServers() {
@@ -2174,6 +2185,58 @@ function makeMockApp(): AppBindings {
       return {
         skills: capSkills.map((s) => ({ ...s })),
         skillRoots: capSkillRoots.map((s) => ({ ...s })),
+      };
+    },
+    async Plugins() {
+      return capPlugins.map((p) => ({ ...p }));
+    },
+    async PlanPluginInstall(source: string, options: PluginInstallOptions) {
+      const name = options.name || source.split("/").filter(Boolean).pop()?.replace(/\.git$/, "") || "plugin";
+      return JSON.stringify({
+        ok: true,
+        status: "planned",
+        kind: "plugin",
+        actions: [{ kind: "plugin", action: "install_plugin_package", name, source, status: "planned" }],
+      });
+    },
+    async InstallPlugin(source: string, options: PluginInstallOptions) {
+      const name = options.name || source.split("/").filter(Boolean).pop()?.replace(/\.git$/, "") || "plugin";
+      const existing = capPlugins.findIndex((p) => p.name === name);
+      const view: PluginView = {
+        name,
+        version: "dev",
+        description: "Mock plugin",
+        source,
+        root: `~/.reasonix/plugins/${name}`,
+        manifestKind: "reasonix",
+        enabled: true,
+        skills: 1,
+        hooks: 0,
+        mcpServers: 0,
+      };
+      if (existing >= 0) capPlugins[existing] = view;
+      else capPlugins.push(view);
+      return JSON.stringify({ ok: true, status: "done", kind: "plugin", actions: [{ kind: "plugin", name }] });
+    },
+    async RemovePlugin(name: string) {
+      capPlugins = capPlugins.filter((p) => p.name !== name);
+    },
+    async SetPluginEnabled(name: string, enabled: boolean) {
+      capPlugins = capPlugins.map((p) => p.name === name ? { ...p, enabled } : p);
+    },
+    async UpdatePlugin(name: string) {
+      capPlugins = capPlugins.map((p) => p.name === name ? { ...p, version: p.version || "dev" } : p);
+      return JSON.stringify({ ok: true, status: "done", kind: "plugin", name });
+    },
+    async PluginDoctor(name: string) {
+      return capPlugins.find((p) => p.name === name) || {
+        name,
+        root: "",
+        enabled: false,
+        skills: 0,
+        hooks: 0,
+        mcpServers: 0,
+        error: "plugin is not installed",
       };
     },
     async AddMCPServer(input: MCPServerInput) {

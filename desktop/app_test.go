@@ -27,6 +27,7 @@ import (
 	"reasonix/internal/jobs"
 	"reasonix/internal/memory"
 	"reasonix/internal/plugin"
+	"reasonix/internal/pluginpkg"
 	"reasonix/internal/provider"
 	"reasonix/internal/tool"
 )
@@ -4222,6 +4223,42 @@ args = ["-y", "@playwright/mcp"]
 		}
 	}
 	t.Fatalf("playwright MCP missing from Capabilities: %+v", view.Servers)
+}
+
+func TestCapabilitiesIncludesInstalledPlugins(t *testing.T) {
+	home := isolateDesktopUserDirs(t)
+	reasonixHome := filepath.Join(home, ".reasonix")
+	root := filepath.Join(reasonixHome, "plugins", "superpowers")
+	if err := os.MkdirAll(filepath.Join(root, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".codex-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".codex-plugin", "plugin.json"), []byte(`{
+  "name": "superpowers",
+  "version": "6.1.0",
+  "description": "Planning workflows",
+  "skills": "./skills/"
+}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := pluginpkg.Upsert(reasonixHome, pluginpkg.InstalledPlugin{
+		Name:         "superpowers",
+		Root:         "plugins/superpowers",
+		Version:      "6.1.0",
+		Description:  "Planning workflows",
+		ManifestKind: "codex",
+		Enabled:      true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	app := NewApp()
+	plugins := app.Capabilities().Plugins
+	if len(plugins) != 1 || plugins[0].Name != "superpowers" || plugins[0].Skills != 1 {
+		t.Fatalf("Capabilities().Plugins = %+v", plugins)
+	}
 }
 
 func TestDesktopSharedHostBackgroundMCPAutoConnectsOnBoot(t *testing.T) {

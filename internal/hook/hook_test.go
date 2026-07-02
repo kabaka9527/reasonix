@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"testing"
 	"time"
+
+	"reasonix/internal/pluginpkg"
 )
 
 func writeSettings(t *testing.T, dir, json string) {
@@ -17,6 +19,16 @@ func writeSettings(t *testing.T, dir, json string) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(d, SettingsFilename), []byte(json), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeHookTestFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -54,6 +66,42 @@ func TestLoadPermissionRequestHook(t *testing.T) {
 	}
 	if got[0].Event != PermissionRequest || got[0].Match != "bash" || got[0].Command != "notify" {
 		t.Fatalf("loaded hook = %+v, want PermissionRequest/bash/notify", got[0])
+	}
+}
+
+func TestLoadIncludesPluginSessionStartHook(t *testing.T) {
+	home := t.TempDir()
+	reasonixHome := filepath.Join(home, ".reasonix")
+	root := filepath.Join(reasonixHome, "plugins", "superpowers")
+	writeSettings(t, home, `{"hooks":{"PostToolUse":[{"command":"echo global"}]}}`)
+	writeHookTestFile(t, filepath.Join(root, pluginpkg.CodexManifest), `{
+  "name": "superpowers",
+  "version": "6.1.0",
+  "skills": "./skills/"
+}`)
+	writeHookTestFile(t, filepath.Join(root, "hooks", "session-start-codex"), "#!/usr/bin/env bash\necho ok\n")
+	if err := pluginpkg.Upsert(reasonixHome, pluginpkg.InstalledPlugin{
+		Name:         "superpowers",
+		Root:         "plugins/superpowers",
+		Version:      "6.1.0",
+		ManifestKind: "codex",
+		Enabled:      true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := Load(LoadOptions{HomeDir: home, ProjectRoot: "/workspace", Trusted: true})
+	if len(got) != 2 {
+		t.Fatalf("hooks = %+v, want plugin + global", got)
+	}
+	if got[0].Scope != ScopePlugin || got[0].Event != SessionStart {
+		t.Fatalf("first hook = %+v, want plugin SessionStart", got[0])
+	}
+	if got[0].Env["REASONIX_PLUGIN_NAME"] != "superpowers" || got[0].Env["REASONIX_WORKSPACE_ROOT"] != "/workspace" {
+		t.Fatalf("plugin env = %#v", got[0].Env)
+	}
+	if got[1].Scope != ScopeGlobal {
+		t.Fatalf("second hook = %+v, want global", got[1])
 	}
 }
 

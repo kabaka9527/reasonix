@@ -50,7 +50,7 @@ export function CapabilitiesPanel({
   const [expandedServerTools, setExpandedServerTools] = useState<Set<string>>(() => new Set());
 
   const reload = useCallback(async () => {
-    setView(normalizeCapabilitiesView(await app.Capabilities().catch(() => ({ servers: [], skills: [], skillRoots: [] }))));
+    setView(normalizeCapabilitiesView(await app.Capabilities().catch(() => ({ servers: [], skills: [], skillRoots: [], plugins: [] }))));
   }, []);
   useEffect(() => {
     void reload();
@@ -314,6 +314,7 @@ export function CapabilitiesPanel({
 function normalizeCapabilitiesView(view: CapabilitiesView | null | undefined): CapabilitiesView {
   return {
     servers: normalizeServerViews(view?.servers),
+    plugins: asArray(view?.plugins),
     ...normalizeSkillsSettingsView(view),
   };
 }

@@ -22,10 +22,12 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
 	"reasonix/internal/config"
+	"reasonix/internal/pluginpkg"
 	"reasonix/internal/proc"
 )
 
@@ -85,6 +87,7 @@ type Scope string
 
 const (
 	ScopeProject Scope = "project"
+	ScopePlugin  Scope = "plugin"
 	ScopeGlobal  Scope = "global"
 )
 
@@ -102,6 +105,8 @@ type HookConfig struct {
 	Timeout int `json:"timeout,omitempty"`
 	// Cwd overrides the working directory (defaults to the payload's cwd).
 	Cwd string `json:"cwd,omitempty"`
+	// Env adds environment variables for this hook invocation.
+	Env map[string]string `json:"env,omitempty"`
 }
 
 // Settings is the shape of a settings.json (only hooks for now).
@@ -160,6 +165,7 @@ func Load(opts LoadOptions) []ResolvedHook {
 			appendResolved(&out, s, ScopeProject, p)
 		}
 	}
+	appendPluginHooks(&out, reasonixHome(opts.HomeDir), opts.ProjectRoot)
 	g := GlobalSettingsPath(opts.HomeDir)
 	if s := readSettings(g); s != nil {
 		appendResolved(&out, s, ScopeGlobal, g)
@@ -223,6 +229,83 @@ func appendResolved(out *[]ResolvedHook, s *Settings, scope Scope, source string
 			*out = append(*out, ResolvedHook{HookConfig: cfg, Event: event, Scope: scope, Source: source})
 		}
 	}
+}
+
+func appendPluginHooks(out *[]ResolvedHook, reasonixHomeDir, projectRoot string) {
+	if strings.TrimSpace(reasonixHomeDir) == "" {
+		return
+	}
+	installed, _ := pluginpkg.LoadInstalled(reasonixHomeDir)
+	for _, item := range installed {
+		pkg := item.Package
+		events := make([]string, 0, len(pkg.Manifest.Hooks))
+		for event := range pkg.Manifest.Hooks {
+			events = append(events, event)
+		}
+		sort.Strings(events)
+		for _, eventName := range events {
+			event := Event(eventName)
+			if !validEvent(event) {
+				continue
+			}
+			for _, h := range pkg.Manifest.Hooks[eventName] {
+				command := h.Command
+				if !filepath.IsAbs(command) {
+					command = filepath.Join(pkg.Root, filepath.FromSlash(command))
+				}
+				cwd := h.Cwd
+				if cwd == "" {
+					cwd = pkg.Root
+				} else if !filepath.IsAbs(cwd) {
+					cwd = filepath.Join(pkg.Root, filepath.FromSlash(cwd))
+				}
+				env := cloneEnv(h.Env)
+				env["REASONIX_PLUGIN_ROOT"] = pkg.Root
+				env["REASONIX_PLUGIN_NAME"] = item.Installed.Name
+				env["REASONIX_HOME"] = reasonixHomeDir
+				env["REASONIX_WORKSPACE_ROOT"] = projectRoot
+				if item.Installed.Version != "" {
+					env["REASONIX_PLUGIN_VERSION"] = item.Installed.Version
+				}
+				manifestFile := pluginpkg.NativeManifest
+				if pkg.ManifestKind == "codex" {
+					manifestFile = pluginpkg.CodexManifest
+				}
+				*out = append(*out, ResolvedHook{
+					HookConfig: HookConfig{
+						Match:       h.Match,
+						Command:     command,
+						Description: h.Description,
+						Timeout:     h.Timeout,
+						Cwd:         cwd,
+						Env:         env,
+					},
+					Event:  event,
+					Scope:  ScopePlugin,
+					Source: filepath.Join(pkg.Root, manifestFile),
+				})
+			}
+		}
+	}
+}
+
+func validEvent(event Event) bool {
+	for _, e := range Events {
+		if e == event {
+			return true
+		}
+	}
+	return false
+}
+
+func cloneEnv(in map[string]string) map[string]string {
+	out := map[string]string{}
+	for k, v := range in {
+		if strings.TrimSpace(k) != "" {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // MatchesTool reports whether a hook applies to toolName. The match field is an
@@ -350,6 +433,7 @@ func decideOutcome(event Event, r SpawnResult) Decision {
 type SpawnInput struct {
 	Command string
 	Cwd     string
+	Env     map[string]string
 	Stdin   string
 	Timeout time.Duration
 }
@@ -391,7 +475,7 @@ func Run(ctx context.Context, payload Payload, hooks []ResolvedHook, spawner Spa
 		}
 		timeout := h.timeout()
 		start := time.Now()
-		r := spawner(ctx, SpawnInput{Command: h.Command, Cwd: cwd, Stdin: stdin, Timeout: timeout})
+		r := spawner(ctx, SpawnInput{Command: h.Command, Cwd: cwd, Env: h.Env, Stdin: stdin, Timeout: timeout})
 		decision := decideOutcome(event, r)
 		report.Outcomes = append(report.Outcomes, Outcome{
 			Hook:      h,
@@ -437,6 +521,18 @@ func DefaultSpawner(ctx context.Context, in SpawnInput) SpawnResult {
 	cmd := exec.CommandContext(cctx, name, args...)
 	proc.HideWindow(cmd)
 	cmd.Dir = in.Cwd
+	if len(in.Env) > 0 {
+		env := os.Environ()
+		keys := make([]string, 0, len(in.Env))
+		for k := range in.Env {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			env = append(env, k+"="+in.Env[k])
+		}
+		cmd.Env = env
+	}
 	cmd.Stdin = strings.NewReader(in.Stdin)
 	var outBuf, errBuf cappedBuffer
 	cmd.Stdout = &outBuf

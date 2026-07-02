@@ -5092,6 +5092,7 @@ type CapabilitiesView struct {
 	Servers    []ServerView    `json:"servers"`
 	Skills     []SkillView     `json:"skills"`
 	SkillRoots []SkillRootView `json:"skillRoots"`
+	Plugins    []PluginView    `json:"plugins"`
 }
 
 // SkillsSettingsView is the skills management page's data, split from MCP
@@ -5174,6 +5175,7 @@ func (a *App) Capabilities() CapabilitiesView {
 		Servers:    a.MCPServers(),
 		Skills:     skills.Skills,
 		SkillRoots: skills.SkillRoots,
+		Plugins:    a.Plugins(),
 	}
 }
 

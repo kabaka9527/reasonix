@@ -1,0 +1,449 @@
+// Package pluginpkg handles installed Reasonix plugin packages.
+//
+// Plugin packages are higher-level bundles that can contribute skills, hooks,
+// and MCP servers. They are intentionally parsed into package-local structs so
+// config/hook/desktop callers can adapt them without creating import cycles.
+package pluginpkg
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+)
+
+const (
+	NativeManifest = "reasonix-plugin.json"
+	CodexManifest  = ".codex-plugin/plugin.json"
+	StateFilename  = "plugin-packages.json"
+)
+
+var validName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
+
+// Package is one parsed plugin package rooted on disk.
+type Package struct {
+	Root         string
+	ManifestKind string
+	Manifest     Manifest
+}
+
+// Manifest is the normalized manifest shape used by Reasonix.
+type Manifest struct {
+	Name        string
+	Version     string
+	Description string
+	Homepage    string
+	Repository  string
+	Skills      []string
+	Hooks       map[string][]Hook
+	MCPServers  map[string]MCPServer
+}
+
+type Hook struct {
+	Match       string            `json:"match,omitempty"`
+	Command     string            `json:"command"`
+	Description string            `json:"description,omitempty"`
+	Timeout     int               `json:"timeout,omitempty"`
+	Cwd         string            `json:"cwd,omitempty"`
+	Env         map[string]string `json:"env,omitempty"`
+}
+
+type MCPServer struct {
+	Type      string            `json:"type,omitempty"`
+	Command   string            `json:"command,omitempty"`
+	Args      []string          `json:"args,omitempty"`
+	Env       map[string]string `json:"env,omitempty"`
+	URL       string            `json:"url,omitempty"`
+	Headers   map[string]string `json:"headers,omitempty"`
+	AutoStart *bool             `json:"auto_start,omitempty"`
+	Tier      string            `json:"tier,omitempty"`
+}
+
+// State is persisted at <Reasonix home>/plugin-packages.json.
+type State struct {
+	Version int               `json:"version"`
+	Plugins []InstalledPlugin `json:"plugins"`
+}
+
+type InstalledPlugin struct {
+	Name         string `json:"name"`
+	Source       string `json:"source,omitempty"`
+	Root         string `json:"root"`
+	Version      string `json:"version,omitempty"`
+	Description  string `json:"description,omitempty"`
+	ManifestKind string `json:"manifestKind,omitempty"`
+	Enabled      bool   `json:"enabled"`
+}
+
+type InstalledPackage struct {
+	Installed InstalledPlugin
+	Package   Package
+	Warnings  []string
+}
+
+func IsValidName(name string) bool { return validName.MatchString(strings.TrimSpace(name)) }
+
+func StatePath(reasonixHome string) string {
+	return filepath.Join(reasonixHome, StateFilename)
+}
+
+func PluginsDir(reasonixHome string) string {
+	return filepath.Join(reasonixHome, "plugins")
+}
+
+func InstallRoot(reasonixHome, name string) string {
+	return filepath.Join(PluginsDir(reasonixHome), name)
+}
+
+func LoadState(reasonixHome string) (State, error) {
+	var st State
+	b, err := os.ReadFile(StatePath(reasonixHome))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return State{Version: 1}, nil
+		}
+		return State{}, err
+	}
+	if err := json.Unmarshal(b, &st); err != nil {
+		return State{}, err
+	}
+	if st.Version == 0 {
+		st.Version = 1
+	}
+	sort.SliceStable(st.Plugins, func(i, j int) bool { return st.Plugins[i].Name < st.Plugins[j].Name })
+	return st, nil
+}
+
+func SaveState(reasonixHome string, st State) error {
+	if st.Version == 0 {
+		st.Version = 1
+	}
+	sort.SliceStable(st.Plugins, func(i, j int) bool { return st.Plugins[i].Name < st.Plugins[j].Name })
+	if err := os.MkdirAll(reasonixHome, 0o755); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(st, "", "  ")
+	if err != nil {
+		return err
+	}
+	b = append(b, '\n')
+	return os.WriteFile(StatePath(reasonixHome), b, 0o644)
+}
+
+func Upsert(reasonixHome string, p InstalledPlugin) error {
+	if !IsValidName(p.Name) {
+		return fmt.Errorf("invalid plugin name %q", p.Name)
+	}
+	st, err := LoadState(reasonixHome)
+	if err != nil {
+		return err
+	}
+	for i := range st.Plugins {
+		if st.Plugins[i].Name == p.Name {
+			st.Plugins[i] = p
+			return SaveState(reasonixHome, st)
+		}
+	}
+	st.Plugins = append(st.Plugins, p)
+	return SaveState(reasonixHome, st)
+}
+
+func Remove(reasonixHome, name string) (InstalledPlugin, bool, error) {
+	st, err := LoadState(reasonixHome)
+	if err != nil {
+		return InstalledPlugin{}, false, err
+	}
+	for i, p := range st.Plugins {
+		if p.Name != name {
+			continue
+		}
+		st.Plugins = append(st.Plugins[:i], st.Plugins[i+1:]...)
+		return p, true, SaveState(reasonixHome, st)
+	}
+	return InstalledPlugin{}, false, nil
+}
+
+func SetEnabled(reasonixHome, name string, enabled bool) error {
+	st, err := LoadState(reasonixHome)
+	if err != nil {
+		return err
+	}
+	for i := range st.Plugins {
+		if st.Plugins[i].Name == name {
+			st.Plugins[i].Enabled = enabled
+			return SaveState(reasonixHome, st)
+		}
+	}
+	return fmt.Errorf("plugin %q is not installed", name)
+}
+
+func LoadInstalled(reasonixHome string) ([]InstalledPackage, []string) {
+	st, err := LoadState(reasonixHome)
+	if err != nil {
+		return nil, []string{err.Error()}
+	}
+	var out []InstalledPackage
+	var warnings []string
+	for _, installed := range st.Plugins {
+		if !installed.Enabled {
+			continue
+		}
+		root := ResolveRoot(reasonixHome, installed.Root)
+		pkg, pkgWarnings, err := ParseDir(root)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("%s: %v", installed.Name, err))
+			continue
+		}
+		out = append(out, InstalledPackage{Installed: installed, Package: pkg, Warnings: pkgWarnings})
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Installed.Name < out[j].Installed.Name })
+	return out, warnings
+}
+
+func ResolveRoot(reasonixHome, root string) string {
+	if filepath.IsAbs(root) {
+		return filepath.Clean(root)
+	}
+	return filepath.Join(reasonixHome, filepath.Clean(root))
+}
+
+func RelativeRoot(reasonixHome, root string) string {
+	if rel, err := filepath.Rel(reasonixHome, root); err == nil && rel != "." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".." {
+		return filepath.ToSlash(rel)
+	}
+	return filepath.Clean(root)
+}
+
+func ParseDir(root string) (Package, []string, error) {
+	root = filepath.Clean(root)
+	if pkg, warnings, err := parseNative(filepath.Join(root, NativeManifest), root); err == nil {
+		return pkg, warnings, nil
+	}
+	if pkg, warnings, err := parseCodex(filepath.Join(root, CodexManifest), root); err == nil {
+		return pkg, warnings, nil
+	}
+	return Package{}, nil, fmt.Errorf("no %s or %s found", NativeManifest, CodexManifest)
+}
+
+func parseNative(path, root string) (Package, []string, error) {
+	var raw struct {
+		Name        string               `json:"name"`
+		Version     string               `json:"version"`
+		Description string               `json:"description"`
+		Homepage    string               `json:"homepage"`
+		Repository  string               `json:"repository"`
+		Skills      json.RawMessage      `json:"skills"`
+		Hooks       map[string][]Hook    `json:"hooks"`
+		MCPServers  map[string]MCPServer `json:"mcpServers"`
+	}
+	if err := readJSONFile(path, &raw); err != nil {
+		return Package{}, nil, err
+	}
+	skills, err := parseSkillPaths(raw.Skills)
+	if err != nil {
+		return Package{}, nil, err
+	}
+	manifest := Manifest{
+		Name:        strings.TrimSpace(raw.Name),
+		Version:     strings.TrimSpace(raw.Version),
+		Description: strings.TrimSpace(raw.Description),
+		Homepage:    strings.TrimSpace(raw.Homepage),
+		Repository:  strings.TrimSpace(raw.Repository),
+		Skills:      skills,
+		Hooks:       normalizeHooks(raw.Hooks),
+		MCPServers:  raw.MCPServers,
+	}
+	if err := validateManifest(root, &manifest); err != nil {
+		return Package{}, nil, err
+	}
+	return Package{Root: root, ManifestKind: "reasonix", Manifest: manifest}, nil, nil
+}
+
+func parseCodex(path, root string) (Package, []string, error) {
+	var raw struct {
+		Name        string          `json:"name"`
+		Version     string          `json:"version"`
+		Description string          `json:"description"`
+		Homepage    string          `json:"homepage"`
+		Repository  string          `json:"repository"`
+		Skills      json.RawMessage `json:"skills"`
+	}
+	if err := readJSONFile(path, &raw); err != nil {
+		return Package{}, nil, err
+	}
+	skills, err := parseSkillPaths(raw.Skills)
+	if err != nil {
+		return Package{}, nil, err
+	}
+	manifest := Manifest{
+		Name:        strings.TrimSpace(raw.Name),
+		Version:     strings.TrimSpace(raw.Version),
+		Description: strings.TrimSpace(raw.Description),
+		Homepage:    strings.TrimSpace(raw.Homepage),
+		Repository:  strings.TrimSpace(raw.Repository),
+		Skills:      skills,
+	}
+	var warnings []string
+	hookPath := filepath.Join(root, "hooks", "session-start-codex")
+	if info, err := os.Stat(hookPath); err == nil && info.Mode().IsRegular() {
+		manifest.Hooks = map[string][]Hook{
+			"SessionStart": {{
+				Command:     hookPath,
+				Cwd:         root,
+				Description: "Codex-compatible session start hook from " + manifest.Name,
+			}},
+		}
+	} else {
+		warnings = append(warnings, "no hooks/session-start-codex convention hook found")
+	}
+	if err := validateManifest(root, &manifest); err != nil {
+		return Package{}, warnings, err
+	}
+	return Package{Root: root, ManifestKind: "codex", Manifest: manifest}, warnings, nil
+}
+
+func readJSONFile(path string, v any) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(b, v)
+}
+
+func parseSkillPaths(raw json.RawMessage) ([]string, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var one string
+	if err := json.Unmarshal(raw, &one); err == nil {
+		return cleanPathList([]string{one})
+	}
+	var manyStrings []string
+	if err := json.Unmarshal(raw, &manyStrings); err == nil {
+		return cleanPathList(manyStrings)
+	}
+	var manyObjects []struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(raw, &manyObjects); err == nil {
+		paths := make([]string, 0, len(manyObjects))
+		for _, item := range manyObjects {
+			paths = append(paths, item.Path)
+		}
+		return cleanPathList(paths)
+	}
+	return nil, fmt.Errorf("skills must be a path string, string array, or object array")
+}
+
+func cleanPathList(paths []string) ([]string, error) {
+	var out []string
+	seen := map[string]bool{}
+	for _, p := range paths {
+		p = filepath.Clean(strings.TrimSpace(p))
+		if p == "." || p == "" {
+			p = "."
+		}
+		if filepath.IsAbs(p) || strings.HasPrefix(p, ".."+string(filepath.Separator)) || p == ".." {
+			return nil, fmt.Errorf("plugin path %q must be relative and stay inside the plugin root", p)
+		}
+		slash := filepath.ToSlash(p)
+		if !seen[slash] {
+			seen[slash] = true
+			out = append(out, slash)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func normalizeHooks(in map[string][]Hook) map[string][]Hook {
+	if len(in) == 0 {
+		return nil
+	}
+	out := map[string][]Hook{}
+	for event, hooks := range in {
+		event = strings.TrimSpace(event)
+		for _, h := range hooks {
+			h.Command = strings.TrimSpace(h.Command)
+			h.Cwd = strings.TrimSpace(h.Cwd)
+			if h.Command == "" {
+				continue
+			}
+			out[event] = append(out[event], h)
+		}
+	}
+	return out
+}
+
+func validateManifest(root string, m *Manifest) error {
+	if !IsValidName(m.Name) {
+		return fmt.Errorf("invalid plugin name %q", m.Name)
+	}
+	for _, p := range m.Skills {
+		if err := validateRelativePath(p); err != nil {
+			return err
+		}
+	}
+	for event, hooks := range m.Hooks {
+		if strings.TrimSpace(event) == "" {
+			return fmt.Errorf("hook event is required")
+		}
+		for _, h := range hooks {
+			if h.Command == "" {
+				return fmt.Errorf("hook command is required")
+			}
+			if !filepath.IsAbs(h.Command) {
+				if err := validateRelativePath(h.Command); err != nil {
+					return err
+				}
+			}
+			if h.Cwd != "" && !filepath.IsAbs(h.Cwd) {
+				if err := validateRelativePath(h.Cwd); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	for name := range m.MCPServers {
+		if !IsValidName(name) {
+			return fmt.Errorf("invalid MCP server name %q", name)
+		}
+	}
+	if _, err := os.Stat(root); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateRelativePath(p string) error {
+	p = filepath.Clean(strings.TrimSpace(p))
+	if p == "" {
+		return fmt.Errorf("plugin path is required")
+	}
+	if filepath.IsAbs(p) || strings.HasPrefix(p, ".."+string(filepath.Separator)) || p == ".." {
+		return fmt.Errorf("plugin path %q must be relative and stay inside the plugin root", p)
+	}
+	return nil
+}
+
+func (p Package) SkillRoots() []string {
+	var out []string
+	for _, rel := range p.Manifest.Skills {
+		out = append(out, filepath.Join(p.Root, filepath.FromSlash(rel)))
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (p Package) CapabilityCounts() (skills, hooks, mcp int) {
+	skills = len(p.Manifest.Skills)
+	for _, hs := range p.Manifest.Hooks {
+		hooks += len(hs)
+	}
+	mcp = len(p.Manifest.MCPServers)
+	return
+}
