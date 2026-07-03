@@ -77,6 +77,22 @@ export function formatCacheHitRate(hitTokens: number, missTokens: number): strin
 
 type MetricTone = "accent" | "good" | "notice" | "warn";
 type UsageAnalysisView = "source" | "type";
+type ContextUsageRefreshFields = Pick<
+  WireUsage,
+  "totalTokens" | "promptTokens" | "completionTokens" | "reasoningTokens" | "sessionCacheHitTokens" | "sessionCacheMissTokens"
+>;
+
+export function contextUsageRefreshKey(usage?: ContextUsageRefreshFields): string {
+  if (!usage) return "";
+  return [
+    usage.totalTokens ?? 0,
+    usage.promptTokens ?? 0,
+    usage.completionTokens ?? 0,
+    usage.reasoningTokens ?? 0,
+    usage.sessionCacheHitTokens ?? 0,
+    usage.sessionCacheMissTokens ?? 0,
+  ].join(":");
+}
 
 export function cacheHitTone(hitTokens: number, missTokens: number): MetricTone | undefined {
   const denom = hitTokens + missTokens;
@@ -288,6 +304,7 @@ export function ContextPanel({
   const [analysisView, setAnalysisView] = useState<UsageAnalysisView>("source");
   const refreshSeq = useRef(0);
   const lastRefreshTime = useRef(0);
+  const usageRefreshKey = contextUsageRefreshKey(usage);
 
   const refresh = useCallback(async () => {
     if (!tabId) return;
@@ -312,18 +329,16 @@ export function ContextPanel({
     void refresh();
   }, [refresh, refreshKey]);
 
-  // Throttled background refresh during streaming — calls app.ContextPanel() at
-  // most once per second so session-cumulative data (totalTokens, elapsedMs,
-  // requestCount, sources, readFiles, changedFiles) stays near real-time while
-  // the AI is actively generating. Deps are session-cumulative cache values that
-  // change on every usage event; once streaming stops the effect stops firing.
+  // Refresh the panel snapshot while usage events stream. The key includes
+  // general token fields so providers without cache telemetry still tick.
   useEffect(() => {
+    if (!usageRefreshKey) return;
     const now = Date.now();
     if (now - lastRefreshTime.current >= 1000) {
       lastRefreshTime.current = now;
       void refresh();
     }
-  }, [usage?.sessionCacheHitTokens, usage?.sessionCacheMissTokens, refresh]);
+  }, [usageRefreshKey, refresh]);
 
   const usedTokens = context?.used && context.used > 0 ? context.used : info?.usedTokens ?? 0;
   const windowTokens = context?.window && context.window > 0 ? context.window : info?.windowTokens ?? 0;
