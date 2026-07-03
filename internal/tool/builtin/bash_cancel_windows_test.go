@@ -106,7 +106,7 @@ func TestBashCancelKillsGitBashHereDocPython(t *testing.T) {
 	tmp := t.TempDir()
 	pidFile := filepath.Join(tmp, "python.pid")
 	pythonPIDFile := filepath.ToSlash(pidFile)
-	command := fmt.Sprintf("%s - <<'PYEOF' &\nimport os, time\nwith open(%q, 'w') as f:\n    f.write(str(os.getpid()))\n    f.flush()\ntime.sleep(120)\nPYEOF\nwait\n", shellQuote(python), pythonPIDFile)
+	command := fmt.Sprintf("%s - <<'PYEOF'\nimport os, time\nwith open(%q, 'w') as f:\n    f.write(str(os.getpid()))\n    f.flush()\ntime.sleep(120)\nPYEOF\n", shellQuote(python), pythonPIDFile)
 	args, _ := json.Marshal(map[string]any{"command": command})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -163,7 +163,7 @@ func gitBashPython(t *testing.T, bashPath string) string {
 		if err != nil {
 			continue
 		}
-		python := filepath.ToSlash(path)
+		python := gitBashPath(t, bashPath, path)
 		out, err := exec.Command(bashPath, "-lc", fmt.Sprintf("%s - <<'PYEOF'\nprint('ok')\nPYEOF\n", shellQuote(python))).CombinedOutput()
 		if err == nil {
 			return python
@@ -172,6 +172,18 @@ func gitBashPython(t *testing.T, bashPath string) string {
 	}
 	t.Skip("python not found or not usable from Git Bash")
 	return ""
+}
+
+func gitBashPath(t *testing.T, bashPath, path string) string {
+	t.Helper()
+	out, err := exec.Command(bashPath, "-lc", fmt.Sprintf("cygpath -u %s", shellQuote(path))).Output()
+	if err == nil {
+		converted := strings.TrimSpace(string(out))
+		if converted != "" {
+			return strings.Split(converted, "\n")[0]
+		}
+	}
+	return filepath.ToSlash(path)
 }
 
 func shellQuote(s string) string {
