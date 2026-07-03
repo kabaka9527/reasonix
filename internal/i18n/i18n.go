@@ -85,6 +85,7 @@ type Messages struct {
 	ToolApprovalPromptFmt       string // approval banner — tool, subject suffix, source/intent detail, choices
 	ToolApprovalChoices         string // standard approval choice list
 	BashPrefixChoices           string // approval choice list when a bash prefix can be granted
+	FreshHumanApprovalChoices   string // approval choice list for prompts that cannot be remembered
 	ToolApprovalSourceFmt       string // "Source: %s" / "来源: %s"
 	ToolApprovalBuiltIn         string // built-in tool source label
 	ToolApprovalImageUse        string // image-understanding detail for understand_image-style tools

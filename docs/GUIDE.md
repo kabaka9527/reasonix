@@ -549,8 +549,10 @@ archives, and saved facts on demand instead of injecting that dynamic state into
 the stable system prompt. `/forget <name>` archives a saved fact rather than
 deleting it permanently; the CLI/TUI and desktop memory panel can show those
 archived files for traceability, but they are not searched as active memory.
-Agent-initiated `remember` and `forget` calls always ask for fresh approval and
-show a compact preview of the saved or archived memory before they run.
+Agent-initiated `remember` and `forget` calls always ask for fresh human approval
+and show a compact preview of the saved or archived memory before they run.
+Guardian review cannot answer for the user; non-interactive runs refuse these
+tools instead of auto-approving them.
 Retrieval keeps the top BM25 result while trimming weak common-word matches, and
 0-result responses suggest narrower, more distinctive follow-up searches.
 Memory v5 is enabled by default across the CLI/TUI, `reasonix serve`, and the

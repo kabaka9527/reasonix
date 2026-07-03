@@ -67,6 +67,7 @@ var English = Messages{
 	ToolApprovalPromptFmt:       "Permission required\n\nWill call tool %s%s.\n%s\n%s",
 	ToolApprovalChoices:         "1. Allow once\n2. Allow %s for this session\n3. Always allow %s (save to config)\n4. Deny\nChoose [1/2/3/4] (y/a/p/n also work)",
 	BashPrefixChoices:           "1. Allow once\n2. Allow %s for this session\n3. Always allow %s (save to config)\n4. Deny\nChoose [1/2/3/4] (y/a/p/n also work)",
+	FreshHumanApprovalChoices:   "1. Allow once\n4. Deny\nChoose [1/4] (y/n also work)",
 	ToolApprovalSourceFmt:       "Source: %s",
 	ToolApprovalBuiltIn:         "built-in tool",
 	ToolApprovalImageUse:        "It will read provided image input for image understanding.",

@@ -64,6 +64,7 @@ var ChineseTraditional = Messages{
 	ToolApprovalPromptFmt:       "需要你的許可\n\n將呼叫工具 %s%s。\n%s\n%s",
 	ToolApprovalChoices:         "1. 本次允許\n2. 本會話允許 %s\n3. 總是允許 %s（儲存到設定）\n4. 拒絕\n選擇 [1/2/3/4]（相容 y/a/p/n）",
 	BashPrefixChoices:           "1. 本次允許\n2. 本會話允許 %s\n3. 總是允許 %s（儲存到設定）\n4. 拒絕\n選擇 [1/2/3/4]（相容 y/a/p/n）",
+	FreshHumanApprovalChoices:   "1. 本次允許\n4. 拒絕\n選擇 [1/4]（相容 y/n）",
 	ToolApprovalSourceFmt:       "來源: %s",
 	ToolApprovalBuiltIn:         "內建工具",
 	ToolApprovalImageUse:        "將讀取提供的圖片用於圖像理解。",

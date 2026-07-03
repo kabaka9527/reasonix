@@ -3493,7 +3493,7 @@ func (g gateApprover) ApproveWithReason(ctx context.Context, tool, subject strin
 		if reviewErr != nil {
 			return false, false, "", reviewErr
 		}
-		if allow {
+		if allow && !requiresFreshApprovalTool(tool) {
 			return true, false, "", nil
 		}
 		humanAllow, remember, err := g.c.requestApprovalWithReason(ctx, tool, subject, args, reason)

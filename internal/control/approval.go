@@ -65,6 +65,24 @@ func newApprovalManager(policy permission.Policy, mode string, timeout time.Dura
 	}
 }
 
+// NewHeadlessPermissionGate builds the non-interactive gate used by `reasonix run`
+// and sub-agents. It preserves headless autonomy for ordinary Ask decisions, but
+// refuses tools whose contract requires a fresh human approval.
+func NewHeadlessPermissionGate(policy permission.Policy) *freshHumanHeadlessGate {
+	return &freshHumanHeadlessGate{gate: permission.NewGate(policy, nil)}
+}
+
+type freshHumanHeadlessGate struct {
+	gate *permission.Gate
+}
+
+func (g *freshHumanHeadlessGate) Check(ctx context.Context, toolName string, args json.RawMessage, readOnly bool) (bool, string, error) {
+	if RequiresFreshHumanApprovalTool(toolName) {
+		return false, "this tool requires fresh human approval and cannot run in a non-interactive session. Use an interactive session or a user-initiated memory command.", nil
+	}
+	return g.gate.Check(ctx, toolName, args, readOnly)
+}
+
 // preApproved reports whether a tool call can skip the prompt — either the
 // posture bypasses it (YOLO / plan-execution window) or a session grant already
 // covers the scope.
@@ -292,13 +310,20 @@ func normalizeToolApprovalMode(mode string) string {
 	}
 }
 
-func requiresFreshApprovalTool(tool string) bool {
+// RequiresFreshHumanApprovalTool reports whether a tool must be answered by a
+// human each time, not by YOLO/auto approval, session grants, Guardian, or a
+// non-interactive nil approver.
+func RequiresFreshHumanApprovalTool(tool string) bool {
 	switch tool {
 	case planApprovalTool, memoryRememberTool, memoryForgetTool:
 		return true
 	default:
 		return false
 	}
+}
+
+func requiresFreshApprovalTool(tool string) bool {
+	return RequiresFreshHumanApprovalTool(tool)
 }
 
 func approvalNotificationText(tool, subject string) string {

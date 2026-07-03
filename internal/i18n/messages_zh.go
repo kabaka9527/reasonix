@@ -68,6 +68,7 @@ var Chinese = Messages{
 	ToolApprovalPromptFmt:       "需要你的许可\n\n将调用工具 %s%s。\n%s\n%s",
 	ToolApprovalChoices:         "1. 本次允许\n2. 本会话允许 %s\n3. 总是允许 %s（保存到配置）\n4. 拒绝\n选择 [1/2/3/4]（兼容 y/a/p/n）",
 	BashPrefixChoices:           "1. 本次允许\n2. 本会话允许 %s\n3. 总是允许 %s（保存到配置）\n4. 拒绝\n选择 [1/2/3/4]（兼容 y/a/p/n）",
+	FreshHumanApprovalChoices:   "1. 本次允许\n4. 拒绝\n选择 [1/4]（兼容 y/n）",
 	ToolApprovalSourceFmt:       "来源: %s",
 	ToolApprovalBuiltIn:         "内置工具",
 	ToolApprovalImageUse:        "将读取提供的图片用于图像理解。",
