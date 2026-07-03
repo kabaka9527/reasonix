@@ -158,15 +158,20 @@ func waitForWindowsPIDFile(t *testing.T, path string) int {
 
 func gitBashPython(t *testing.T, bashPath string) string {
 	t.Helper()
-	out, err := exec.Command(bashPath, "-lc", "command -v python3 || command -v python").Output()
-	if err != nil {
-		t.Skipf("python not found in Git Bash: %v", err)
+	for _, name := range []string{"python3", "python"} {
+		path, err := exec.LookPath(name)
+		if err != nil {
+			continue
+		}
+		python := filepath.ToSlash(path)
+		out, err := exec.Command(bashPath, "-lc", fmt.Sprintf("%s - <<'PYEOF'\nprint('ok')\nPYEOF\n", shellQuote(python))).CombinedOutput()
+		if err == nil {
+			return python
+		}
+		t.Logf("python candidate %s is not usable from Git Bash: %v: %s", python, err, strings.TrimSpace(string(out)))
 	}
-	python := strings.TrimSpace(string(out))
-	if python == "" {
-		t.Skip("python not found in Git Bash")
-	}
-	return strings.Split(python, "\n")[0]
+	t.Skip("python not found or not usable from Git Bash")
+	return ""
 }
 
 func shellQuote(s string) string {
