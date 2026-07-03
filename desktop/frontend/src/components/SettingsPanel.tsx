@@ -723,6 +723,60 @@ function parseProviderHeaders(raw: string): Record<string, string> {
   return out;
 }
 
+function sortedJSONValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortedJSONValue);
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value as Record<string, unknown>).sort((a, b) => a.localeCompare(b))) {
+      out[key] = sortedJSONValue((value as Record<string, unknown>)[key]);
+    }
+    return out;
+  }
+  return value;
+}
+
+function validateProviderExtraBodyValue(value: unknown, path = "extra_body"): void {
+  if (value === null) {
+    throw new Error(`${path} cannot contain null`);
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => validateProviderExtraBodyValue(item, `${path}[${index}]`));
+    return;
+  }
+  if (typeof value === "object") {
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      validateProviderExtraBodyValue(child, `${path}.${key}`);
+    }
+  }
+}
+
+export function formatProviderExtraBody(extraBody: Record<string, unknown> | null | undefined): string {
+  const cleaned: Record<string, unknown> = {};
+  for (const [rawKey, value] of Object.entries(extraBody ?? {})) {
+    const key = rawKey.trim();
+    if (!key || value === undefined) continue;
+    cleaned[key] = value;
+  }
+  if (Object.keys(cleaned).length === 0) return "";
+  return JSON.stringify(sortedJSONValue(cleaned), null, 2);
+}
+
+export function parseProviderExtraBody(raw: string): Record<string, unknown> {
+  const trimmed = raw.trim();
+  if (!trimmed) return {};
+  const parsed = JSON.parse(trimmed) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("extra body must be a JSON object");
+  }
+  validateProviderExtraBodyValue(parsed);
+  const out: Record<string, unknown> = {};
+  for (const [rawKey, value] of Object.entries(parsed as Record<string, unknown>)) {
+    const key = rawKey.trim();
+    if (key) out[key] = value;
+  }
+  return out;
+}
+
 function providerModelFetchFallbackMessage(error: unknown, t: ReturnType<typeof useT>): string {
   const message = String((error as Error)?.message ?? error);
   if (/\bstatus\s+(401|403)\b/i.test(message)) {
@@ -876,6 +930,16 @@ function normalizeStringMap(value: unknown): Record<string, string> {
   return out;
 }
 
+function normalizeExtraBodyMap(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out: Record<string, unknown> = {};
+  for (const [rawKey, rawValue] of Object.entries(value as Record<string, unknown>)) {
+    const key = rawKey.trim();
+    if (key && rawValue !== undefined) out[key] = rawValue;
+  }
+  return out;
+}
+
 function normalizeProviderView(p: ProviderView): ProviderView {
   const visionModels = asArray(p.visionModels);
   const requiresKey = providerRequiresKey(p);
@@ -889,6 +953,7 @@ function normalizeProviderView(p: ProviderView): ProviderView {
     visionModelsConfigured: Boolean(p.visionModelsConfigured ?? visionModels.length > 0),
     modelsUrl: p.modelsUrl ?? "",
     headers: normalizeStringMap(p.headers),
+    extraBody: normalizeExtraBodyMap(p.extraBody),
     reasoningProtocol: normalizeReasoningProtocol(p.reasoningProtocol),
     supportedEfforts: asArray(p.supportedEfforts),
     modelOverrides: asArray(p.modelOverrides),
@@ -4497,6 +4562,7 @@ function ProviderEditor({
   const [modelsUrl, setModelsUrl] = useState(initial?.modelsUrl ?? "");
   const [apiKeyEnv, setApiKeyEnv] = useState(initial?.apiKeyEnv ?? "");
   const [headersDraft, setHeadersDraft] = useState(formatProviderHeaders(initial?.headers));
+  const [extraBodyDraft, setExtraBodyDraft] = useState(formatProviderExtraBody(initial?.extraBody));
   const [keyDraft, setKeyDraft] = useState("");
   const [balanceUrl, setBalanceUrl] = useState(initial?.balanceUrl ?? "");
   // Empty when unset so the placeholder (and its "0 = default" hint) reads instead
@@ -4516,6 +4582,15 @@ function ProviderEditor({
   const effectiveChatUrl = fullChatUrl ? trimmedURL(chatUrl) : "";
   const effectiveModelsUrl = modelsUrl.trim();
   const effectiveHeaders = parseProviderHeaders(headersDraft);
+  const extraBodyParse = useMemo(() => {
+    try {
+      return { value: parseProviderExtraBody(extraBodyDraft), error: "" };
+    } catch {
+      return { value: {}, error: t("settings.providerExtraBodyError") };
+    }
+  }, [extraBodyDraft, t]);
+  const effectiveExtraBody = extraBodyParse.value;
+  const extraBodyInvalid = Boolean(extraBodyDraft.trim() && extraBodyParse.error);
   const previewChatUrl = providerChatURLPreview(baseUrl, chatUrl, fullChatUrl);
 
   // Empty supportedEfforts means "use protocol defaults". The simplified
@@ -4532,6 +4607,7 @@ function ProviderEditor({
   const cleanDefaultEffort = cleanedSupportedEfforts.includes(normalizedDefaultEffort) ? normalizedDefaultEffort : "";
 
   const fetchModels = async () => {
+    if (extraBodyInvalid) return;
     setFetchingModels(true);
     setFetchStatus(null);
     setFetchFallback(null);
@@ -4553,6 +4629,7 @@ function ProviderEditor({
         default: "",
         apiKeyEnv: effectiveApiKeyEnv,
         headers: effectiveHeaders,
+        extraBody: effectiveExtraBody,
         keySet: Boolean(keyDraft.trim()) || (initial?.keySet ?? false),
         balanceUrl: balanceUrl.trim(),
         contextWindow: Number(ctx) || 0,
@@ -4582,6 +4659,7 @@ function ProviderEditor({
   };
 
   const save = async () => {
+    if (extraBodyInvalid) return;
     const ms = parseProviderListInput(models);
     const vms = parseProviderListInput(visionModels).filter((model) => ms.includes(model));
     const effectiveApiKeyEnv = providerApiKeyEnvForSave(name, apiKeyEnv, keyDraft);
@@ -4599,6 +4677,7 @@ function ProviderEditor({
       default: ms[0] ?? "",
       apiKeyEnv: effectiveApiKeyEnv,
       headers: effectiveHeaders,
+      extraBody: effectiveExtraBody,
       modelsUrl: effectiveModelsUrl,
       keySet: Boolean(keyDraft.trim()) || (initial?.keySet ?? false),
       balanceUrl: balanceUrl.trim(),
@@ -4742,6 +4821,17 @@ function ProviderEditor({
           rows={3}
         />
         <div className="mem-hint">{t("settings.providerHeadersHint")}</div>
+        <label className="set-label">{t("settings.providerExtraBody")}</label>
+        <textarea
+          className="mem-textarea provider-headers-textarea"
+          placeholder={t("settings.providerExtraBodyPlaceholder")}
+          value={extraBodyDraft}
+          onChange={(e) => setExtraBodyDraft(e.target.value)}
+          rows={4}
+        />
+        <div className={`mem-hint${extraBodyInvalid ? " mem-hint--error" : ""}`}>
+          {extraBodyInvalid ? extraBodyParse.error : t("settings.providerExtraBodyHint")}
+        </div>
         <label className="set-label">{t("settings.reasoningProtocol")}</label>
         <select className="mem-select" value={reasoningProtocol} onChange={(e) => setReasoningProtocol(e.target.value)}>
           {REASONING_PROTOCOLS.map((protocol) => (
@@ -4848,7 +4938,7 @@ function ProviderEditor({
         <button
           type="button"
           className="btn btn--small"
-          disabled={busy || fetchingModels || !canFetch}
+          disabled={busy || fetchingModels || !canFetch || extraBodyInvalid}
           onClick={() => void fetchModels()}
         >
           {fetchingModels ? t("settings.fetchingModels") : t("settings.testFetchModels")}
@@ -4875,7 +4965,7 @@ function ProviderEditor({
         <button className="btn btn--small" onClick={onCancel} disabled={busy}>
           {t("common.cancel")}
         </button>
-        <button className="btn btn--primary btn--small" onClick={() => void save()} disabled={busy || !name.trim() || !effectiveBaseUrl || !models.trim()}>
+        <button className="btn btn--primary btn--small" onClick={() => void save()} disabled={busy || !name.trim() || !effectiveBaseUrl || !models.trim() || extraBodyInvalid}>
           {t("common.save")}
         </button>
       </div>

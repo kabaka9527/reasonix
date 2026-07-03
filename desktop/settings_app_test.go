@@ -464,6 +464,9 @@ func TestSaveProviderPreservesHiddenProviderFields(t *testing.T) {
 	if !found {
 		t.Fatalf("Settings providers missing custom: %+v", settings.Providers)
 	}
+	if view.ExtraBody["enable_thinking"] != true {
+		t.Fatalf("settings extra_body = %+v, want enable_thinking=true", view.ExtraBody)
+	}
 
 	if err := app.SaveProvider(view); err != nil {
 		t.Fatalf("SaveProvider: %v", err)

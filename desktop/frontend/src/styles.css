@@ -9686,6 +9686,9 @@ body > .mermaid-diagram--fullscreen {
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
+.mem-hint--error {
+  color: var(--danger, #d66);
+}
 .mem-fact--hl {
   background: var(--accent-soft, rgba(120, 170, 255, 0.12));
   border-color: color-mix(in srgb, var(--accent) 42%, transparent);

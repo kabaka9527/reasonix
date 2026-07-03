@@ -42,6 +42,7 @@ type ProviderView struct {
 	Default           string                      `json:"default"`
 	APIKeyEnv         string                      `json:"apiKeyEnv"`
 	Headers           map[string]string           `json:"headers"`
+	ExtraBody         map[string]any              `json:"extraBody"`
 	KeySet            bool                        `json:"keySet"` // the env var currently resolves to a non-empty value
 	RequiresKey       bool                        `json:"requiresKey"`
 	Configured        bool                        `json:"configured"` // selectable: either key is present or no key is required
@@ -225,6 +226,13 @@ func nonNilStringMap(m map[string]string) map[string]string {
 	return m
 }
 
+func nonNilAnyMap(m map[string]any) map[string]any {
+	if m == nil {
+		return map[string]any{}
+	}
+	return m
+}
+
 func providerModelOverridesForView(overrides map[string]config.ProviderModelOverride, models []string) []ProviderModelOverrideView {
 	if len(overrides) == 0 {
 		return []ProviderModelOverrideView{}
@@ -396,6 +404,7 @@ func providerViewFromEntryForRootWithResolver(p config.ProviderEntry, builtIn, a
 		Models: nonNil(models), VisionModels: nonNil(providerVisionModels(models, visionModels)), VisionModelsSet: visionModelsSet, ModelsURL: p.ModelsURL, Default: p.DefaultModel(),
 		APIKeyEnv:         p.APIKeyEnv,
 		Headers:           nonNilStringMap(p.Headers),
+		ExtraBody:         nonNilAnyMap(p.ExtraBody),
 		KeySet:            key.Set,
 		RequiresKey:       requiresKey,
 		Configured:        !requiresKey || key.Set,
@@ -1322,6 +1331,7 @@ func (a *App) SaveProvider(p ProviderView) error {
 		e.ModelsURL = strings.TrimSpace(p.ModelsURL)
 		e.APIKeyEnv = p.APIKeyEnv
 		e.Headers = p.Headers
+		e.ExtraBody = p.ExtraBody
 		e.BalanceURL = strings.TrimSpace(p.BalanceURL)
 		e.ContextWindow = p.ContextWindow
 		e.ReasoningProtocol = p.ReasoningProtocol
