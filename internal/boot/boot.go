@@ -233,6 +233,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	}
 	sysPrompt += "\n\n" + config.UserDecisionPolicy
 	sysPrompt += "\n\n" + config.LanguagePolicy
+	if root != "" {
+		sysPrompt += "\n\nCurrent workspace: " + root
+	}
 	if tokenEconomy {
 		sysPrompt += "\n\n" + tokenEconomyPrompt
 	}

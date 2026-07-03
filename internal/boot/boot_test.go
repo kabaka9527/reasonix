@@ -2260,14 +2260,67 @@ api_key_env = "REASONIX_TEST_KEY_UNSET"
 	if i := strings.Index(sys, "\n\n# Skills"); i >= 0 {
 		base = sys[:i]
 	}
-	// The language policy is always appended at boot; strip it so this assertion
-	// is purely about whether project/ancestor memory leaked into the base. The
-	// user-decision policy is another fixed boot policy and is stripped for the
-	// same reason.
+	// The language policy, user-decision policy, and current-workspace line are
+	// always appended at boot; strip them so this assertion is purely about
+	// whether project/ancestor memory leaked into the base.
 	base = stripEnvironmentBlock(base)
+	base = stripCurrentWorkspaceLine(base)
 	base = stripLanguagePolicy(base)
 	if base != "JUST THE BASE" {
 		t.Fatalf("expected untouched base prompt, got:\n%s", sys)
+	}
+}
+
+func TestBuildAddsCurrentWorkspaceToSystemPrompt(t *testing.T) {
+	isolateConfigHome(t)
+	projectA := robustTempDir(t)
+	projectB := robustTempDir(t)
+	for _, dir := range []string{projectA, projectB} {
+		writeFile(t, dir, "reasonix.toml", `
+default_model = "test-model"
+
+[agent]
+system_prompt = "BASE"
+
+[[providers]]
+name = "test-model"
+kind = "openai"
+base_url = "https://example.invalid"
+model = "x"
+api_key_env = "REASONIX_TEST_KEY_UNSET"
+`)
+	}
+
+	tests := []struct {
+		name  string
+		root  string
+		other string
+	}{
+		{name: "project A", root: projectA, other: projectB},
+		{name: "project B", root: projectB, other: projectA},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl, err := Build(context.Background(), Options{WorkspaceRoot: tt.root})
+			if err != nil {
+				t.Fatalf("Build: %v", err)
+			}
+			defer ctrl.Close()
+
+			sys := systemMessage(ctrl.History())
+			want := "Current workspace: " + tt.root
+			if !strings.Contains(sys, want) {
+				t.Fatalf("workspace line missing %q from system prompt:\n%s", want, sys)
+			}
+			if strings.Contains(sys, "Current workspace: "+tt.other) {
+				t.Fatalf("system prompt used the other project root %q:\n%s", tt.other, sys)
+			}
+			languageIdx := strings.Index(sys, config.LanguagePolicy)
+			workspaceIdx := strings.Index(sys, want)
+			if languageIdx < 0 || workspaceIdx < 0 || workspaceIdx < languageIdx {
+				t.Fatalf("workspace line should follow language policy:\n%s", sys)
+			}
+		})
 	}
 }
 
@@ -2357,6 +2410,13 @@ func stripLanguagePolicy(s string) string {
 
 func stripEnvironmentBlock(s string) string {
 	if i := strings.Index(s, "\n\n## Environment"); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
+func stripCurrentWorkspaceLine(s string) string {
+	if i := strings.LastIndex(s, "\n\nCurrent workspace: "); i >= 0 {
 		return s[:i]
 	}
 	return s
