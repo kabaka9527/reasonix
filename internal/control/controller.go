@@ -103,6 +103,8 @@ type Controller struct {
 	startedOnce                bool                             // guards the one-shot SessionStart hook on first turn
 	onRemember                 func(rule string) RememberResult // set via Options; invoked when user picks "always allow"
 	onRememberMCPReadOnlyTrust func(serverName, rawToolName string) MCPReadOnlyTrustResult
+	sessionRecoveryMeta        func(SessionRecoveryRequest) agent.BranchMeta
+	onSessionRecovered         func(SessionRecoveryInfo) error
 
 	// balanceURL/balanceKey target the active provider's optional wallet-balance
 	// endpoint (empty when the provider declares none). Captured at build so a
@@ -253,6 +255,20 @@ type MCPReadOnlyTrustResult struct {
 	Err       error
 }
 
+type SessionRecoveryRequest struct {
+	OriginalPath string
+	Reason       string
+	Mode         string
+}
+
+type SessionRecoveryInfo struct {
+	OriginalPath string
+	RecoveryPath string
+	Existing     bool
+	Reason       string
+	Meta         agent.BranchMeta
+}
+
 type externalFolderToolRefs interface {
 	RegisterReadRoot(token, root string)
 }
@@ -320,6 +336,12 @@ type Options struct {
 	// read-only when the user chooses "always allow" from the plan-mode trust
 	// prompt.
 	OnRememberMCPReadOnlyTrust func(serverName, rawToolName string) MCPReadOnlyTrustResult
+	// SessionRecoveryMeta lets a frontend attach scope/topic/profile metadata to
+	// an automatic recovery branch before it is written.
+	SessionRecoveryMeta func(SessionRecoveryRequest) agent.BranchMeta
+	// OnSessionRecovered is called after a stale runtime's transcript has been
+	// saved as a recovery branch, before the controller commits to that branch.
+	OnSessionRecovered func(SessionRecoveryInfo) error
 	// PlanModeAllowedTools names extra custom tools the plan-mode policy may treat
 	// as read-only. Known blocked tools and unsafe bash still lose.
 	PlanModeAllowedTools []string
@@ -369,6 +391,8 @@ func New(opts Options) *Controller {
 		classifier:                 classifier,
 		onRemember:                 opts.OnRemember,
 		onRememberMCPReadOnlyTrust: opts.OnRememberMCPReadOnlyTrust,
+		sessionRecoveryMeta:        opts.SessionRecoveryMeta,
+		onSessionRecovered:         opts.OnSessionRecovered,
 		balanceURL:                 opts.BalanceURL,
 		balanceKey:                 opts.BalanceKey,
 		balanceClient:              opts.BalanceClient,
@@ -2617,7 +2641,18 @@ func (c *Controller) snapshot(markActivity, forceRewrite bool) error {
 		err = s.SaveSnapshot(path)
 	}
 	if err != nil {
-		return err
+		if !errors.Is(err, agent.ErrSessionSnapshotConflict) {
+			return err
+		}
+		recoveredPath, recovered, recoverErr := c.recoverSnapshotConflict(path, err, forceRewrite)
+		if recoverErr != nil {
+			return recoverErr
+		}
+		if !recovered {
+			return nil
+		}
+		path = recoveredPath
+		s = c.executor.Session()
 	}
 	// Persist guardian session so the prefix cache stays warm after restart.
 	if c.guardianSess != nil {
@@ -2636,6 +2671,79 @@ func (c *Controller) snapshot(markActivity, forceRewrite bool) error {
 	// EnsureBranchMeta / SetBranchModel / TouchBranchMeta sequence.
 	preview, turns := agent.SessionPreviewFromMessages(s.Snapshot())
 	return agent.UpdateSessionMeta(path, modelRef, preview, turns, markActivity)
+}
+
+func (c *Controller) recoverSnapshotConflict(path string, saveErr error, forceRewrite bool) (string, bool, error) {
+	if c.executor == nil || strings.TrimSpace(path) == "" {
+		return "", false, saveErr
+	}
+	if kind, ok := agent.SnapshotConflictKind(saveErr); ok && kind == agent.SessionSnapshotConflictStalePrefix {
+		if c.adoptDiskSession(path) {
+			c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
+				Text: "session changed on disk; adopted the newer transcript"})
+			return path, true, nil
+		}
+	}
+	reason := "snapshot conflict"
+	mode := "snapshot"
+	if forceRewrite {
+		reason = "rewrite conflict"
+		mode = "rewrite"
+	}
+	req := SessionRecoveryRequest{OriginalPath: path, Reason: reason, Mode: mode}
+	meta := agent.BranchMeta{}
+	if c.sessionRecoveryMeta != nil {
+		meta = c.sessionRecoveryMeta(req)
+	}
+	info, err := c.executor.Session().SaveRecoveryBranch(agent.RecoveryBranchOptions{
+		OriginalPath: path,
+		Reason:       reason,
+		BranchMeta:   meta,
+	})
+	if err != nil {
+		if errors.Is(err, agent.ErrSessionRecoveryNotNeeded) {
+			if c.adoptDiskSession(path) {
+				c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
+					Text: "session changed on disk; adopted the newer transcript"})
+				return path, true, nil
+			}
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("recover stale session snapshot: %w", err)
+	}
+	recoveryInfo := SessionRecoveryInfo{
+		OriginalPath: path,
+		RecoveryPath: info.Path,
+		Existing:     info.Existing,
+		Reason:       reason,
+		Meta:         info.Meta,
+	}
+	if c.onSessionRecovered != nil {
+		if err := c.onSessionRecovered(recoveryInfo); err != nil {
+			return "", false, fmt.Errorf("commit recovered session: %w", err)
+		}
+	}
+	c.mu.Lock()
+	c.sessionPath = info.Path
+	c.guardianPath = guardian.PathFor(info.Path)
+	c.mu.Unlock()
+	c.setActiveJobSession(info.Path)
+	c.rebindCheckpoints(info.Path)
+	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
+		Text: fmt.Sprintf("session changed on disk; unsaved local transcript was saved as recovery branch %s", agent.BranchID(info.Path))})
+	return info.Path, true, nil
+}
+
+func (c *Controller) adoptDiskSession(path string) bool {
+	loaded, err := agent.LoadSession(path)
+	if err != nil || loaded == nil {
+		return false
+	}
+	c.executor.SetSession(loaded)
+	c.ResetPlannerSession()
+	c.rebindCheckpoints(path)
+	c.setActiveJobSession(path)
+	return true
 }
 
 func (c *Controller) messageCount() int {
@@ -2752,7 +2860,13 @@ func (c *Controller) replaceSessionAfterCancel(msgs []provider.Message) {
 	c.mu.Unlock()
 	if path != "" {
 		if err := c.executor.Session().SaveRewrite(path); err != nil {
-			slog.Warn("controller: post-cancel transcript flush", "err", err)
+			if errors.Is(err, agent.ErrSessionSnapshotConflict) {
+				if _, _, recoverErr := c.recoverSnapshotConflict(path, err, true); recoverErr != nil {
+					slog.Warn("controller: post-cancel transcript recovery", "err", recoverErr)
+				}
+			} else {
+				slog.Warn("controller: post-cancel transcript flush", "err", err)
+			}
 		}
 	}
 }

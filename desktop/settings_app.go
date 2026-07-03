@@ -1007,8 +1007,11 @@ func (a *App) rebuild() error {
 		TokenMode:                currentTabTokenMode(tab),
 		SharedHost:               sharedHost,
 		CleanupPendingReconciler: reconcileDesktopCleanupPending,
+		SessionRecoveryMeta:      a.tabSessionRecoveryMeta(tab),
+		OnSessionRecovered:       a.handleTabSessionRecovered(tab),
 	})
 	if err != nil {
+		tab.releaseSessionLease()
 		a.mu.Lock()
 		tab.StartupErr = err.Error()
 		tab.Ready = true
@@ -1017,15 +1020,6 @@ func (a *App) rebuild() error {
 		return err
 	}
 	a.bindControllerDisplayRecorder(ctrl)
-	a.mu.Lock()
-	tab.Ctrl = ctrl
-	tab.model = model
-	tab.Label = ctrl.Label()
-	tab.StartupErr = ""
-	tab.Ready = true
-	a.saveTabsLocked()
-	a.mu.Unlock()
-	a.emitReady(a.ctx)
 	ctrl.EnableInteractiveApproval()
 	applyTabModeToController(ctrl, tab.mode)
 	// applyTabModeToController only encodes plan+yolo from tab.mode.
@@ -1036,6 +1030,11 @@ func (a *App) rebuild() error {
 		applyTabToolApprovalModeToController(ctrl, mode)
 	}
 	path := agent.ContinueSessionPath(prevPath, ctrl.SessionDir(), ctrl.Label())
+	if err := tab.ensureSessionLease(path); err != nil {
+		ctrl.Close()
+		tab.releaseSessionLease()
+		return err
+	}
 	if len(carried) > 0 {
 		carried = withFreshSystemPrompt(carried, systemPromptFrom(ctrl.History()))
 		ctrl.Resume(&agent.Session{Messages: carried}, path)
@@ -1043,6 +1042,15 @@ func (a *App) rebuild() error {
 		ctrl.SetSessionPath(path)
 	}
 	a.persistTabSessionPath(tab, path)
+	a.mu.Lock()
+	tab.Ctrl = ctrl
+	tab.model = model
+	tab.Label = ctrl.Label()
+	tab.StartupErr = ""
+	tab.Ready = true
+	a.saveTabsLocked()
+	a.mu.Unlock()
+	a.emitReady(a.ctx)
 	return nil
 }
 

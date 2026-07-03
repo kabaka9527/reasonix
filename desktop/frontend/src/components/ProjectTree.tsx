@@ -1140,7 +1140,15 @@ export function ProjectTree({
       const imSourceLabel = imSource?.label || "";
       const imSourceTitle = imSourceLabel ? t("msg.fromIm", { source: imSourceLabel }) : "";
       const imSourcePlatform = (imSource?.platform || "im").replace(/[^a-z0-9_-]/gi, "").toLowerCase() || "im";
-      const title = [label, imSourceTitle, statusLabel, meta, exactTimeLabel].filter(Boolean).join(" · ");
+      const recovered = Boolean(node.recovered);
+      const recoveryTitle = recovered
+        ? [
+            t("recovery.branch"),
+            node.recoveryReason ? t("recovery.reason", { reason: node.recoveryReason }) : "",
+            node.recoveryDigest ? t("recovery.digest", { digest: node.recoveryDigest.slice(0, 12) }) : "",
+          ].filter(Boolean).join(" · ")
+        : "";
+      const title = [label, recoveryTitle, imSourceTitle, statusLabel, meta, exactTimeLabel].filter(Boolean).join(" · ");
       const topicMenuOpen = !isSessionNode && menuTopic === topicId;
       const pinned = Boolean(node.pinned);
       const pinLabel = t(pinned ? "projectTree.unpinTopic" : "projectTree.pinTopic");
@@ -1217,7 +1225,7 @@ export function ProjectTree({
       }
       const row = (
         <div
-          className={`project-tree__topic${scopeClass}${isSessionNode ? " project-tree__topic--session" : ""}${active ? " project-tree__topic--active" : ""}${node.running ? " project-tree__topic--running" : ""}${status ? ` project-tree__topic--status-${status}` : ""}${unread ? " project-tree__topic--unread" : ""}${!isSessionNode && pinned ? " project-tree__topic--pinned" : ""}${topicMenuOpen ? " project-tree__topic--menu-open" : ""}${sideTimeVisible && (timeLabel || showStatusInSide) ? " project-tree__topic--with-side" : meta ? " project-tree__topic--has-meta" : ""}${imSource ? " project-tree__topic--im-source" : ""}${shortcutIndex > 0 ? " project-tree__topic--show-shortcut" : ""}`}
+          className={`project-tree__topic${scopeClass}${isSessionNode ? " project-tree__topic--session" : ""}${active ? " project-tree__topic--active" : ""}${node.running ? " project-tree__topic--running" : ""}${status ? ` project-tree__topic--status-${status}` : ""}${unread ? " project-tree__topic--unread" : ""}${!isSessionNode && pinned ? " project-tree__topic--pinned" : ""}${recovered ? " project-tree__topic--recovered" : ""}${topicMenuOpen ? " project-tree__topic--menu-open" : ""}${sideTimeVisible && (timeLabel || showStatusInSide) ? " project-tree__topic--with-side" : meta ? " project-tree__topic--has-meta" : ""}${imSource ? " project-tree__topic--im-source" : ""}${shortcutIndex > 0 ? " project-tree__topic--show-shortcut" : ""}`}
           style={accentStyle}
           onContextMenu={isSessionNode ? undefined : openTopicMenu}
         >
@@ -1271,6 +1279,11 @@ export function ProjectTree({
                   </span>
                 )}
                 {!compactTopics && statusLabel && <span className={`project-tree__topic-status project-tree__topic-status--${status}`}>{statusLabel}</span>}
+                {recovered && (
+                  <span className="project-tree__topic-recovery" title={recoveryTitle}>
+                    {t("recovery.badge")}
+                  </span>
+                )}
               </span>
               {!compactTopics && !creationTopics && meta && (
                 <span className="project-tree__topic-meta">
@@ -1292,6 +1305,11 @@ export function ProjectTree({
             {compactTopics && meta && (
               <span className="sr-only">
                 {meta}
+              </span>
+            )}
+            {compactTopics && recovered && (
+              <span className="sr-only">
+                {t("recovery.branch")}
               </span>
             )}
           </button>

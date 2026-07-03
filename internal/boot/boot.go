@@ -121,6 +121,10 @@ type Options struct {
 	// terminal. Headless/bot frontends pass a positive value so an unanswered
 	// prompt can't wedge the session indefinitely (#4626, #4402).
 	ApprovalTimeout time.Duration
+	// SessionRecoveryMeta and OnSessionRecovered let richer frontends attach
+	// local UI metadata to automatic transcript recovery branches.
+	SessionRecoveryMeta func(control.SessionRecoveryRequest) agent.BranchMeta
+	OnSessionRecovered  func(control.SessionRecoveryInfo) error
 }
 
 // Build loads config, resolves the model(s), and returns a Controller wrapping a
@@ -1095,6 +1099,8 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		OnRememberMCPReadOnlyTrust: func(serverName, rawToolName string) control.MCPReadOnlyTrustResult {
 			return rememberMCPReadOnlyTrust(root, serverName, rawToolName)
 		},
+		SessionRecoveryMeta: opts.SessionRecoveryMeta,
+		OnSessionRecovered:  opts.OnSessionRecovered,
 	}
 	// Guardian: when guardian_model is configured, spawn an LLM safety reviewer
 	// that can auto-allow safe Ask decisions and annotate risky ones before

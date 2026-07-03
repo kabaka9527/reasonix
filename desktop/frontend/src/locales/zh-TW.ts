@@ -571,6 +571,18 @@ export const zhTW: Record<DictKey, string> = {
   "history.historySessionActions": "歷史會話操作",
   "history.trashActions": "回收站操作",
 
+  // 會話恢復
+  "recovery.branch": "恢復分支",
+  "recovery.badge": "恢復",
+  "recovery.open": "開啟恢復分支",
+  "recovery.toast": "未儲存的本機內容已儲存為 {title}。",
+  "recovery.failedLease": "恢復分支被另一個執行階段占用，未切換過去。",
+  "recovery.failedUnavailable": "無法開啟恢復分支，目前標籤仍停留在原會話。",
+  "recovery.banner": "目前會話來自儲存衝突恢復。繼續前建議與原會話對比。",
+  "recovery.reason": "原因：{reason}",
+  "recovery.digest": "摘要：{digest}",
+  "recovery.parent": "父會話：{parent}",
+
   // 專案樹
   "projectTree.workspaceTitle": "專案",
   "projectTree.pinnedTitle": "置頂",

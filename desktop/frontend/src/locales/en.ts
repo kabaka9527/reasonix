@@ -728,6 +728,18 @@ export const en = {
   "history.historySessionActions": "History session actions",
   "history.trashActions": "Trash actions",
 
+  // session recovery
+  "recovery.branch": "Recovery branch",
+  "recovery.badge": "Recovery",
+  "recovery.open": "Open recovery branch",
+  "recovery.toast": "Unsaved local changes were saved as {title}.",
+  "recovery.failedLease": "The recovery branch is in use by another runtime, so this tab did not switch to it.",
+  "recovery.failedUnavailable": "The recovery branch could not be opened, so this tab stayed on the original session.",
+  "recovery.banner": "This session was recovered from a save conflict. Compare it with the original before continuing.",
+  "recovery.reason": "Reason: {reason}",
+  "recovery.digest": "Digest: {digest}",
+  "recovery.parent": "Parent: {parent}",
+
   // project tree
   "projectTree.workspaceTitle": "Projects",
   "projectTree.pinnedTitle": "Pinned",

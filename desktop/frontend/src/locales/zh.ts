@@ -729,6 +729,18 @@ export const zh: Record<DictKey, string> = {
   "history.historySessionActions": "历史会话操作",
   "history.trashActions": "回收站操作",
 
+  // 会话恢复
+  "recovery.branch": "恢复分支",
+  "recovery.badge": "恢复",
+  "recovery.open": "打开恢复分支",
+  "recovery.toast": "未保存的本地内容已保存为 {title}。",
+  "recovery.failedLease": "恢复分支被另一个运行时占用，未切换过去。",
+  "recovery.failedUnavailable": "无法打开恢复分支，当前标签仍停留在原会话。",
+  "recovery.banner": "当前会话来自保存冲突恢复。继续前建议与原会话对比。",
+  "recovery.reason": "原因：{reason}",
+  "recovery.digest": "摘要：{digest}",
+  "recovery.parent": "父会话：{parent}",
+
   // 项目树
   "projectTree.workspaceTitle": "项目",
   "projectTree.pinnedTitle": "置顶",
