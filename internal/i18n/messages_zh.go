@@ -109,7 +109,7 @@ var Chinese = Messages{
 	SlashUnavailable:   "当前构建不支持该命令",
 	SlashUnknown:       "未知命令",
 	SlashTodoCleared:   "已清除任务清单",
-	SlashHelp:          "命令：/compact · /new · /clear · /resume · /rewind · /tree · /branch · /switch · /todo · /verbose · /model（切换模型）· /effort · /theme · /language · /mcp · /skills · /hooks · /paste-image · /memory · /memory-v5 · /migrate · /goal · /remember · /quit · /help · 以及 skills（/init、/explore …）",
+	SlashHelp:          "命令：/compact · /new · /clear · /resume · /rewind · /tree · /branch · /switch · /todo · /verbose · /model（切换模型）· /effort · /theme · /language · /mcp · /skills · /plugins · /hooks · /paste-image · /memory · /memory-v5 · /migrate · /goal · /remember · /quit · /help · 以及 skills（/init、/explore …）",
 
 	SkillPickerTitle:             "Skills",
 	SkillPickerAvailableFmt:      "%d 个可用",
@@ -188,6 +188,7 @@ var Chinese = Messages{
 	CmdForget:           "归档一条已存记忆",
 	CmdMcp:              "MCP 服务器",
 	CmdHooks:            "管理 hooks",
+	CmdPlugins:          "管理插件包",
 	CmdPasteImage:       "粘贴剪贴板图片",
 	CmdOutputStyle:      "列出输出风格",
 	CmdTheme:            "切换 CLI 主题",

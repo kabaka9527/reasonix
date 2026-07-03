@@ -81,6 +81,12 @@ Show one plugin's metadata, root, source, and exported capability counts:
 reasonix plugin show superpowers
 ```
 
+`show` also prints the concrete capability inventory when available:
+
+- **skills** include suggested `/<skill>` invocations and descriptions.
+- **hooks** list lifecycle events, matchers, and commands or context files.
+- **mcpServers** list server names, transports, and launch targets.
+
 Check that the manifest and skill roots are readable:
 
 ```bash
@@ -103,6 +109,25 @@ reasonix plugin remove superpowers --yes
 `remove` also accepts `uninstall` as an alias. It requires `--yes` because it
 writes state and removes copied plugin content. For linked local plugins, the
 external source directory is left in place.
+
+### Use Installed Plugins From CLI
+
+Installed plugins do not open a separate chat surface. When a plugin is enabled,
+Reasonix loads its capabilities into normal interactive sessions:
+
+- Run `/plugins` inside an interactive session to list installed plugin
+  packages. Run `/plugins show <name>` to inspect a plugin's exported skills,
+  hooks, MCP servers, and usage hints without leaving the chat.
+- **Skills** appear in `/skills`. Invoke a skill with `/<skill> [args]`, or ask
+  naturally and let the agent choose a matching skill by description.
+- **Hooks** run automatically at their configured lifecycle events, such as
+  `SessionStart`, `UserPromptSubmit`, `PreToolUse`, or `PostToolUse`.
+- **MCP servers** join the normal MCP/tool flow. Ask for the task you want done;
+  Reasonix can call the plugin's tools when they are relevant.
+
+After installing, enabling, disabling, or updating a plugin from a separate
+terminal while a session is already running, start a new `reasonix` session or
+reopen `/skills` to verify the current session sees the expected skills.
 
 ## Desktop Settings
 
@@ -147,10 +172,26 @@ changing config outside the app.
 Expand a plugin row to manage it:
 
 - Enable or disable the plugin.
+- Read **How to use** for the plugin's exported skills, hooks, and MCP servers.
 - **Update** pulls or refreshes an installed plugin when an update source is
   available.
 - **Doctor** checks the plugin manifest and reports warnings or diagnostics.
 - **Remove plugin** uninstalls the package after confirmation.
+
+### Use Installed Plugins From Desktop
+
+The desktop settings page uses the same runtime model as the CLI:
+
+- Expand an installed plugin to see its **How to use** section.
+- In any desktop session, type `/plugins` to list installed plugins, or
+  `/plugins show <name>` to see the same usage details from the chat surface.
+- Skills are shown with suggested direct commands such as `/plan`; they are also
+  discoverable from `/skills` in a session.
+- Hooks and MCP servers are listed for transparency. They do not need a manual
+  "run" button: enabled hooks trigger automatically, and MCP tools are available
+  through ordinary tool use.
+- If a currently open session does not reflect a plugin change, refresh the
+  plugin list and open a new session.
 
 ## Native Manifest
 
@@ -184,10 +225,20 @@ third-party install scripts during plugin installation.
 ## Codex Compatibility
 
 Reasonix also reads Codex plugin manifests at `.codex-plugin/plugin.json`.
-For packages such as Superpowers, Reasonix maps:
+For packages such as Superpowers and Claude-style skill packs, Reasonix maps:
 
 - `skills` to Reasonix skill roots.
 - `hooks/session-start-codex` to the Reasonix `SessionStart` hook when present.
+- A plugin-root `CLAUDE.md` file to a built-in `SessionStart` context hook. The
+  file is read directly by Reasonix, without spawning a shell command.
+- `.claude/settings.json` command hooks to Reasonix hook events when the event
+  names match. Claude's `matcher` field maps to Reasonix `match`; hook commands
+  run as shell commands with the plugin root as `cwd`; Claude `timeout` values
+  are interpreted as seconds.
+
+Unsupported Claude hook item types are skipped with a warning. Reasonix does not
+run third-party install scripts or implement marketplace-specific install
+protocols.
 
 Plugin hooks receive these environment variables:
 
@@ -196,6 +247,7 @@ Plugin hooks receive these environment variables:
 - `REASONIX_PLUGIN_VERSION`
 - `REASONIX_HOME`
 - `REASONIX_WORKSPACE_ROOT`
+- `CLAUDE_PROJECT_DIR`
 
 ## Desktop Backend Methods
 

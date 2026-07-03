@@ -255,6 +255,11 @@ This is intended for plugin or workflow bootstrap context, including
 Superpowers-style startup instructions, without baking that workflow into
 Reasonix's system prompt.
 
+Plugin packages can provide this startup context through
+`hooks/session-start-codex` or a plugin-root `CLAUDE.md`. Claude-style
+`.claude/settings.json` command hooks are also mapped to matching Reasonix hook
+events.
+
 The injected hook context is dynamic current-turn context. It does not change
 the stable system prompt, memory prefix, or tool schema, though dynamic content
 can still reduce cache reuse for that turn. The detailed desktop hook schema and

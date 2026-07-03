@@ -41,6 +41,7 @@ func TestSlashArgItems(t *testing.T) {
 		CurrentModel:    "deepseek-flash/deepseek-v4-flash",
 		ProviderNames:   []string{"deepseek-flash", "deepseek-pro", "custom"},
 		CurrentProvider: "deepseek-flash",
+		PluginNames:     []string{"superpowers", "workflow-kit"},
 	}
 
 	// /skills subcommands
@@ -181,6 +182,15 @@ func TestSlashArgItems(t *testing.T) {
 	// handled by runSkillSubcommand.
 	if items, _ := SlashArgItems("/skills li", data); len(items) != 0 {
 		t.Errorf("/skills li should not offer hidden list suggestion; got %v", labelsOf(items))
+	}
+	// /plugins mirrors the session-facing plugin inventory command.
+	items, _ = SlashArgItems("/plugins ", data)
+	if !has(items, "show") {
+		t.Errorf("/plugins should offer show; got %v", labelsOf(items))
+	}
+	items, _ = SlashArgItems("/plugins show ", data)
+	if !has(items, "superpowers") || !has(items, "workflow-kit") {
+		t.Errorf("/plugins show should list plugin names; got %v", labelsOf(items))
 	}
 }
 

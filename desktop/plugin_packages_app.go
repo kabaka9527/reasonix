@@ -13,18 +13,21 @@ import (
 )
 
 type PluginView struct {
-	Name         string   `json:"name"`
-	Version      string   `json:"version,omitempty"`
-	Description  string   `json:"description,omitempty"`
-	Source       string   `json:"source,omitempty"`
-	Root         string   `json:"root"`
-	ManifestKind string   `json:"manifestKind,omitempty"`
-	Enabled      bool     `json:"enabled"`
-	Skills       int      `json:"skills"`
-	Hooks        int      `json:"hooks"`
-	MCPServers   int      `json:"mcpServers"`
-	Warnings     []string `json:"warnings,omitempty"`
-	Error        string   `json:"error,omitempty"`
+	Name             string                `json:"name"`
+	Version          string                `json:"version,omitempty"`
+	Description      string                `json:"description,omitempty"`
+	Source           string                `json:"source,omitempty"`
+	Root             string                `json:"root"`
+	ManifestKind     string                `json:"manifestKind,omitempty"`
+	Enabled          bool                  `json:"enabled"`
+	Skills           int                   `json:"skills"`
+	Hooks            int                   `json:"hooks"`
+	MCPServers       int                   `json:"mcpServers"`
+	SkillDetails     []PluginSkillView     `json:"skillDetails,omitempty"`
+	HookDetails      []PluginHookView      `json:"hookDetails,omitempty"`
+	MCPServerDetails []PluginMCPServerView `json:"mcpServerDetails,omitempty"`
+	Warnings         []string              `json:"warnings,omitempty"`
+	Error            string                `json:"error,omitempty"`
 }
 
 type PluginInstallOptions struct {
@@ -32,6 +35,29 @@ type PluginInstallOptions struct {
 	Link    bool   `json:"link,omitempty"`
 	Replace bool   `json:"replace,omitempty"`
 	Name    string `json:"name,omitempty"`
+}
+
+type PluginSkillView struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Path        string `json:"path,omitempty"`
+	Invocation  string `json:"invocation,omitempty"`
+	RunAs       string `json:"runAs,omitempty"`
+}
+
+type PluginHookView struct {
+	Event       string `json:"event"`
+	Match       string `json:"match,omitempty"`
+	Command     string `json:"command,omitempty"`
+	ContextFile string `json:"contextFile,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+type PluginMCPServerView struct {
+	Name      string `json:"name"`
+	Transport string `json:"transport,omitempty"`
+	Command   string `json:"command,omitempty"`
+	URL       string `json:"url,omitempty"`
 }
 
 func (a *App) Plugins() []PluginView {
@@ -51,14 +77,48 @@ func (a *App) Plugins() []PluginView {
 			Enabled:      p.Enabled,
 		}
 		if pkg, warnings, err := pluginpkg.ParseDir(view.Root); err == nil {
-			view.Skills, view.Hooks, view.MCPServers = pkg.CapabilityCounts()
-			view.Warnings = warnings
+			applyPluginPackageDetails(&view, pkg, warnings)
 		} else {
 			view.Error = err.Error()
 		}
 		out = append(out, view)
 	}
 	return out
+}
+
+func applyPluginPackageDetails(view *PluginView, pkg pluginpkg.Package, warnings []string) {
+	view.Skills, view.Hooks, view.MCPServers = pkg.CapabilityCounts()
+	view.Warnings = warnings
+	inv := pkg.Inventory()
+	view.SkillDetails = make([]PluginSkillView, 0, len(inv.Skills))
+	for _, sk := range inv.Skills {
+		view.SkillDetails = append(view.SkillDetails, PluginSkillView{
+			Name:        sk.Name,
+			Description: sk.Description,
+			Path:        sk.Path,
+			Invocation:  sk.Invocation,
+			RunAs:       sk.RunAs,
+		})
+	}
+	view.HookDetails = make([]PluginHookView, 0, len(inv.Hooks))
+	for _, hook := range inv.Hooks {
+		view.HookDetails = append(view.HookDetails, PluginHookView{
+			Event:       hook.Event,
+			Match:       hook.Match,
+			Command:     hook.Command,
+			ContextFile: hook.ContextFile,
+			Description: hook.Description,
+		})
+	}
+	view.MCPServerDetails = make([]PluginMCPServerView, 0, len(inv.MCPServers))
+	for _, server := range inv.MCPServers {
+		view.MCPServerDetails = append(view.MCPServerDetails, PluginMCPServerView{
+			Name:      server.Name,
+			Transport: server.Transport,
+			Command:   server.Command,
+			URL:       server.URL,
+		})
+	}
 }
 
 func (a *App) PlanPluginInstall(source string, opts PluginInstallOptions) (string, error) {

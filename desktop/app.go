@@ -44,6 +44,7 @@ import (
 	"reasonix/internal/mcpdiag"
 	"reasonix/internal/memory"
 	"reasonix/internal/plugin"
+	"reasonix/internal/pluginpkg"
 	"reasonix/internal/provider"
 	"reasonix/internal/skill"
 )
@@ -4996,6 +4997,7 @@ func (a *App) Commands() []CommandInfo {
 		{Name: "remember", Description: i18n.M.CmdRemember, Kind: "builtin"},
 		{Name: "mcp", Description: i18n.M.CmdMcp, Kind: "builtin"},
 		{Name: "hooks", Description: i18n.M.CmdHooks, Kind: "builtin"},
+		{Name: "plugins", Description: i18n.M.CmdPlugins, Kind: "builtin"},
 		{Name: "theme", Description: i18n.M.CmdTheme, Kind: "builtin"},
 		{Name: "skill", Description: i18n.M.CmdSkill, Kind: "builtin"},
 		{Name: "reload-cmd", Description: i18n.M.CmdReloadCmd, Kind: "builtin"},
@@ -5061,6 +5063,9 @@ func (a *App) SlashArgs(input string) SlashArgsResult {
 		ConfiguredMCP:   ctrl.ConfiguredMCPNames(),
 		DisconnectedMCP: ctrl.DisconnectedMCPNames(),
 		CurrentModel:    model,
+	}
+	if names, err := pluginpkg.InstalledNames(config.ReasonixHomeDir()); err == nil {
+		data.PluginNames = names
 	}
 	seen := map[string]bool{}
 	for _, m := range a.Models() {

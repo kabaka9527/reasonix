@@ -320,6 +320,9 @@ console.log("capabilities panel plugin actions");
             skills: 3,
             hooks: 1,
             mcpServers: 1,
+            skillDetails: [{ name: "plan", description: "Plan work before implementation.", invocation: "/plan", runAs: "inline" }],
+            hookDetails: [{ event: "SessionStart", contextFile: "CLAUDE.md", description: "Load startup context." }],
+            mcpServerDetails: [{ name: "context", transport: "stdio", command: "node server.js" }],
           };
           plugins = plugins.filter((plugin) => plugin.name !== next.name).concat(next);
           return JSON.stringify({ ok: true, status: "done", actions: [{ action: "install_plugin_package", name: next.name, status: "done" }] });
@@ -410,6 +413,10 @@ console.log("capabilities panel plugin actions");
     await flush();
   });
   await waitFor("plugin update action", () => Boolean(findButton("Update")));
+  ok(document.body.textContent?.includes("How to use") ?? false, "expanded plugin details explain how to use the plugin");
+  ok(document.body.textContent?.includes("/plan") ?? false, "expanded plugin details list exported skill invocations");
+  ok(document.body.textContent?.includes("SessionStart") ?? false, "expanded plugin details list exported hooks");
+  ok(document.body.textContent?.includes("context") ?? false, "expanded plugin details list exported MCP servers");
 
   const update = findButton("Update");
   if (!update) throw new Error("missing plugin update button");

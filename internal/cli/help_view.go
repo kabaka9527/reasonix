@@ -69,6 +69,7 @@ func builtinHelpItems() []compItem {
 		{label: "/provider", hint: i18n.M.CmdProvider},
 		{label: "/mcp", hint: i18n.M.CmdMcp},
 		{label: "/skills", hint: i18n.M.CmdSkill},
+		{label: "/plugins", hint: i18n.M.CmdPlugins},
 		{label: "/hooks", hint: i18n.M.CmdHooks},
 		{label: "/memory", hint: i18n.M.CmdMemory},
 		{label: "/migrate", hint: i18n.M.CmdMigrate},

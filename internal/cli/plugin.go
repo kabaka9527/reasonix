@@ -171,6 +171,16 @@ func runInstallSourceJSON(body map[string]any) int {
 		return 1
 	}
 	fmt.Println(out)
+	var resp struct {
+		OK bool `json:"ok"`
+	}
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if !resp.OK {
+		return 1
+	}
 	return 0
 }
 
@@ -221,10 +231,62 @@ func pluginShowCommand(args []string) int {
 	skills, hooks, mcp := pkg.CapabilityCounts()
 	fmt.Printf("name: %s\nversion: %s\nenabled: %t\nkind: %s\nroot: %s\nsource: %s\nskills: %d\nhooks: %d\nmcpServers: %d\n",
 		p.Name, p.Version, p.Enabled, p.ManifestKind, root, p.Source, skills, hooks, mcp)
+	printPluginInventory(pkg.Inventory())
 	for _, warning := range warnings {
 		fmt.Println("warning:", warning)
 	}
 	return 0
+}
+
+func printPluginInventory(inv pluginpkg.Inventory) {
+	if len(inv.Skills) > 0 {
+		fmt.Println("usage:")
+		fmt.Println("  skills are available in interactive sessions; run /skills to browse them, or invoke a skill directly with /<name>.")
+		fmt.Println("skills:")
+		for _, sk := range inv.Skills {
+			desc := sk.Description
+			if desc == "" {
+				desc = "(no description)"
+			}
+			invocation := sk.Invocation
+			if invocation == "" {
+				invocation = "/" + sk.Name
+			}
+			if sk.RunAs != "" {
+				fmt.Printf("  %s\t%s\t%s\n", invocation, sk.RunAs, desc)
+			} else {
+				fmt.Printf("  %s\t%s\n", invocation, desc)
+			}
+		}
+	}
+	if len(inv.Hooks) > 0 {
+		fmt.Println("hooks:")
+		for _, hook := range inv.Hooks {
+			target := hook.Command
+			if target == "" {
+				target = hook.ContextFile
+			}
+			match := hook.Match
+			if match == "" {
+				match = "*"
+			}
+			if hook.Description != "" {
+				fmt.Printf("  %s\tmatch=%s\t%s\t%s\n", hook.Event, match, target, hook.Description)
+			} else {
+				fmt.Printf("  %s\tmatch=%s\t%s\n", hook.Event, match, target)
+			}
+		}
+	}
+	if len(inv.MCPServers) > 0 {
+		fmt.Println("mcpServers:")
+		for _, server := range inv.MCPServers {
+			target := server.Command
+			if target == "" {
+				target = server.URL
+			}
+			fmt.Printf("  %s\t%s\t%s\n", server.Name, server.Transport, target)
+		}
+	}
 }
 
 func pluginDoctorCommand(args []string) int {

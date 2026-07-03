@@ -3,6 +3,8 @@ package hook
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -208,6 +210,31 @@ func TestRunnerSessionStartReturnsAdditionalContexts(t *testing.T) {
 	r := NewRunner(hooks, "/tmp", spawner, nil)
 	got := r.SessionStart(context.Background())
 	if len(got) != 2 || got[0] != "Load notes." || got[1] != "Use Superpowers." {
+		t.Fatalf("SessionStart contexts = %#v", got)
+	}
+}
+
+func TestRunnerSessionStartReadsContextFile(t *testing.T) {
+	dir := t.TempDir()
+	contextPath := filepath.Join(dir, "CLAUDE.md")
+	if err := os.WriteFile(contextPath, []byte("Use the packaged workflow."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	calledSpawner := false
+	r := NewRunner([]ResolvedHook{{
+		HookConfig: HookConfig{ContextFile: contextPath, Description: "Plugin CLAUDE.md"},
+		Event:      SessionStart,
+		Scope:      ScopePlugin,
+	}}, dir, func(context.Context, SpawnInput) SpawnResult {
+		calledSpawner = true
+		return SpawnResult{ExitCode: 1}
+	}, nil)
+
+	got := r.SessionStart(context.Background())
+	if calledSpawner {
+		t.Fatal("context file hook should not invoke shell spawner")
+	}
+	if len(got) != 1 || got[0] != "Use the packaged workflow." {
 		t.Fatalf("SessionStart contexts = %#v", got)
 	}
 }

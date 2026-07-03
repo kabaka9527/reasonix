@@ -4232,6 +4232,12 @@ func TestCapabilitiesIncludesInstalledPlugins(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "skills"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(root, "skills", "plan"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "skills", "plan", "SKILL.md"), []byte("---\ndescription: Plan work\n---\nbody"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Join(root, ".codex-plugin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -4258,6 +4264,9 @@ func TestCapabilitiesIncludesInstalledPlugins(t *testing.T) {
 	plugins := app.Capabilities().Plugins
 	if len(plugins) != 1 || plugins[0].Name != "superpowers" || plugins[0].Skills != 1 {
 		t.Fatalf("Capabilities().Plugins = %+v", plugins)
+	}
+	if len(plugins[0].SkillDetails) != 1 || plugins[0].SkillDetails[0].Invocation != "/plan" {
+		t.Fatalf("Capabilities().Plugins skill details = %+v", plugins[0].SkillDetails)
 	}
 }
 

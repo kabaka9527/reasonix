@@ -700,8 +700,31 @@ export interface PluginView {
   skills: number;
   hooks: number;
   mcpServers: number;
+  skillDetails?: PluginSkillView[];
+  hookDetails?: PluginHookView[];
+  mcpServerDetails?: PluginMCPServerView[];
   warnings?: string[];
   error?: string;
+}
+export interface PluginSkillView {
+  name: string;
+  description?: string;
+  path?: string;
+  invocation?: string;
+  runAs?: string;
+}
+export interface PluginHookView {
+  event: string;
+  match?: string;
+  command?: string;
+  contextFile?: string;
+  description?: string;
+}
+export interface PluginMCPServerView {
+  name: string;
+  transport?: string;
+  command?: string;
+  url?: string;
 }
 export interface PluginInstallOptions {
   dryRun?: boolean;

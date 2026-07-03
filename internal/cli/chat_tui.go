@@ -3476,6 +3476,9 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 	case "/mcp":
 		m.echoLocalCommand(input)
 		m.runMCPSubcommand(input)
+	case "/plugin", "/plugins":
+		m.echoLocalCommand(input)
+		m.runPluginSubcommand(input)
 	case "/model":
 		m.echoLocalCommand(input)
 		m.runModelSubcommand(input)

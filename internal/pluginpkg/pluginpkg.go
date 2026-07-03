@@ -14,12 +14,17 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"reasonix/internal/frontmatter"
 )
 
 const (
 	NativeManifest = "reasonix-plugin.json"
 	CodexManifest  = ".codex-plugin/plugin.json"
 	StateFilename  = "plugin-packages.json"
+
+	claudeSettingsPath = ".claude/settings.json"
+	claudeInstructions = "CLAUDE.md"
 )
 
 var validName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
@@ -29,6 +34,35 @@ type Package struct {
 	Root         string
 	ManifestKind string
 	Manifest     Manifest
+}
+
+type Inventory struct {
+	Skills     []SkillRef
+	Hooks      []HookRef
+	MCPServers []MCPServerRef
+}
+
+type SkillRef struct {
+	Name        string
+	Description string
+	Path        string
+	Invocation  string
+	RunAs       string
+}
+
+type HookRef struct {
+	Event       string
+	Match       string
+	Command     string
+	ContextFile string
+	Description string
+}
+
+type MCPServerRef struct {
+	Name      string
+	Transport string
+	Command   string
+	URL       string
 }
 
 // Manifest is the normalized manifest shape used by Reasonix.
@@ -44,12 +78,14 @@ type Manifest struct {
 }
 
 type Hook struct {
-	Match       string            `json:"match,omitempty"`
-	Command     string            `json:"command"`
-	Description string            `json:"description,omitempty"`
-	Timeout     int               `json:"timeout,omitempty"`
-	Cwd         string            `json:"cwd,omitempty"`
-	Env         map[string]string `json:"env,omitempty"`
+	Match        string            `json:"match,omitempty"`
+	Command      string            `json:"command,omitempty"`
+	ContextFile  string            `json:"contextFile,omitempty"`
+	ShellCommand bool              `json:"shellCommand,omitempty"`
+	Description  string            `json:"description,omitempty"`
+	Timeout      int               `json:"timeout,omitempty"`
+	Cwd          string            `json:"cwd,omitempty"`
+	Env          map[string]string `json:"env,omitempty"`
 }
 
 type MCPServer struct {
@@ -260,7 +296,11 @@ func parseNative(path, root string) (Package, []string, error) {
 	if err := validateManifest(root, &manifest); err != nil {
 		return Package{}, nil, err
 	}
-	return Package{Root: root, ManifestKind: "reasonix", Manifest: manifest}, nil, nil
+	warnings := applyClaudeCompatibility(root, &manifest)
+	if err := validateManifest(root, &manifest); err != nil {
+		return Package{}, warnings, err
+	}
+	return Package{Root: root, ManifestKind: "reasonix", Manifest: manifest}, warnings, nil
 }
 
 func parseCodex(path, root string) (Package, []string, error) {
@@ -287,7 +327,6 @@ func parseCodex(path, root string) (Package, []string, error) {
 		Repository:  strings.TrimSpace(raw.Repository),
 		Skills:      skills,
 	}
-	var warnings []string
 	hookPath := filepath.Join(root, "hooks", "session-start-codex")
 	if info, err := os.Stat(hookPath); err == nil && info.Mode().IsRegular() {
 		manifest.Hooks = map[string][]Hook{
@@ -297,13 +336,126 @@ func parseCodex(path, root string) (Package, []string, error) {
 				Description: "Codex-compatible session start hook from " + manifest.Name,
 			}},
 		}
-	} else {
-		warnings = append(warnings, "no hooks/session-start-codex convention hook found")
 	}
+	warnings := applyClaudeCompatibility(root, &manifest)
 	if err := validateManifest(root, &manifest); err != nil {
 		return Package{}, warnings, err
 	}
 	return Package{Root: root, ManifestKind: "codex", Manifest: manifest}, warnings, nil
+}
+
+func applyClaudeCompatibility(root string, manifest *Manifest) []string {
+	appendRootClaudeInstructions(root, manifest)
+	return appendClaudeSettingsHooks(root, manifest)
+}
+
+func appendRootClaudeInstructions(root string, manifest *Manifest) {
+	path := filepath.Join(root, claudeInstructions)
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return
+	}
+	if manifest.Hooks == nil {
+		manifest.Hooks = map[string][]Hook{}
+	}
+	manifest.Hooks["SessionStart"] = append(manifest.Hooks["SessionStart"], Hook{
+		ContextFile: claudeInstructions,
+		Cwd:         ".",
+		Description: "Plugin CLAUDE.md startup context from " + manifest.Name,
+	})
+}
+
+func appendClaudeSettingsHooks(root string, manifest *Manifest) []string {
+	path := filepath.Join(root, claudeSettingsPath)
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var raw struct {
+		Hooks map[string][]struct {
+			Matcher string `json:"matcher"`
+			Match   string `json:"match"`
+			Hooks   []struct {
+				Type        string            `json:"type"`
+				Command     string            `json:"command"`
+				Description string            `json:"description"`
+				Timeout     int               `json:"timeout"`
+				Env         map[string]string `json:"env"`
+			} `json:"hooks"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return []string{fmt.Sprintf("%s: %v", claudeSettingsPath, err)}
+	}
+	if len(raw.Hooks) == 0 {
+		return nil
+	}
+	if manifest.Hooks == nil {
+		manifest.Hooks = map[string][]Hook{}
+	}
+	var warnings []string
+	for event, blocks := range raw.Hooks {
+		event = strings.TrimSpace(event)
+		if event == "" {
+			continue
+		}
+		for _, block := range blocks {
+			match := strings.TrimSpace(block.Matcher)
+			if match == "" {
+				match = strings.TrimSpace(block.Match)
+			}
+			for _, item := range block.Hooks {
+				typ := strings.TrimSpace(item.Type)
+				command := strings.TrimSpace(item.Command)
+				if typ != "" && typ != "command" {
+					warnings = append(warnings, fmt.Sprintf("%s: skipped unsupported hook type %q for %s", claudeSettingsPath, typ, event))
+					continue
+				}
+				if command == "" {
+					continue
+				}
+				manifest.Hooks[event] = append(manifest.Hooks[event], Hook{
+					Match:        match,
+					Command:      command,
+					ShellCommand: true,
+					Description:  firstNonEmpty(strings.TrimSpace(item.Description), "Claude-compatible hook from "+claudeSettingsPath),
+					Timeout:      claudeTimeoutMillis(item.Timeout),
+					Cwd:          ".",
+					Env:          cloneHookEnv(item.Env),
+				})
+			}
+		}
+	}
+	return warnings
+}
+
+func claudeTimeoutMillis(seconds int) int {
+	if seconds <= 0 {
+		return 0
+	}
+	return seconds * 1000
+}
+
+func cloneHookEnv(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := map[string]string{}
+	for k, v := range in {
+		if strings.TrimSpace(k) != "" {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func readJSONFile(path string, v any) error {
@@ -369,8 +521,9 @@ func normalizeHooks(in map[string][]Hook) map[string][]Hook {
 		event = strings.TrimSpace(event)
 		for _, h := range hooks {
 			h.Command = strings.TrimSpace(h.Command)
+			h.ContextFile = strings.TrimSpace(h.ContextFile)
 			h.Cwd = strings.TrimSpace(h.Cwd)
-			if h.Command == "" {
+			if h.Command == "" && h.ContextFile == "" {
 				continue
 			}
 			out[event] = append(out[event], h)
@@ -393,11 +546,16 @@ func validateManifest(root string, m *Manifest) error {
 			return fmt.Errorf("hook event is required")
 		}
 		for _, h := range hooks {
-			if h.Command == "" {
-				return fmt.Errorf("hook command is required")
+			if h.Command == "" && h.ContextFile == "" {
+				return fmt.Errorf("hook command or contextFile is required")
 			}
-			if !filepath.IsAbs(h.Command) {
+			if h.Command != "" && !h.ShellCommand && !filepath.IsAbs(h.Command) {
 				if err := validateRelativePath(h.Command); err != nil {
+					return err
+				}
+			}
+			if h.ContextFile != "" {
+				if err := validateRelativePath(h.ContextFile); err != nil {
 					return err
 				}
 			}
@@ -440,10 +598,196 @@ func (p Package) SkillRoots() []string {
 }
 
 func (p Package) CapabilityCounts() (skills, hooks, mcp int) {
-	skills = len(p.Manifest.Skills)
+	skills = len(p.skillRefs())
 	for _, hs := range p.Manifest.Hooks {
 		hooks += len(hs)
 	}
 	mcp = len(p.Manifest.MCPServers)
 	return
+}
+
+func (p Package) Inventory() Inventory {
+	return Inventory{
+		Skills:     p.skillRefs(),
+		Hooks:      p.hookRefs(),
+		MCPServers: p.mcpServerRefs(),
+	}
+}
+
+func (p Package) skillRefs() []SkillRef {
+	var out []SkillRef
+	seen := map[string]bool{}
+	for _, rel := range p.Manifest.Skills {
+		root := filepath.Join(p.Root, filepath.FromSlash(rel))
+		p.scanSkillPath(root, 1, map[string]bool{}, &out)
+	}
+	filtered := out[:0]
+	for _, sk := range out {
+		key := sk.Path
+		if key == "" {
+			key = sk.Name
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		filtered = append(filtered, sk)
+	}
+	sort.SliceStable(filtered, func(i, j int) bool {
+		if filtered[i].Name != filtered[j].Name {
+			return filtered[i].Name < filtered[j].Name
+		}
+		return filtered[i].Path < filtered[j].Path
+	})
+	return filtered
+}
+
+func (p Package) scanSkillPath(path string, depth int, seen map[string]bool, out *[]SkillRef) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return
+	}
+	if !info.IsDir() {
+		if info.Mode().IsRegular() && strings.EqualFold(filepath.Ext(path), ".md") {
+			if sk, ok := parseSkillRef(path, strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))); ok {
+				*out = append(*out, sk)
+			}
+		}
+		return
+	}
+
+	key := filepath.Clean(path)
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		key = filepath.Clean(resolved)
+	}
+	if seen[key] {
+		return
+	}
+	seen[key] = true
+
+	if sk, ok := parseSkillRef(filepath.Join(path, "SKILL.md"), filepath.Base(path)); ok {
+		*out = append(*out, sk)
+		return
+	}
+	if depth >= 5 {
+		return
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if shouldSkipSkillScanDir(name) {
+			continue
+		}
+		full := filepath.Join(path, name)
+		if entry.IsDir() {
+			p.scanSkillPath(full, depth+1, seen, out)
+			continue
+		}
+		if entry.Type().IsRegular() && strings.EqualFold(filepath.Ext(name), ".md") {
+			if sk, ok := parseSkillRef(full, strings.TrimSuffix(name, filepath.Ext(name))); ok {
+				*out = append(*out, sk)
+			}
+		}
+	}
+}
+
+func shouldSkipSkillScanDir(name string) bool {
+	if strings.HasPrefix(name, ".") {
+		return true
+	}
+	switch strings.ToLower(name) {
+	case "assets", "node_modules", "references", "scripts":
+		return true
+	default:
+		return false
+	}
+}
+
+func parseSkillRef(path, stem string) (SkillRef, bool) {
+	if !IsValidName(stem) {
+		return SkillRef{}, false
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return SkillRef{}, false
+	}
+	content := strings.TrimPrefix(strings.ReplaceAll(string(b), "\r\n", "\n"), "\uFEFF")
+	fm, _ := frontmatter.Split(content)
+	name := stem
+	if v := strings.TrimSpace(fm["name"]); IsValidName(v) {
+		name = v
+	}
+	return SkillRef{
+		Name:        name,
+		Description: strings.TrimSpace(fm["description"]),
+		Path:        filepath.Clean(path),
+		Invocation:  "/" + name,
+		RunAs:       pluginSkillRunMode(fm),
+	}, true
+}
+
+func pluginSkillRunMode(fm map[string]string) string {
+	if strings.TrimSpace(fm["runas"]) == "subagent" {
+		return "subagent"
+	}
+	if strings.EqualFold(strings.TrimSpace(fm["context"]), "fork") {
+		return "subagent"
+	}
+	if strings.TrimSpace(fm["agent"]) != "" {
+		return "subagent"
+	}
+	return "inline"
+}
+
+func (p Package) hookRefs() []HookRef {
+	events := make([]string, 0, len(p.Manifest.Hooks))
+	for event := range p.Manifest.Hooks {
+		events = append(events, event)
+	}
+	sort.Strings(events)
+	var out []HookRef
+	for _, event := range events {
+		for _, hook := range p.Manifest.Hooks[event] {
+			out = append(out, HookRef{
+				Event:       event,
+				Match:       hook.Match,
+				Command:     hook.Command,
+				ContextFile: hook.ContextFile,
+				Description: hook.Description,
+			})
+		}
+	}
+	return out
+}
+
+func (p Package) mcpServerRefs() []MCPServerRef {
+	names := make([]string, 0, len(p.Manifest.MCPServers))
+	for name := range p.Manifest.MCPServers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]MCPServerRef, 0, len(names))
+	for _, name := range names {
+		server := p.Manifest.MCPServers[name]
+		out = append(out, MCPServerRef{
+			Name:      name,
+			Transport: pluginMCPTransport(server),
+			Command:   strings.TrimSpace(server.Command),
+			URL:       strings.TrimSpace(server.URL),
+		})
+	}
+	return out
+}
+
+func pluginMCPTransport(server MCPServer) string {
+	if typ := strings.TrimSpace(server.Type); typ != "" {
+		return typ
+	}
+	if strings.TrimSpace(server.URL) != "" {
+		return "http"
+	}
+	return "stdio"
 }

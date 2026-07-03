@@ -232,7 +232,11 @@ func FormatOutcome(o Outcome) string {
 		detail = strings.TrimSpace(o.Stdout)
 	}
 	tag := string(o.Hook.Scope) + "/" + string(o.Hook.Event)
-	cmd := clipRunes(o.Hook.Command, 60)
+	cmd := o.Hook.Command
+	if cmd == "" && o.Hook.ContextFile != "" {
+		cmd = "context:" + o.Hook.ContextFile
+	}
+	cmd = clipRunes(cmd, 60)
 	trunc := ""
 	if o.Truncated {
 		trunc = " (output truncated)"

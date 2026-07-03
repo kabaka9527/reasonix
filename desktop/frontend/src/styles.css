@@ -10443,6 +10443,72 @@ body > .mermaid-diagram--fullscreen {
   font-size: 11.5px;
   line-height: 1.45;
 }
+.cap-plugin-usage {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.cap-plugin-usage__title,
+.cap-plugin-capability__head {
+  color: var(--fg);
+  font-size: 11.5px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+.cap-plugin-usage__hint,
+.cap-plugin-usage__empty,
+.cap-plugin-capability__hint {
+  color: var(--fg-dim);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.cap-plugin-capabilities {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.cap-plugin-capability {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.cap-plugin-capability__list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.cap-plugin-capability__item {
+  min-width: 0;
+  padding: 6px 0;
+  border-top: 1px solid var(--border-soft);
+}
+.cap-plugin-capability__line {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.cap-plugin-capability__name {
+  min-width: 0;
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cap-plugin-capability__desc {
+  margin-top: 2px;
+  color: var(--fg-dim);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
 .cap-tabs {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -10887,7 +10953,8 @@ body > .mermaid-diagram--fullscreen {
   .cap-plugin-form-grid,
   .cap-plugin-fields,
   .cap-plugin-installer__options,
-  .cap-plugin-folder-field {
+  .cap-plugin-folder-field,
+  .cap-plugin-capabilities {
     grid-template-columns: 1fr;
   }
 

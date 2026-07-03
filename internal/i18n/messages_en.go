@@ -108,7 +108,7 @@ var English = Messages{
 	SlashUnavailable:   "command unavailable in this build",
 	SlashUnknown:       "unknown command",
 	SlashTodoCleared:   "task list dismissed",
-	SlashHelp:          "commands: /compact · /new · /clear · /resume · /rewind · /tree · /branch · /switch · /todo · /verbose · /model (switch model) · /effort · /theme · /language · /mcp · /skills · /hooks · /paste-image · /memory · /memory-v5 · /migrate · /goal · /remember · /quit · /help · plus skills (/init, /explore, …)",
+	SlashHelp:          "commands: /compact · /new · /clear · /resume · /rewind · /tree · /branch · /switch · /todo · /verbose · /model (switch model) · /effort · /theme · /language · /mcp · /skills · /plugins · /hooks · /paste-image · /memory · /memory-v5 · /migrate · /goal · /remember · /quit · /help · plus skills (/init, /explore, …)",
 
 	SkillPickerTitle:             "Skills",
 	SkillPickerAvailableFmt:      "%d available",
@@ -187,6 +187,7 @@ var English = Messages{
 	CmdForget:           "archive a saved memory",
 	CmdMcp:              "MCP servers",
 	CmdHooks:            "manage hooks",
+	CmdPlugins:          "manage plugin packages",
 	CmdPasteImage:       "paste clipboard image",
 	CmdOutputStyle:      "list output styles",
 	CmdTheme:            "switch CLI theme",
