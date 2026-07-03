@@ -184,11 +184,14 @@ func botSessionMappings(mappings []config.BotConnectionSessionMapping) []bot.Ses
 	for _, mapping := range mappings {
 		out = append(out, bot.SessionMapping{
 			RemoteID:      strings.TrimSpace(mapping.RemoteID),
+			SessionID:     strings.TrimSpace(mapping.SessionID),
+			SessionSource: strings.TrimSpace(mapping.SessionSource),
 			ChatType:      strings.TrimSpace(mapping.ChatType),
 			UserID:        strings.TrimSpace(mapping.UserID),
 			ThreadID:      strings.TrimSpace(mapping.ThreadID),
 			Scope:         strings.TrimSpace(mapping.Scope),
 			WorkspaceRoot: strings.TrimSpace(mapping.WorkspaceRoot),
+			UpdatedAt:     strings.TrimSpace(mapping.UpdatedAt),
 		})
 	}
 	return out

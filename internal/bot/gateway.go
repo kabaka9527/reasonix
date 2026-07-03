@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"reasonix/internal/agent"
 	"reasonix/internal/boot"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
@@ -70,11 +72,14 @@ type ChannelConfig struct {
 // to route a remote chat/user/thread back to its intended workspace.
 type SessionMapping struct {
 	RemoteID      string
+	SessionID     string
+	SessionSource string
 	ChatType      string
 	UserID        string
 	ThreadID      string
 	Scope         string
 	WorkspaceRoot string
+	UpdatedAt     string
 }
 
 // RouteConfig applies per-remote overrides. Empty match fields are wildcards;
@@ -143,6 +148,7 @@ type BotGateway struct {
 	outboundMessageIDs map[string]time.Time
 	adapterHealth      map[string]*AdapterHealthSnapshot
 	controlServer      *controlHTTPServer
+	sessionOverrides   map[string]sessionRuntimeOverride
 
 	logger *slog.Logger
 }
@@ -165,6 +171,7 @@ type sessionState struct {
 	model            string
 	workspaceRoot    string
 	toolApprovalMode string
+	sessionPath      string
 	cancel           context.CancelFunc
 	pendingAsks      map[string][]event.AskQuestion
 	pendingApprovals map[string]event.Approval
@@ -178,6 +185,13 @@ type sessionRuntimeProfile struct {
 	model            string
 	workspaceRoot    string
 	toolApprovalMode string
+	sessionPath      string
+}
+
+type sessionRuntimeOverride struct {
+	channel     ChannelConfig
+	sessionPath string
+	label       string
 }
 
 type sessionEventSink struct {
@@ -245,6 +259,7 @@ func NewGatewayWithAdapterBindings(cfg GatewayConfig, adapters []AdapterBinding,
 		selfUserIDs:        make(map[Platform]map[string]bool),
 		outboundMessageIDs: make(map[string]time.Time),
 		adapterHealth:      make(map[string]*AdapterHealthSnapshot),
+		sessionOverrides:   make(map[string]sessionRuntimeOverride),
 		logger:             logger.With("component", "bot_gateway"),
 	}
 	gw.buildAllowlist()
@@ -1076,6 +1091,37 @@ func (gw *BotGateway) handleSlashCommand(ctx context.Context, adapter Adapter, k
 		gw.sessions.SetQueueMode(key, mode)
 		_ = gw.sendText(ctx, adapter, msg, "已切换队列模式："+queueModeLabel(mode)+"。")
 
+	case slashCommandVerb(msg.Text) == "/projects":
+		if !gw.requireCommandRole(ctx, adapter, msg, "admin") {
+			return
+		}
+		query := strings.TrimSpace(strings.TrimPrefix(msg.Text, "/projects"))
+		_ = gw.sendText(ctx, adapter, msg, formatBotProjects(gw.buildProjectIndex(), query, botProjectListLimit))
+
+	case slashCommandVerb(msg.Text) == "/use":
+		if !gw.requireCommandRole(ctx, adapter, msg, "admin") {
+			return
+		}
+		_ = gw.sendText(ctx, adapter, msg, gw.handleUseProjectCommand(key, msg.Text))
+
+	case slashCommandVerb(msg.Text) == "/sessions":
+		if !gw.requireCommandRole(ctx, adapter, msg, "admin") {
+			return
+		}
+		_ = gw.sendText(ctx, adapter, msg, gw.handleSessionsCommand(msg.Text))
+
+	case slashCommandVerb(msg.Text) == "/attach":
+		if !gw.requireCommandRole(ctx, adapter, msg, "admin") {
+			return
+		}
+		_ = gw.sendText(ctx, adapter, msg, gw.handleAttachSessionCommand(key, msg.Text))
+
+	case slashCommandVerb(msg.Text) == "/search":
+		if !gw.requireCommandRole(ctx, adapter, msg, "admin") {
+			return
+		}
+		_ = gw.sendText(ctx, adapter, msg, gw.handleProjectSearchCommand(ctx, msg.Text))
+
 	case strings.HasPrefix(msg.Text, "/status"):
 		active := gw.sessions.ActiveCount()
 		pending := gw.sessions.PendingCount(key)
@@ -1096,9 +1142,168 @@ func (gw *BotGateway) handleSlashCommand(ctx context.Context, adapter Adapter, k
 			"/yolo on|off|auto|status - 切换或查看工具审批模式\n" +
 			"/mode yolo|ask|auto - 切换工具审批模式\n" +
 			"/queue steer|followup|collect|interrupt|status - 切换或查看队列模式\n" +
+			"/projects [关键词] - 查看可切换项目索引\n" +
+			"/use project <id|名称> - 将当前远端会话切到某个项目\n" +
+			"/sessions search <关键词> - 搜索可 attach 的历史会话\n" +
+			"/attach session <id|关键词> - 绑定当前远端会话到已有历史会话\n" +
+			"/search all <关键词> - 跨已索引项目检索文件内容\n" +
 			"/status - 查看状态\n" +
 			"/help - 显示帮助"
 		_ = gw.sendText(ctx, adapter, msg, help)
+	}
+}
+
+func slashCommandVerb(text string) string {
+	parts := strings.Fields(strings.TrimSpace(text))
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.ToLower(parts[0])
+}
+
+func (gw *BotGateway) handleUseProjectCommand(key, text string) string {
+	selector := parseUseProjectSelector(text)
+	if selector == "" {
+		return "用法: /use project <项目 id|名称|路径>，或 /use project default 恢复默认路由。"
+	}
+	if isDefaultBotSelector(selector) {
+		gw.setSessionRuntimeOverride(key, sessionRuntimeOverride{}, false)
+		return "已恢复当前远端会话的默认项目路由。下一条消息会按 bot 配置重新选择 workspace。"
+	}
+	projects := gw.buildProjectIndex()
+	project, matches := resolveBotProject(projects, selector)
+	if project.Root == "" {
+		if len(matches) > 0 {
+			return "匹配到多个项目，请使用项目 id：\n" + formatBotProjects(matches, "", botProjectListLimit)
+		}
+		return "没有匹配的项目。可先用 /projects 查看当前索引。"
+	}
+	gw.setSessionRuntimeOverride(key, sessionRuntimeOverride{
+		channel: ChannelConfig{WorkspaceRoot: project.Root},
+		label:   "project:" + project.ID,
+	}, true)
+	return fmt.Sprintf("已将当前远端会话切到项目 %s %s。\n下一条消息将在 %s 中运行。", project.ID, project.Name, displayBotPath(project.Root))
+}
+
+func parseUseProjectSelector(text string) string {
+	parts := strings.Fields(text)
+	if len(parts) < 2 || strings.ToLower(parts[0]) != "/use" {
+		return ""
+	}
+	if len(parts) >= 3 && strings.EqualFold(parts[1], "project") {
+		return strings.TrimSpace(strings.Join(parts[2:], " "))
+	}
+	return strings.TrimSpace(strings.Join(parts[1:], " "))
+}
+
+func (gw *BotGateway) handleSessionsCommand(text string) string {
+	query := parseSessionsQuery(text)
+	projects := gw.buildProjectIndex()
+	sessions := gw.buildSessionIndex(projects)
+	return formatBotSessions(sessions, query, botSessionListLimit)
+}
+
+func parseSessionsQuery(text string) string {
+	parts := strings.Fields(text)
+	if len(parts) <= 1 {
+		return ""
+	}
+	if strings.EqualFold(parts[1], "search") {
+		return strings.TrimSpace(strings.Join(parts[2:], " "))
+	}
+	return strings.TrimSpace(strings.Join(parts[1:], " "))
+}
+
+func (gw *BotGateway) handleAttachSessionCommand(key, text string) string {
+	selector := parseAttachSessionSelector(text)
+	if selector == "" {
+		return "用法: /attach session <会话 id|关键词|path:...>"
+	}
+	projects := gw.buildProjectIndex()
+	sessions := gw.buildSessionIndex(projects)
+	session, matches := resolveBotSession(sessions, selector)
+	if session.ID == "" {
+		if len(matches) > 0 {
+			return "匹配到多个会话，请使用会话 id：\n" + formatBotSessions(matches, "", botSessionListLimit)
+		}
+		return "没有匹配的会话。可先用 /sessions search <关键词> 查看当前索引。"
+	}
+	if session.SessionPath == "" {
+		return "这个会话没有可恢复的 path: transcript，暂时不能 attach。"
+	}
+	if info, err := os.Stat(session.SessionPath); err != nil || info.IsDir() {
+		return "会话文件不可用或已被移动：" + displayBotPath(session.SessionPath)
+	}
+	workspaceRoot := session.WorkspaceRoot
+	if workspaceRoot == "" {
+		project := botProjectForPath(projects, session.SessionPath)
+		workspaceRoot = project.Root
+	}
+	gw.setSessionRuntimeOverride(key, sessionRuntimeOverride{
+		channel:     ChannelConfig{WorkspaceRoot: workspaceRoot},
+		sessionPath: session.SessionPath,
+		label:       "session:" + session.ID,
+	}, true)
+	projectName := firstNonEmptyString(session.ProjectName, botProjectName(workspaceRoot), "global")
+	return fmt.Sprintf("已 attach 到会话 %s（%s）。\n下一条消息会从 %s 继续。", session.ID, projectName, displayBotPath(session.SessionPath))
+}
+
+func parseAttachSessionSelector(text string) string {
+	parts := strings.Fields(text)
+	if len(parts) < 3 || !strings.EqualFold(parts[0], "/attach") || !strings.EqualFold(parts[1], "session") {
+		return ""
+	}
+	return strings.TrimSpace(strings.Join(parts[2:], " "))
+}
+
+func (gw *BotGateway) handleProjectSearchCommand(ctx context.Context, text string) string {
+	parts := strings.Fields(text)
+	if len(parts) < 3 || !strings.EqualFold(parts[1], "all") {
+		return "用法: /search all <关键词>"
+	}
+	query := strings.TrimSpace(strings.Join(parts[2:], " "))
+	searchCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	results, err := searchBotProjects(searchCtx, gw.buildProjectIndex(), query, botSearchListLimit)
+	if err != nil {
+		return "检索失败：" + err.Error()
+	}
+	return formatBotProjectSearchResults(results, botSearchListLimit)
+}
+
+func (gw *BotGateway) setSessionRuntimeOverride(key string, override sessionRuntimeOverride, enabled bool) {
+	var old *sessionState
+	gw.mu.Lock()
+	if state, ok := gw.controllers[key]; ok {
+		old = state
+		delete(gw.controllers, key)
+	}
+	if enabled {
+		override.sessionPath = canonicalBotPath(override.sessionPath)
+		override.channel.WorkspaceRoot = canonicalBotPath(override.channel.WorkspaceRoot)
+		gw.sessionOverrides[key] = override
+	} else {
+		delete(gw.sessionOverrides, key)
+	}
+	gw.mu.Unlock()
+	closeBotSessionState(old)
+	gw.sessions.ForceRelease(key)
+}
+
+func (gw *BotGateway) sessionRuntimeOverrideForMessage(msg InboundMessage) (sessionRuntimeOverride, bool) {
+	key := BuildSessionKey(msg.Session())
+	gw.mu.Lock()
+	defer gw.mu.Unlock()
+	override, ok := gw.sessionOverrides[key]
+	return override, ok
+}
+
+func isDefaultBotSelector(selector string) bool {
+	switch strings.ToLower(strings.TrimSpace(selector)) {
+	case "default", "reset", "inherit", "global", "none", "默认", "重置":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1438,6 +1643,19 @@ func (gw *BotGateway) getOrCreateSession(ctx context.Context, key string, msg In
 		gw.logger.Error("build controller failed", "err", err)
 		return nil
 	}
+	if profile.sessionPath != "" {
+		loaded, err := agent.LoadSession(profile.sessionPath)
+		if err != nil {
+			ctrl.Close()
+			if os.IsNotExist(err) {
+				gw.logger.Error("attached bot session missing", "session_path", profile.sessionPath)
+			} else {
+				gw.logger.Error("attached bot session load failed", "session_path", profile.sessionPath, "err", err)
+			}
+			return nil
+		}
+		ctrl.Resume(loaded, profile.sessionPath)
+	}
 	ctrl.EnableInteractiveApproval()
 	ctrl.SetToolApprovalMode(profile.toolApprovalMode)
 	ctrl.EnsureSessionPath()
@@ -1467,6 +1685,7 @@ func (gw *BotGateway) getOrCreateSession(ctx context.Context, key string, msg In
 		model:            profile.model,
 		workspaceRoot:    profile.workspaceRoot,
 		toolApprovalMode: profile.toolApprovalMode,
+		sessionPath:      profile.sessionPath,
 		pendingAsks:      make(map[string][]event.AskQuestion),
 		createdAt:        time.Now(),
 		lastActive:       time.Now(),
@@ -1492,6 +1711,7 @@ func updateSessionStateRuntime(state *sessionState, msg InboundMessage, profile 
 	state.model = profile.model
 	state.workspaceRoot = profile.workspaceRoot
 	state.toolApprovalMode = profile.toolApprovalMode
+	state.sessionPath = profile.sessionPath
 	state.lastActive = time.Now()
 }
 
@@ -1509,10 +1729,15 @@ func closeBotSessionState(state *sessionState) {
 
 func (gw *BotGateway) sessionProfileForMessage(msg InboundMessage) sessionRuntimeProfile {
 	model, workspaceRoot, toolApprovalMode := gw.sessionOptionsForMessage(msg)
+	var sessionPath string
+	if override, ok := gw.sessionRuntimeOverrideForMessage(msg); ok {
+		sessionPath = override.sessionPath
+	}
 	return sessionRuntimeProfile{
 		model:            strings.TrimSpace(model),
 		workspaceRoot:    strings.TrimSpace(workspaceRoot),
 		toolApprovalMode: normalizeBotToolApprovalMode(toolApprovalMode),
+		sessionPath:      canonicalBotPath(sessionPath),
 	}
 }
 
@@ -1533,7 +1758,16 @@ func sessionStateMatchesRuntime(state *sessionState, profile sessionRuntimeProfi
 			return false
 		}
 	}
-	return stateRoot == wantRoot
+	if stateRoot != wantRoot {
+		return false
+	}
+	if canonicalBotPath(state.sessionPath) != canonicalBotPath(profile.sessionPath) {
+		return false
+	}
+	if profile.sessionPath != "" && canonicalBotPath(state.ctrl.SessionPath()) != canonicalBotPath(profile.sessionPath) {
+		return false
+	}
+	return true
 }
 
 func safeBotControllerWorkspaceRoot(ctrl botController) (root string, ok bool) {
@@ -1622,6 +1856,7 @@ func (gw *BotGateway) sessionOptionsForMessage(msg InboundMessage) (model string
 				workspaceRoot = workspaceRootForSessionMapping(mapping, workspaceRoot)
 			}
 			model, workspaceRoot, toolApprovalMode = gw.applyRouteOptions(msg, model, workspaceRoot, toolApprovalMode)
+			model, workspaceRoot, toolApprovalMode = gw.applyRuntimeOverrideOptions(msg, model, workspaceRoot, toolApprovalMode)
 			return model, workspaceRoot, toolApprovalMode
 		}
 	}
@@ -1635,6 +1870,14 @@ func (gw *BotGateway) sessionOptionsForMessage(msg InboundMessage) (model string
 		workspaceRoot = workspaceRootForSessionMapping(mapping, workspaceRoot)
 	}
 	model, workspaceRoot, toolApprovalMode = gw.applyRouteOptions(msg, model, workspaceRoot, toolApprovalMode)
+	model, workspaceRoot, toolApprovalMode = gw.applyRuntimeOverrideOptions(msg, model, workspaceRoot, toolApprovalMode)
+	return model, workspaceRoot, toolApprovalMode
+}
+
+func (gw *BotGateway) applyRuntimeOverrideOptions(msg InboundMessage, model, workspaceRoot, toolApprovalMode string) (string, string, string) {
+	if override, ok := gw.sessionRuntimeOverrideForMessage(msg); ok {
+		applyBotChannelOptions(override.channel, &model, &workspaceRoot, &toolApprovalMode)
+	}
 	return model, workspaceRoot, toolApprovalMode
 }
 
@@ -1885,10 +2128,7 @@ func (gw *BotGateway) UpdateConnectionToolApprovalMode(connID, mode string) {
 		}
 		effectiveMode := mode
 		if effectiveMode == "" {
-			_, _, effectiveMode = gw.sessionOptionsForMessage(InboundMessage{
-				Platform:     state.platform,
-				ConnectionID: state.connectionID,
-			})
+			effectiveMode = normalizeBotToolApprovalMode(gw.cfg.ToolApprovalMode)
 		}
 		updates = append(updates, controllerMode{ctrl: state.ctrl, mode: effectiveMode})
 	}

@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -782,6 +784,145 @@ func TestGatewayHelpMentionsYoloCommands(t *testing.T) {
 	if !strings.Contains(sent[0].Text, "/yolo on|off|auto|status") || !strings.Contains(sent[0].Text, "/mode yolo|ask|auto") {
 		t.Fatalf("help = %q, want yolo commands", sent[0].Text)
 	}
+	if !strings.Contains(sent[0].Text, "/projects") || !strings.Contains(sent[0].Text, "/attach session") || !strings.Contains(sent[0].Text, "/search all") {
+		t.Fatalf("help = %q, want project/session commands", sent[0].Text)
+	}
+}
+
+func TestGatewayProjectCommandsListAndUseProjectOverride(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	base := t.TempDir()
+	alpha := filepath.Join(base, "alpha-project")
+	beta := filepath.Join(base, "beta-project")
+	if err := os.MkdirAll(alpha, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(beta, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gw := NewGateway(GatewayConfig{
+		WorkspaceRoot: alpha,
+		ConnectionChannels: map[string]ChannelConfig{
+			"weixin-main": {WorkspaceRoot: beta},
+		},
+	}, nil, logger)
+	adapter := newFakeAdapter(PlatformWeixin, "fake-weixin")
+	msg := InboundMessage{
+		Platform:     PlatformWeixin,
+		ConnectionID: "weixin-main",
+		ChatType:     ChatDM,
+		ChatID:       "chat",
+		UserID:       "user",
+		Text:         "/projects",
+	}
+	key := BuildSessionKey(msg.Session())
+
+	gw.handleSlashCommand(context.Background(), adapter, key, msg)
+	sent := adapter.sentMessages()
+	if len(sent) != 1 || !strings.Contains(sent[0].Text, "alpha-project") || !strings.Contains(sent[0].Text, "beta-project") {
+		t.Fatalf("/projects sent = %#v, want both projects", sent)
+	}
+
+	msg.Text = "/use project alpha"
+	gw.handleSlashCommand(context.Background(), adapter, key, msg)
+	_, root, _ := gw.sessionOptionsForMessage(msg)
+	if canonicalBotPath(root) != canonicalBotPath(alpha) {
+		t.Fatalf("workspace after /use project = %q, want %q", root, alpha)
+	}
+
+	msg.Text = "/use project default"
+	gw.handleSlashCommand(context.Background(), adapter, key, msg)
+	_, root, _ = gw.sessionOptionsForMessage(msg)
+	if canonicalBotPath(root) != canonicalBotPath(beta) {
+		t.Fatalf("workspace after /use project default = %q, want connection default %q", root, beta)
+	}
+}
+
+func TestGatewaySessionsSearchAndAttachSessionOverride(t *testing.T) {
+	t.Setenv("REASONIX_HOME", t.TempDir())
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	projectRoot := filepath.Join(t.TempDir(), "attach-project")
+	if err := os.MkdirAll(projectRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sessionDir := botSessionDir(projectRoot)
+	sessionPath := filepath.Join(sessionDir, "attached.jsonl")
+	sess := agent.NewSession("system")
+	sess.Add(provider.Message{Role: provider.RoleUser, Content: "needle attach conversation"})
+	if err := sess.Save(sessionPath); err != nil {
+		t.Fatalf("Save session: %v", err)
+	}
+	if err := agent.UpdateSessionMeta(sessionPath, "model-a", "needle attach conversation", 1, true); err != nil {
+		t.Fatalf("UpdateSessionMeta: %v", err)
+	}
+	gw := NewGateway(GatewayConfig{WorkspaceRoot: projectRoot}, nil, logger)
+	adapter := newFakeAdapter(PlatformFeishu, "fake-feishu")
+	msg := InboundMessage{
+		Platform:     PlatformFeishu,
+		ConnectionID: "feishu-lark",
+		ChatType:     ChatDM,
+		ChatID:       "chat",
+		UserID:       "user",
+		Text:         "/sessions search needle",
+	}
+	key := BuildSessionKey(msg.Session())
+
+	gw.handleSlashCommand(context.Background(), adapter, key, msg)
+	sent := adapter.sentMessages()
+	if len(sent) != 1 || !strings.Contains(sent[0].Text, "needle attach") || !strings.Contains(sent[0].Text, "s1") {
+		t.Fatalf("/sessions sent = %#v, want indexed session", sent)
+	}
+
+	msg.Text = "/attach session s1"
+	gw.handleSlashCommand(context.Background(), adapter, key, msg)
+	profile := gw.sessionProfileForMessage(msg)
+	if canonicalBotPath(profile.sessionPath) != canonicalBotPath(sessionPath) {
+		t.Fatalf("attached session path = %q, want %q", profile.sessionPath, sessionPath)
+	}
+	if canonicalBotPath(profile.workspaceRoot) != canonicalBotPath(projectRoot) {
+		t.Fatalf("attached workspace root = %q, want %q", profile.workspaceRoot, projectRoot)
+	}
+}
+
+func TestGatewaySearchAllSearchesIndexedProjects(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	projectRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectRoot, "needle.txt"), []byte("alpha\nunique-cross-project-needle\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gw := NewGateway(GatewayConfig{WorkspaceRoot: projectRoot}, nil, logger)
+
+	text := gw.handleProjectSearchCommand(context.Background(), "/search all unique-cross-project-needle")
+	if !strings.Contains(text, "needle.txt") || !strings.Contains(text, "unique-cross-project-needle") {
+		t.Fatalf("search text = %q, want file hit", text)
+	}
+}
+
+func TestGatewayAdminRoleRequiredForProjectIndexCommands(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	gw := NewGateway(GatewayConfig{
+		Allowlist: AllowlistConfig{
+			Enabled: true,
+			Users:   map[Platform][]string{PlatformWeixin: []string{"user"}},
+			Admins:  map[Platform][]string{PlatformWeixin: []string{"admin"}},
+		},
+	}, nil, logger)
+	adapter := newFakeAdapter(PlatformWeixin, "fake-weixin")
+	msg := InboundMessage{
+		Platform: PlatformWeixin,
+		ChatType: ChatDM,
+		ChatID:   "chat",
+		UserID:   "user",
+		Text:     "/projects",
+	}
+	key := BuildSessionKey(msg.Session())
+
+	gw.handleSlashCommand(context.Background(), adapter, key, msg)
+
+	sent := adapter.sentMessages()
+	if len(sent) != 1 || !strings.Contains(sent[0].Text, "没有执行此 bot 命令的权限") {
+		t.Fatalf("sent = %#v, want permission denial", sent)
+	}
 }
 
 func TestGatewayDefaultQueueSteersActiveTurn(t *testing.T) {
@@ -1297,6 +1438,25 @@ func TestSessionStateMatchesRuntimeRejectsWorkspaceOrModelMismatch(t *testing.T)
 	}
 	if sessionStateMatchesRuntime(state, sessionRuntimeProfile{model: "model-b", workspaceRoot: "/old"}) {
 		t.Fatal("session matched a different model")
+	}
+}
+
+func TestSessionStateMatchesRuntimeRejectsAttachedSessionPathMismatch(t *testing.T) {
+	root := t.TempDir()
+	pathA := filepath.Join(root, "a.jsonl")
+	pathB := filepath.Join(root, "b.jsonl")
+	ctrl := control.New(control.Options{WorkspaceRoot: root, SessionPath: pathA})
+	defer ctrl.Close()
+	state := &sessionState{ctrl: ctrl, model: "model-a", workspaceRoot: root, sessionPath: pathA}
+
+	if !sessionStateMatchesRuntime(state, sessionRuntimeProfile{model: "model-a", workspaceRoot: root, sessionPath: pathA}) {
+		t.Fatal("attached session should match the same pinned path")
+	}
+	if sessionStateMatchesRuntime(state, sessionRuntimeProfile{model: "model-a", workspaceRoot: root, sessionPath: pathB}) {
+		t.Fatal("attached session matched a different path")
+	}
+	if sessionStateMatchesRuntime(state, sessionRuntimeProfile{model: "model-a", workspaceRoot: root}) {
+		t.Fatal("attached session matched an unpinned profile")
 	}
 }
 

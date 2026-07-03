@@ -144,6 +144,11 @@ The headless gateway uses the same config records as the desktop app:
   and scope. The desktop UI can open the matching conversation once the mapping
   also has a local `session_id` target, such as a saved `path:` session target
   from a desktop-managed bot runtime or a manually configured mapping.
+- The bot's project/session index is intentionally bounded to configured
+  `workspace_root` values, route workspaces, active bot sessions, and saved
+  `session_mappings`. Commands such as `/use project` and `/attach session`
+  can only jump to those indexed targets; arbitrary local directories are not
+  accepted from IM text.
 
 Access control is still mandatory. You can configure platform user IDs under
 `[bot.allowlist]`, deliberately set `allow_all = true`, or enable
@@ -154,10 +159,12 @@ remain an additional narrowing layer and do not replace the user allowlist.
 
 If `qq_admins`, `feishu_admins`, `weixin_admins`, or the matching
 `*_approvers` lists are configured, `/yolo` and `/mode` are admin-only while
-`/approve` and `/deny` require an approver or admin. When no role lists are set,
-existing allowlisted users keep the previous command behavior for compatibility.
-Remote users go through the same controller, permission policy, tool approval
-mode, and sandbox rules as local desktop or CLI turns.
+`/projects`, `/use project`, `/sessions`, `/attach session`, and `/search all`
+are also admin-only. `/approve` and `/deny` require an approver or admin. When
+no role lists are set, existing allowlisted users keep the previous command
+behavior for compatibility. Remote users go through the same controller,
+permission policy, tool approval mode, and sandbox rules as local desktop or CLI
+turns.
 
 `ignore_self_messages = true` is enabled by default. The gateway remembers the
 platform `message_id` values it just sent and ignores matching echo events. If a
@@ -257,6 +264,12 @@ These commands work in Feishu, Lark, WeChat, and QQ.
 | `/queue followup` | Queue mid-run messages as later turns | `/queue followup` |
 | `/queue collect` | Merge queued messages into one later turn | `/queue collect` |
 | `/queue interrupt` | Cancel the current task and keep the newest message | `/queue interrupt` |
+| `/projects [query]` | List indexed project workspaces | `/projects reasonix` |
+| `/use project <id\|name>` | Route this remote session to an indexed project | `/use project p1` |
+| `/use project default` | Clear the project override and return to configured routing | `/use project default` |
+| `/sessions search <query>` | Search indexed desktop/bot sessions | `/sessions search release bug` |
+| `/attach session <id\|query>` | Continue this remote session from an indexed `path:` transcript | `/attach session s1` |
+| `/search all <query>` | Search file contents across indexed project roots | `/search all TODO` |
 
 Shortcut replies:
 
