@@ -43,6 +43,7 @@ import (
 	"reasonix/internal/i18n"
 	"reasonix/internal/mcpdiag"
 	"reasonix/internal/memory"
+	"reasonix/internal/notify"
 	"reasonix/internal/plugin"
 	"reasonix/internal/pluginpkg"
 	"reasonix/internal/provider"
@@ -141,6 +142,9 @@ type App struct {
 	botRuntime  *desktopBotRuntime
 
 	metrics atomic.Pointer[metricsAggregator] // non-nil only when desktop.metrics is opted in; swapped live by SetDesktopMetrics
+
+	notificationSenderOnce sync.Once
+	notificationSender     notify.Sender
 
 	runtimeEvents asyncRuntimeEmitter
 

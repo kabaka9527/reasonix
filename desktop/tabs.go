@@ -27,6 +27,7 @@ import (
 	"reasonix/internal/event"
 	"reasonix/internal/eventwire"
 	"reasonix/internal/fileutil"
+	"reasonix/internal/notify"
 	"reasonix/internal/provider"
 	"reasonix/internal/store"
 )
@@ -2148,6 +2149,29 @@ func (a *App) buildTabControllerWithLoadedSession(tab *WorkspaceTab, loadedSessi
 	a.buildTabControllerWithContext(tab, loadedSession, a.bootContext(), 0, nil)
 }
 
+func (a *App) desktopNotificationSender() notify.Sender {
+	if a == nil {
+		return notify.NewPlatformSender()
+	}
+	a.notificationSenderOnce.Do(func() {
+		if a.notificationSender == nil {
+			a.notificationSender = notify.NewPlatformSender()
+		}
+	})
+	return a.notificationSender
+}
+
+func (a *App) desktopControllerSink(inner event.Sink, cfg config.NotificationsConfig) event.Sink {
+	if !cfg.Enabled {
+		return inner
+	}
+	sender := a.desktopNotificationSender()
+	if sender == nil {
+		return inner
+	}
+	return notify.NewSink(inner, sender, cfg)
+}
+
 func (a *App) buildTabControllerWithContext(tab *WorkspaceTab, loadedSession loadedTabSession, buildCtx context.Context, buildGeneration uint64, buildCancel context.CancelFunc) {
 	defer a.recoverToPending("buildTabController")
 	keepBuildContext := false
@@ -2265,11 +2289,12 @@ func (a *App) buildTabControllerWithContext(tab *WorkspaceTab, loadedSession loa
 	}
 	tab.SharedHostKey = rootKey
 	sharedHost := a.acquireSharedHost(rootKey)
+	sink := a.desktopControllerSink(tab.sink, cfg.Notifications)
 
 	ctrl, err := boot.Build(buildCtx, boot.Options{
 		Model:                    model,
 		RequireKey:               false,
-		Sink:                     tab.sink,
+		Sink:                     sink,
 		WorkspaceRoot:            root,
 		SessionDir:               sessionDir,
 		EffortOverride:           cloneStringPtr(tab.effort),

@@ -19,7 +19,7 @@ layout_style = "classic"   # classic|workbench|creation; desktop layout style
 # theme_style = "graphite"   # graphite|aurora|slate|carbon|nocturne|amber and legacy aliases
 
 [notifications]
-enabled = false   # system notifications for CLI chat/run; default off
+enabled = false   # system notifications for CLI and desktop turns; default off
 turn_done = true   # notify when a turn finishes
 approval_request = true   # notify when a tool approval is waiting
 ask_request = true   # notify when a question is waiting
