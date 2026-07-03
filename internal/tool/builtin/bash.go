@@ -167,7 +167,7 @@ func (b bash) Execute(ctx context.Context, args json.RawMessage) (string, error)
 			cmd.WaitDelay = bashWaitDelay
 			cmd.Stdout = out
 			cmd.Stderr = out
-			tracked, runErr := runShellProcess(jobCtx, cmd, shouldTrackShellProcess(sh, p.Command, p.PreserveBackgroundProcesses))
+			tracked, runErr := runShellProcess(jobCtx, cmd, sh, p.Command, shouldTrackShellProcess(sh, p.Command, p.PreserveBackgroundProcesses))
 			if shouldReapAfterRun(jobCtx, sh, p.Command, p.PreserveBackgroundProcesses) {
 				reapShellProcess(cmd, tracked) // reap process-group stragglers the job left running (#3702)
 			}
@@ -195,7 +195,7 @@ func (b bash) Execute(ctx context.Context, args json.RawMessage) (string, error)
 	}
 	cmd.Stdout = w
 	cmd.Stderr = w
-	tracked, err := runShellProcess(runCtx, cmd, shouldTrackShellProcess(sh, p.Command, p.PreserveBackgroundProcesses))
+	tracked, err := runShellProcess(runCtx, cmd, sh, p.Command, shouldTrackShellProcess(sh, p.Command, p.PreserveBackgroundProcesses))
 	// A foreground command that spawned a lingering child (e.g. `bazel run`'s
 	// server) leaves it in the process group; Wait only reaped the shell leader.
 	// Kill the group so those don't accumulate into an OOM (#3702). On cancel/
@@ -253,14 +253,6 @@ func (b bash) foregroundTimeout() time.Duration {
 	return b.timeout
 }
 
-type trackedShellProcess struct {
-	cmd    *exec.Cmd
-	mu     sync.Mutex
-	job    uintptr
-	tree   *proc.TreeTracker
-	killed bool
-}
-
 func shouldTrackShellProcess(sh sandbox.Shell, command string, preserveBackgroundProcesses bool) bool {
 	if preserveBackgroundProcesses {
 		return false
@@ -268,167 +260,23 @@ func shouldTrackShellProcess(sh sandbox.Shell, command string, preserveBackgroun
 	return sh.Kind != sandbox.ShellBash || !hasExplicitBackgroundKeepalive(command)
 }
 
-func runShellProcess(ctx context.Context, cmd *exec.Cmd, track bool) (*trackedShellProcess, error) {
-	if !track {
-		setKillTree(cmd)
-		return nil, cmd.Run()
-	}
-	tracked := &trackedShellProcess{cmd: cmd}
-	proc.HideWindow(cmd)
-	cmd.Cancel = func() error {
-		tracked.kill()
-		return context.Canceled
-	}
-	job, err := proc.StartTracked(cmd)
-	if err != nil {
-		return tracked, err
-	}
-	tracked.setJob(job)
-	tracked.setTree(proc.TrackTree(cmd))
-	return tracked, waitForTrackedShellProcess(ctx, tracked, cmd.Wait, bashWaitDelay+time.Second)
+func runShellProcess(ctx context.Context, cmd *exec.Cmd, sh sandbox.Shell, command string, track bool) (*proc.TrackedCommand, error) {
+	return proc.RunCommand(ctx, cmd, proc.RunOptions{
+		Track:           track,
+		CancelWaitGrace: bashWaitDelay + time.Second,
+		Source:          "bash_tool",
+		ShellKind:       sh.Kind.String(),
+		ShellPath:       sh.Path,
+		CommandPreview:  commandPreview(command),
+	})
 }
 
-func waitForTrackedShellProcess(ctx context.Context, tracked *trackedShellProcess, wait func() error, grace time.Duration) error {
-	waitCh := make(chan error, 1)
-	go func() { waitCh <- wait() }()
-
-	select {
-	case err := <-waitCh:
-		tracked.stopTracking()
-		return err
-	case <-ctx.Done():
-	}
-
-	tracked.kill()
-	// If the shell's Wait path is wedged on a held pipe or a platform-specific
-	// process-tree edge, do not keep the foreground turn hostage after Stop.
-	select {
-	case err := <-waitCh:
-		tracked.stopTracking()
-		return canceledShellWaitError{cause: context.Cause(ctx), waitErr: err}
-	case <-time.After(grace):
-		go tracked.retryKillUntilWait(waitCh, 5*time.Second)
-		return context.Cause(ctx)
-	}
-}
-
-type canceledShellWaitError struct {
-	cause   error
-	waitErr error
-}
-
-func (e canceledShellWaitError) Error() string {
-	if e.cause != nil {
-		return e.cause.Error()
-	}
-	if e.waitErr != nil {
-		return e.waitErr.Error()
-	}
-	return "shell wait canceled"
-}
-
-func (e canceledShellWaitError) Unwrap() []error {
-	if e.cause != nil && e.waitErr != nil {
-		return []error{e.cause, e.waitErr}
-	}
-	if e.cause != nil {
-		return []error{e.cause}
-	}
-	if e.waitErr != nil {
-		return []error{e.waitErr}
-	}
-	return nil
-}
-
-func reapShellProcess(cmd *exec.Cmd, tracked *trackedShellProcess) {
+func reapShellProcess(cmd *exec.Cmd, tracked *proc.TrackedCommand) {
 	if tracked != nil {
-		tracked.kill()
+		tracked.Kill()
 		return
 	}
-	reapTree(cmd)
-}
-
-func (p *trackedShellProcess) setJob(job uintptr) {
-	if p == nil || job == 0 {
-		return
-	}
-	p.mu.Lock()
-	killed := p.killed
-	if !killed {
-		p.job = job
-	}
-	p.mu.Unlock()
-	if killed {
-		proc.KillTracked(p.cmd, job)
-	}
-}
-
-func (p *trackedShellProcess) setTree(tree *proc.TreeTracker) {
-	if p == nil || tree == nil {
-		return
-	}
-	p.mu.Lock()
-	killed := p.killed
-	if !killed {
-		p.tree = tree
-	}
-	p.mu.Unlock()
-	if killed {
-		tree.Kill()
-		tree.Stop()
-	}
-}
-
-func (p *trackedShellProcess) stopTracking() {
-	if p == nil {
-		return
-	}
-	p.mu.Lock()
-	tree := p.tree
-	p.tree = nil
-	p.mu.Unlock()
-	if tree != nil {
-		tree.Stop()
-	}
-}
-
-func (p *trackedShellProcess) kill() {
-	if p == nil {
-		return
-	}
-	p.mu.Lock()
-	firstKill := !p.killed
-	p.killed = true
-	job := p.job
-	p.job = 0
-	tree := p.tree
-	p.mu.Unlock()
-	if !firstKill {
-		job = 0
-	}
-	proc.KillTracked(p.cmd, job)
-	if tree != nil {
-		tree.Kill()
-		tree.Stop()
-	}
-}
-
-func (p *trackedShellProcess) retryKillUntilWait(waitCh <-chan error, max time.Duration) {
-	defer p.stopTracking()
-	deadline := time.NewTimer(max)
-	defer deadline.Stop()
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-waitCh:
-			return
-		case <-ticker.C:
-			p.kill()
-		case <-deadline.C:
-			return
-		}
-	}
+	proc.KillTree(cmd)
 }
 
 // progressWriter forwards each chunk the command writes to a tool.ProgressFunc,

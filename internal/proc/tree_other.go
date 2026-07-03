@@ -10,4 +10,4 @@ func TrackTree(*exec.Cmd) *TreeTracker { return nil }
 
 func (*TreeTracker) Stop() {}
 
-func (*TreeTracker) Kill() {}
+func (*TreeTracker) Kill() int { return 0 }

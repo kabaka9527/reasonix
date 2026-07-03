@@ -5,6 +5,7 @@ package proc
 import (
 	"os/exec"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -21,8 +22,16 @@ type TreeTracker struct {
 	done chan struct{}
 	once sync.Once
 
-	mu   sync.Mutex
-	pids map[uint32]struct{}
+	mu      sync.Mutex
+	records map[uint32]processRecord
+}
+
+type processRecord struct {
+	pid      uint32
+	parent   uint32
+	exe      string
+	created  windows.Filetime
+	hasTimes bool
 }
 
 func TrackTree(cmd *exec.Cmd) *TreeTracker {
@@ -30,9 +39,9 @@ func TrackTree(cmd *exec.Cmd) *TreeTracker {
 		return nil
 	}
 	t := &TreeTracker{
-		root: uint32(cmd.Process.Pid),
-		done: make(chan struct{}),
-		pids: map[uint32]struct{}{},
+		root:    uint32(cmd.Process.Pid),
+		done:    make(chan struct{}),
+		records: map[uint32]processRecord{},
 	}
 	t.record()
 	go t.loop()
@@ -46,18 +55,25 @@ func (t *TreeTracker) Stop() {
 	t.once.Do(func() { close(t.done) })
 }
 
-func (t *TreeTracker) Kill() {
+func (t *TreeTracker) Kill() int {
 	if t == nil {
-		return
+		return 0
 	}
 	t.record()
-	pids := t.snapshot()
-	for _, pid := range pids {
-		if pid != t.root {
-			terminatePID(pid)
+	records := t.snapshot()
+	killed := 0
+	for _, rec := range records {
+		if rec.pid != t.root {
+			killed += terminateRecord(rec)
 		}
 	}
-	terminatePID(t.root)
+	for _, rec := range records {
+		if rec.pid == t.root {
+			killed += terminateRecord(rec)
+			break
+		}
+	}
+	return killed
 }
 
 func (t *TreeTracker) loop() {
@@ -77,48 +93,44 @@ func (t *TreeTracker) record() {
 	if t == nil || t.root == 0 {
 		return
 	}
-	pids := descendantPIDs(t.root)
+	records := processSnapshot()
 	t.mu.Lock()
-	t.pids[t.root] = struct{}{}
-	for _, pid := range pids {
-		t.pids[pid] = struct{}{}
+	if root, ok := records[t.root]; ok {
+		t.records[t.root] = root
+	}
+	for _, rec := range descendantRecords(t.root, records) {
+		t.records[rec.pid] = rec
 	}
 	t.mu.Unlock()
 }
 
-func (t *TreeTracker) snapshot() []uint32 {
+func (t *TreeTracker) snapshot() []processRecord {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	out := make([]uint32, 0, len(t.pids))
-	for pid := range t.pids {
-		out = append(out, pid)
+	out := make([]processRecord, 0, len(t.records))
+	for _, rec := range t.records {
+		out = append(out, rec)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	sort.Slice(out, func(i, j int) bool { return out[i].pid < out[j].pid })
 	return out
 }
 
-func descendantPIDs(root uint32) []uint32 {
+func descendantRecords(root uint32, records map[uint32]processRecord) []processRecord {
 	if root == 0 {
 		return nil
 	}
-	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
-	if err != nil {
-		return nil
-	}
-	defer func() { _ = windows.CloseHandle(snap) }()
-
 	children := map[uint32][]uint32{}
-	var pe windows.ProcessEntry32
-	pe.Size = uint32(unsafe.Sizeof(pe))
-	for err := windows.Process32First(snap, &pe); err == nil; err = windows.Process32Next(snap, &pe) {
-		children[pe.ParentProcessID] = append(children[pe.ParentProcessID], pe.ProcessID)
+	for _, rec := range records {
+		children[rec.parent] = append(children[rec.parent], rec.pid)
 	}
 
-	var out []uint32
+	var out []processRecord
 	var walk func(uint32)
 	walk = func(pid uint32) {
 		for _, child := range children[pid] {
-			out = append(out, child)
+			if rec, ok := records[child]; ok {
+				out = append(out, rec)
+			}
 			walk(child)
 		}
 	}
@@ -126,14 +138,67 @@ func descendantPIDs(root uint32) []uint32 {
 	return out
 }
 
-func terminatePID(pid uint32) {
-	if pid == 0 {
-		return
-	}
-	h, err := windows.OpenProcess(windows.PROCESS_TERMINATE, false, pid)
+func processSnapshot() map[uint32]processRecord {
+	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 	if err != nil {
-		return
+		return nil
+	}
+	defer func() { _ = windows.CloseHandle(snap) }()
+
+	records := map[uint32]processRecord{}
+	var pe windows.ProcessEntry32
+	pe.Size = uint32(unsafe.Sizeof(pe))
+	for err := windows.Process32First(snap, &pe); err == nil; err = windows.Process32Next(snap, &pe) {
+		rec := processRecord{
+			pid:    pe.ProcessID,
+			parent: pe.ParentProcessID,
+			exe:    strings.ToLower(windows.UTF16ToString(pe.ExeFile[:])),
+		}
+		rec.created, rec.hasTimes = processCreationTime(pe.ProcessID)
+		records[rec.pid] = rec
+	}
+	return records
+}
+
+func processCreationTime(pid uint32) (windows.Filetime, bool) {
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	if err != nil {
+		return windows.Filetime{}, false
+	}
+	defer func() { _ = windows.CloseHandle(h) }()
+	var created, exited, kernel, user windows.Filetime
+	if err := windows.GetProcessTimes(h, &created, &exited, &kernel, &user); err != nil {
+		return windows.Filetime{}, false
+	}
+	return created, true
+}
+
+func terminateRecord(rec processRecord) int {
+	if rec.pid == 0 {
+		return 0
+	}
+	current, ok := processSnapshot()[rec.pid]
+	if !ok || !sameProcessIdentity(rec, current) {
+		return 0
+	}
+	h, err := windows.OpenProcess(windows.PROCESS_TERMINATE, false, rec.pid)
+	if err != nil {
+		return 0
 	}
 	defer func() { _ = windows.CloseHandle(h) }()
 	_ = windows.TerminateProcess(h, 1)
+	return 1
+}
+
+func sameProcessIdentity(recorded, current processRecord) bool {
+	if recorded.pid != current.pid {
+		return false
+	}
+	if recorded.hasTimes && current.hasTimes {
+		return recorded.created == current.created
+	}
+	if recorded.exe != "" && current.exe != "" {
+		return strings.EqualFold(recorded.exe, current.exe)
+	}
+	return true
 }
