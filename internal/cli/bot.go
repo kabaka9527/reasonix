@@ -69,7 +69,7 @@ func botStart(args []string, version string) int {
 		return 1
 	}
 	if !cfg.Bot.Allowlist.AllowAll && !cfg.Bot.Pairing.Enabled && (!cfg.Bot.Allowlist.Enabled || botruntime.AllowlistUserCount(cfg.Bot.Allowlist) == 0) {
-		fmt.Fprintln(os.Stderr, "error: bot requires an explicit allowlist; set [bot.allowlist] enabled = true with platform user ids, or set allow_all = true intentionally")
+		fmt.Fprintln(os.Stderr, "error: bot requires an explicit allowlist; set [bot.allowlist] enabled = true with platform users/admins/approvers, or set allow_all = true intentionally")
 		return 1
 	}
 

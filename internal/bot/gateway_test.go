@@ -386,6 +386,55 @@ func TestGatewayAllowlistCheck(t *testing.T) {
 	}
 }
 
+func TestGatewayRoleListsGrantAllowlistAdmission(t *testing.T) {
+	cfg := GatewayConfig{
+		Allowlist: AllowlistConfig{
+			Enabled: true,
+			Admins: map[Platform][]string{
+				PlatformFeishu: {"admin_user"},
+			},
+			Approvers: map[Platform][]string{
+				PlatformFeishu: {"approver_user"},
+			},
+		},
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	gw := NewGateway(cfg, nil, logger)
+
+	if !gw.checkAllowlist(PlatformFeishu, InboundMessage{Platform: PlatformFeishu, ChatType: ChatDM, UserID: "admin_user"}) {
+		t.Error("admin role should grant base bot admission")
+	}
+	if !gw.checkAllowlist(PlatformFeishu, InboundMessage{Platform: PlatformFeishu, ChatType: ChatDM, UserID: "approver_user"}) {
+		t.Error("approver role should grant base bot admission")
+	}
+	if gw.checkAllowlist(PlatformFeishu, InboundMessage{Platform: PlatformFeishu, ChatType: ChatDM, UserID: "unknown_user"}) {
+		t.Error("unknown user should still be rejected")
+	}
+}
+
+func TestGatewayApproverRoleDoesNotGrantAdminCommands(t *testing.T) {
+	cfg := GatewayConfig{
+		Allowlist: AllowlistConfig{
+			Enabled: true,
+			Approvers: map[Platform][]string{
+				PlatformFeishu: {"approver_user"},
+			},
+		},
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	gw := NewGateway(cfg, nil, logger)
+	msg := InboundMessage{Platform: PlatformFeishu, ChatType: ChatDM, UserID: "approver_user"}
+
+	if !gw.checkCommandRole(PlatformFeishu, msg, "approver") {
+		t.Error("approver should be allowed to run approver commands")
+	}
+	if gw.checkCommandRole(PlatformFeishu, msg, "admin") {
+		t.Error("approver should not be allowed to run admin commands")
+	}
+}
+
 func TestGatewayAllowlistDoesNotApplyGroupsToDirectMessages(t *testing.T) {
 	cfg := GatewayConfig{
 		Allowlist: AllowlistConfig{
@@ -407,6 +456,33 @@ func TestGatewayAllowlistDoesNotApplyGroupsToDirectMessages(t *testing.T) {
 	}
 	if gw.checkAllowlist(PlatformQQ, InboundMessage{Platform: PlatformQQ, ChatType: ChatGroup, ChatID: "unknown_group", UserID: "allowed_user"}) {
 		t.Error("unknown group should still be rejected by group allowlist")
+	}
+}
+
+func TestGatewayGroupAllowlistStillNarrowsRoleAdmission(t *testing.T) {
+	cfg := GatewayConfig{
+		Allowlist: AllowlistConfig{
+			Enabled: true,
+			Admins: map[Platform][]string{
+				PlatformFeishu: {"admin_user"},
+			},
+			Groups: map[Platform][]string{
+				PlatformFeishu: {"allowed_group"},
+			},
+		},
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	gw := NewGateway(cfg, nil, logger)
+
+	if !gw.checkAllowlist(PlatformFeishu, InboundMessage{Platform: PlatformFeishu, ChatType: ChatDM, ChatID: "direct", UserID: "admin_user"}) {
+		t.Error("admin role admission should still allow direct messages")
+	}
+	if !gw.checkAllowlist(PlatformFeishu, InboundMessage{Platform: PlatformFeishu, ChatType: ChatGroup, ChatID: "allowed_group", UserID: "admin_user"}) {
+		t.Error("admin role should pass in allowed group")
+	}
+	if gw.checkAllowlist(PlatformFeishu, InboundMessage{Platform: PlatformFeishu, ChatType: ChatGroup, ChatID: "unknown_group", UserID: "admin_user"}) {
+		t.Error("admin role should still be rejected in an unknown group")
 	}
 }
 

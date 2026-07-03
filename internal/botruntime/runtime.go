@@ -331,7 +331,9 @@ func ModelName(cfg *config.Config, override string) string {
 }
 
 func AllowlistUserCount(a config.BotAllowlist) int {
-	return len(a.QQUsers) + len(a.FeishuUsers) + len(a.WeixinUsers)
+	return len(a.QQUsers) + len(a.FeishuUsers) + len(a.WeixinUsers) +
+		len(a.QQApprovers) + len(a.FeishuApprovers) + len(a.WeixinApprovers) +
+		len(a.QQAdmins) + len(a.FeishuAdmins) + len(a.WeixinAdmins)
 }
 
 func NewRemoteRememberer(logger *slog.Logger) func(bot.InboundMessage) {

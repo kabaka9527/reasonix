@@ -10,6 +10,17 @@ import (
 	"reasonix/internal/config"
 )
 
+func TestAllowlistUserCountIncludesRoles(t *testing.T) {
+	allowlist := config.BotAllowlist{
+		FeishuApprovers: []string{"ou-approver"},
+		FeishuAdmins:    []string{"ou-admin"},
+	}
+
+	if got := AllowlistUserCount(allowlist); got != 2 {
+		t.Fatalf("AllowlistUserCount() = %d, want role users included", got)
+	}
+}
+
 func TestRemoteRemembererKeepsDistinctGroupUsers(t *testing.T) {
 	isolateUserConfig(t)
 	cfg := config.Default()

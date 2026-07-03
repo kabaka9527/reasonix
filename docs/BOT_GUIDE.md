@@ -187,8 +187,10 @@ Access control is still mandatory. You can configure platform user IDs under
 `[bot.allowlist]`, deliberately set `allow_all = true`, or enable
 `[bot.pairing]` so an unknown DM sender receives a one-time pairing code. That
 code must be approved locally with `reasonix bot pairing approve <code>` before
-the sender can drive the bot. Group chats are not opened by DM pairing; group IDs
-remain an additional narrowing layer and do not replace the user allowlist.
+the sender can drive the bot. Users listed in `*_admins` or `*_approvers` also
+receive base bot admission, so they do not need to be duplicated in `*_users`.
+Group chats are not opened by DM pairing or role admission; group IDs remain an
+additional narrowing layer.
 Use these commands to manage pending requests:
 
 ```sh
@@ -205,6 +207,14 @@ no role lists are set, existing allowlisted users keep the previous command
 behavior for compatibility. Remote users go through the same controller,
 permission policy, tool approval mode, and sandbox rules as local desktop or CLI
 turns.
+
+```toml
+[bot.allowlist]
+enabled = true
+feishu_users = ["ou_member"]
+feishu_admins = ["ou_admin"]
+feishu_approvers = ["ou_approver"]
+```
 
 `ignore_self_messages = true` is enabled by default. The gateway remembers the
 platform `message_id` values it just sent and ignores matching echo events. If a

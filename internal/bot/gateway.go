@@ -297,12 +297,21 @@ func (gw *BotGateway) buildAllowlist() {
 		if !gw.cfg.Allowlist.Enabled {
 			continue
 		}
-		for _, uid := range gw.cfg.Allowlist.Users[plat] {
-			gw.allowlist[plat][uid] = true
-		}
+		addAllowlistUsers(gw.allowlist[plat], gw.cfg.Allowlist.Users[plat])
+		addAllowlistUsers(gw.allowlist[plat], gw.cfg.Allowlist.Admins[plat])
+		addAllowlistUsers(gw.allowlist[plat], gw.cfg.Allowlist.Approvers[plat])
 		gw.groupAllowlist[plat] = make(map[string]bool)
 		for _, gid := range gw.cfg.Allowlist.Groups[plat] {
 			gw.groupAllowlist[plat][gid] = true
+		}
+	}
+}
+
+func addAllowlistUsers(dst map[string]bool, users []string) {
+	for _, uid := range users {
+		uid = strings.TrimSpace(uid)
+		if uid != "" {
+			dst[uid] = true
 		}
 	}
 }
