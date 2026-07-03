@@ -34,6 +34,81 @@ func TestIsMiniMaxEntry(t *testing.T) {
 	}
 }
 
+func TestIsZhipuEntry(t *testing.T) {
+	for _, tc := range []struct {
+		baseURL string
+		want    bool
+	}{
+		{"https://open.bigmodel.cn/api/paas/v4", true},
+		{"https://open.bigmodel.cn", true},
+		{"https://api.bigmodel.cn/v1", true},
+		{"https://api.z.ai/api/paas/v4", true},
+		{"https://open.z.ai/v1", true},
+		// Bare apexes rejected.
+		{"https://bigmodel.cn/v1", false},
+		{"https://z.ai", false},
+		// Other vendors must not match.
+		{"https://api.deepseek.com", false},
+		{"https://api.minimaxi.com/v1", false},
+		{"", false},
+	} {
+		e := &ProviderEntry{Kind: "openai", BaseURL: tc.baseURL}
+		if got := isZhipuEntry(e); got != tc.want {
+			t.Errorf("baseURL=%q: isZhipuEntry=%v, want %v", tc.baseURL, got, tc.want)
+		}
+	}
+}
+
+func TestEffortCapabilityZhipu(t *testing.T) {
+	e := &ProviderEntry{Kind: "openai", BaseURL: "https://open.bigmodel.cn/api/paas/v4", Model: "glm-4.5-air"}
+	cap := EffortCapabilityForEntry(e)
+	if !cap.Supported {
+		t.Fatalf("GLM entry should expose /effort, got %+v", cap)
+	}
+	wantLevels := []string{"auto", "enabled", "disabled"}
+	if len(cap.Levels) != len(wantLevels) {
+		t.Fatalf("levels = %v, want %v", cap.Levels, wantLevels)
+	}
+	for i, l := range wantLevels {
+		if cap.Levels[i] != l {
+			t.Errorf("levels[%d] = %q, want %q", i, cap.Levels[i], l)
+		}
+	}
+	if cap.Default != "enabled" {
+		t.Errorf("default = %q, want enabled (GLM ships with thinking on)", cap.Default)
+	}
+}
+
+func TestNormalizeEffortZhipu(t *testing.T) {
+	e := &ProviderEntry{Kind: "openai", BaseURL: "https://open.bigmodel.cn/api/paas/v4", Model: "glm-4.5-air"}
+	cases := []struct {
+		in, want string
+	}{
+		{"auto", ""}, // auto == leave to provider default == empty
+		{"enabled", "enabled"},
+		{"disabled", "disabled"},
+		{"ENABLED", "enabled"}, // case-insensitive
+		// Stale values from other vendors resolve to a valid GLM level rather
+		// than failing the /effort command.
+		{"off", "disabled"}, // retired DeepSeek "no thinking"
+		{"low", "enabled"},
+		{"medium", "enabled"},
+		{"high", "enabled"},
+		{"xhigh", "enabled"},
+		{"max", "enabled"},
+	}
+	for _, tc := range cases {
+		got, err := NormalizeEffort(e, tc.in)
+		if err != nil {
+			t.Errorf("NormalizeEffort(%q) returned error: %v", tc.in, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("NormalizeEffort(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestEffortCapabilityMiniMax(t *testing.T) {
 	e := &ProviderEntry{Kind: "openai", BaseURL: "https://api.minimaxi.com/v1", Model: "MiniMax-M3"}
 	cap := EffortCapabilityForEntry(e)

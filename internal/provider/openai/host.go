@@ -44,3 +44,14 @@ func IsDeepSeek(baseURL string) bool {
 func IsMiniMax(baseURL string) bool {
 	return matchesVendorHost(baseURL, "minimaxi.com", "api.minimaxi.com")
 }
+
+// IsZhipu reports whether baseURL points at Zhipu's OpenAI-compatible endpoint
+// for GLM models — either the China host (open.bigmodel.cn, *.bigmodel.cn) or
+// the international Z.ai host (api.z.ai, *.z.ai). Both speak the same wire shape,
+// where chain-of-thought is gated by `thinking.type` (enabled|disabled) and
+// `reasoning_effort` is silently ignored, so the client routes reasoning control
+// to the thinking knob for either host.
+func IsZhipu(baseURL string) bool {
+	return matchesVendorHost(baseURL, "bigmodel.cn", "open.bigmodel.cn") ||
+		matchesVendorHost(baseURL, "z.ai", "api.z.ai")
+}

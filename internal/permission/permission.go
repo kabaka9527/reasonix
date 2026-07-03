@@ -9,6 +9,8 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+
+	"reasonix/internal/shellparse"
 )
 
 // Decision is the outcome of evaluating a tool call against a Policy.
@@ -138,6 +140,19 @@ func (p Policy) Decide(toolName string, readOnly bool, args json.RawMessage) Dec
 // DecideSubject evaluates a tool call when the caller already extracted the
 // stable approval subject from args.
 func (p Policy) DecideSubject(toolName string, readOnly bool, subject string) Decision {
+	if canonicalRuleTool(toolName) == "bash" {
+		switch {
+		case matchAny(p.Deny, toolName, subject):
+			return Deny
+		case matchAny(p.Ask, toolName, subject):
+			return Ask
+		case matchAny(p.Allow, toolName, subject):
+			return Allow
+		}
+		if parts := DecomposeBashCommand(subject); parts != nil {
+			return p.decideBashSegments(readOnly, parts)
+		}
+	}
 	switch {
 	case matchAny(p.Deny, toolName, subject):
 		return Deny
@@ -150,6 +165,45 @@ func (p Policy) DecideSubject(toolName string, readOnly bool, subject string) De
 	default:
 		return p.Mode
 	}
+}
+
+// decideBashSegments evaluates each simple-command segment of a compound bash
+// invocation against the rule table independently. This lets prefix rules like
+// `Bash(git push:*)` — created by the existing auto-save path for atomic
+// commands — cover common compound flows (`git add . && git commit && git
+// push`) without ever synthesizing a new prefix from a compound command.
+//
+// Precedence stays deny > ask > allow > fallback. Any single segment hitting
+// deny denies the whole call; any segment needing approval turns the whole
+// call into Ask; the whole call is Allow only if every segment is covered.
+// A segment recognized as read-only by shellsafe (echo/ls/git status/...) is
+// allowed on its own without a rule, matching the behavior of an atomic
+// read-only bash call.
+func (p Policy) decideBashSegments(readOnly bool, parts []string) Decision {
+	out := Allow
+	for _, sub := range parts {
+		segReadOnly := readOnly
+		if !segReadOnly {
+			if isReadOnlyBashSubject(sub) {
+				segReadOnly = true
+			}
+		}
+		switch {
+		case matchAny(p.Deny, "bash", sub):
+			return Deny
+		case matchAny(p.Ask, "bash", sub):
+			out = Ask
+		case matchAny(p.Allow, "bash", sub):
+			// covered
+		case segReadOnly:
+			// covered
+		default:
+			// segment not covered — surface as Ask, but keep scanning for a
+			// downstream Deny that would still trump.
+			out = Ask
+		}
+	}
+	return out
 }
 
 // DecideSubjects evaluates a tool call against every subject the call touches.
@@ -343,6 +397,12 @@ type Approver interface {
 	Approve(ctx context.Context, toolName, subject string, args json.RawMessage) (allow, remember bool, err error)
 }
 
+// ReasonedApprover is the optional extension used by frontends that can return
+// a denial reason to feed back to the model.
+type ReasonedApprover interface {
+	ApproveWithReason(ctx context.Context, toolName, subject string, args json.RawMessage) (allow, remember bool, reason string, err error)
+}
+
 // Gate is what the agent consults at execute time: a Policy plus an optional
 // Approver. It satisfies the agent's Gate interface structurally.
 type Gate struct {
@@ -375,12 +435,16 @@ func (g *Gate) Check(ctx context.Context, toolName string, args json.RawMessage,
 			return true, "", nil // non-interactive: preserve autonomy
 		}
 		subject := Subject(args)
-		allow, remember, err := g.Approver.Approve(ctx, toolName, subject, args)
+		allow, remember, approverReason, err := g.approve(ctx, toolName, subject, args)
 		if err != nil {
 			return false, "approval aborted", err
 		}
 		if !allow {
-			return false, "the user declined this tool call — do not retry it; ask how they would like to proceed or choose another approach.", nil
+			reason := "the user declined this tool call — do not retry it; ask how they would like to proceed or choose another approach."
+			if approverReason != "" {
+				reason = approverReason
+			}
+			return false, reason, nil
 		}
 		if remember && g.OnRemember != nil {
 			// "Always allow" is tool-wide: persist the bare tool name so any
@@ -400,6 +464,14 @@ func (g *Gate) Check(ctx context.Context, toolName string, args json.RawMessage,
 	default:
 		return true, "", nil
 	}
+}
+
+func (g *Gate) approve(ctx context.Context, toolName, subject string, args json.RawMessage) (bool, bool, string, error) {
+	if a, ok := g.Approver.(ReasonedApprover); ok {
+		return a.ApproveWithReason(ctx, toolName, subject, args)
+	}
+	allow, remember, err := g.Approver.Approve(ctx, toolName, subject, args)
+	return allow, remember, "", err
 }
 
 // rememberRule builds the rule string persisted when the user picks "always
@@ -467,7 +539,10 @@ func BashCommandPrefix(subject string) string {
 	if BashDangerWarning(cmd) != "" {
 		return ""
 	}
-	fields := strings.Fields(cmd)
+	fields, malformed := shellparse.StaticFields(cmd)
+	if malformed != "" {
+		return ""
+	}
 	if len(fields) < 2 {
 		return ""
 	}
@@ -565,8 +640,21 @@ func bashPrefixBase(pattern string) (string, bool) {
 }
 
 func bashPrefixMatches(base, subject string) bool {
-	if containsShellSyntax(subject) {
+	if normalized, ok := normalizeBashSafeRedirectsForMatch(subject); ok {
+		subject = normalized
+	}
+	fields, malformed := shellparse.StaticFields(subject)
+	if malformed != "" {
 		return false
 	}
-	return subject == base || strings.HasPrefix(subject, base+" ")
+	baseFields, malformed := shellparse.StaticFields(base)
+	if malformed != "" || len(baseFields) == 0 || len(fields) < len(baseFields) {
+		return false
+	}
+	for i, want := range baseFields {
+		if fields[i] != want {
+			return false
+		}
+	}
+	return true
 }

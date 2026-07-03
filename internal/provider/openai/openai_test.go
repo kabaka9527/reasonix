@@ -125,6 +125,164 @@ func TestStreamAuthError(t *testing.T) {
 	}
 }
 
+func TestStreamUsesConfiguredChatURL(t *testing.T) {
+	var sawRequest bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawRequest = true
+		if r.URL.Path != "/proxy/v1/chat/completions" {
+			t.Errorf("path = %s, want /proxy/v1/chat/completions", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer k" {
+			http.Error(w, "bad key", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	p, err := New(provider.Config{
+		Name:    "custom",
+		BaseURL: srv.URL + "/base",
+		Model:   "model-a",
+		APIKey:  "k",
+		Extra:   map[string]any{"chat_url": srv.URL + "/proxy/v1/chat/completions"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ch, err := p.Stream(context.Background(), provider.Request{
+		Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	var got strings.Builder
+	for chunk := range ch {
+		if chunk.Type == provider.ChunkError {
+			t.Fatalf("stream error: %v", chunk.Err)
+		}
+		if chunk.Type == provider.ChunkText {
+			got.WriteString(chunk.Text)
+		}
+	}
+	if !sawRequest {
+		t.Fatal("server did not receive request")
+	}
+	if got.String() != "ok" {
+		t.Fatalf("streamed text = %q, want ok", got.String())
+	}
+}
+
+func TestStreamSendsCustomHeaders(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer real-key" {
+			http.Error(w, "authorization was not preserved", http.StatusUnauthorized)
+			return
+		}
+		if r.Header.Get("HTTP-Referer") != "https://app.example" || r.Header.Get("X-Title") != "Reasonix" {
+			http.Error(w, "custom headers missing", http.StatusForbidden)
+			return
+		}
+		if r.Header.Get("Accept") != "text/event-stream" {
+			http.Error(w, "reserved Accept header was overwritten", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	p, err := New(provider.Config{
+		Name:    "custom",
+		BaseURL: srv.URL,
+		Model:   "model-a",
+		APIKey:  "real-key",
+		Extra: map[string]any{"headers": map[string]string{
+			"Authorization": "Bearer wrong",
+			"Accept":        "application/json",
+			"HTTP-Referer":  "https://app.example",
+			"X-Title":       "Reasonix",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ch, err := p.Stream(context.Background(), provider.Request{
+		Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for chunk := range ch {
+		if chunk.Type == provider.ChunkError {
+			t.Fatalf("stream error: %v", chunk.Err)
+		}
+	}
+}
+
+func TestStreamSendsExtraBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "read body", http.StatusBadRequest)
+			return
+		}
+		var req map[string]any
+		if err := json.Unmarshal(body, &req); err != nil {
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		if req["enable_thinking"] != true {
+			http.Error(w, "extra enable_thinking missing", http.StatusBadRequest)
+			return
+		}
+		if got, ok := req["top_p"].(float64); !ok || got != 0.7 {
+			http.Error(w, "extra top_p missing", http.StatusBadRequest)
+			return
+		}
+		if req["model"] != "model-a" || req["stream"] != true {
+			http.Error(w, "reserved fields were overwritten", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	p, err := New(provider.Config{
+		Name:    "custom",
+		BaseURL: srv.URL,
+		Model:   "model-a",
+		APIKey:  "real-key",
+		Extra: map[string]any{"extra_body": map[string]any{
+			"enable_thinking": true,
+			"top_p":           0.7,
+			"model":           "wrong",
+			"stream":          false,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ch, err := p.Stream(context.Background(), provider.Request{
+		Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for chunk := range ch {
+		if chunk.Type == provider.ChunkError {
+			t.Fatalf("stream error: %v", chunk.Err)
+		}
+	}
+}
+
 // TestBuildRequestAlwaysSerializesContent guards the DeepSeek 400 regression:
 // DeepSeek rejects a message missing the `content` field, so every message must
 // serialize one. A pure tool_calls assistant turn carries null (OpenAI-spec,
@@ -313,6 +471,32 @@ func TestBuildRequestDropsReasoningOnPlainAssistantTurn(t *testing.T) {
 	}
 }
 
+func TestBuildRequestDropsMemoryCitations(t *testing.T) {
+	c := &client{model: "deepseek-chat", deepseek: true}
+	req := c.buildRequest(provider.Request{
+		Messages: []provider.Message{
+			{Role: provider.RoleUser, Content: "continue"},
+			{Role: provider.RoleUser, Content: "edited prompt", Edited: true, Original: "original prompt"},
+			{Role: provider.RoleAssistant, Content: "done", MemoryCitations: []provider.MemoryCitation{{
+				ID: "mem-1", Source: "MEMORY.md", LineStart: 116, LineEnd: 123, Note: "workflow",
+			}}},
+		},
+	})
+	b, err := json.Marshal(req.Messages)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(b), "memoryCitations") || strings.Contains(string(b), "MEMORY.md") {
+		t.Fatalf("local memory citations leaked into OpenAI-compatible request: %s", b)
+	}
+	if strings.Contains(string(b), "original prompt") || strings.Contains(string(b), `"edited"`) || strings.Contains(string(b), `"original"`) {
+		t.Fatalf("local edit metadata leaked into OpenAI-compatible request: %s", b)
+	}
+	if !strings.Contains(string(b), "done") {
+		t.Fatalf("assistant content was dropped with local metadata: %s", b)
+	}
+}
+
 // DeepSeek thinking mode 400s a tool_calls turn whose reasoning_content was
 // dropped on a cache-miss replay, so it must be round-tripped — but only on the
 // turn that carries tool calls, and only for the DeepSeek protocol.
@@ -352,6 +536,39 @@ func TestBuildRequestForwardsReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestBuildRequestTemperatureSerialization(t *testing.T) {
+	c := &client{model: "m"}
+
+	omitted := c.buildRequest(provider.Request{})
+	if omitted.Temperature != nil {
+		t.Fatalf("unset request temperature = %v, want nil", omitted.Temperature)
+	}
+	b, err := json.Marshal(omitted)
+	if err != nil {
+		t.Fatalf("marshal omitted: %v", err)
+	}
+	if strings.Contains(string(b), "temperature") {
+		t.Fatalf("unset temperature must be omitted from payload: %s", b)
+	}
+
+	zero := c.buildRequest(provider.Request{Temperature: provider.TemperaturePtr(0)})
+	if zero.Temperature == nil || *zero.Temperature != 0 {
+		t.Fatalf("zero request temperature = %v, want ptr(0)", zero.Temperature)
+	}
+	b, err = json.Marshal(zero)
+	if err != nil {
+		t.Fatalf("marshal zero: %v", err)
+	}
+	if !strings.Contains(string(b), `"temperature":0`) {
+		t.Fatalf("explicit zero temperature must be serialized: %s", b)
+	}
+
+	nonzero := c.buildRequest(provider.Request{Temperature: provider.TemperaturePtr(0.25)})
+	if nonzero.Temperature == nil || *nonzero.Temperature != 0.25 {
+		t.Fatalf("nonzero request temperature = %v, want ptr(0.25)", nonzero.Temperature)
+	}
+}
+
 func TestBuildRequestDeepSeekThinking(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
@@ -371,6 +588,23 @@ func TestBuildRequestDeepSeekThinking(t *testing.T) {
 				t.Fatalf("ReasoningEffort = %q, want %q", req.ReasoningEffort, tc.wantReasoning)
 			}
 		})
+	}
+}
+
+func TestBuildRequestDeepSeekPreservesCallerTemperature(t *testing.T) {
+	c := &client{model: "deepseek-v4", deepseek: true, effort: "high"}
+
+	omitted := c.buildRequest(provider.Request{})
+	if omitted.Temperature != nil {
+		t.Fatalf("DeepSeek default temperature = %v, want omitted", omitted.Temperature)
+	}
+
+	zero := c.buildRequest(provider.Request{Temperature: provider.TemperaturePtr(0)})
+	if zero.Temperature == nil || *zero.Temperature != 0 {
+		t.Fatalf("DeepSeek explicit zero temperature = %v, want ptr(0)", zero.Temperature)
+	}
+	if zero.Thinking == nil || zero.Thinking.Type != "enabled" {
+		t.Fatalf("DeepSeek thinking = %+v, want enabled", zero.Thinking)
 	}
 }
 
@@ -437,6 +671,141 @@ func TestNewMiniMaxSetsFlag(t *testing.T) {
 		if !c.minimax {
 			t.Errorf("minimax flag not set for baseURL=%q", baseURL)
 		}
+	}
+}
+
+// TestBuildRequestZhipuThinking covers the Zhipu GLM wire shape: thinking.type
+// is enabled|disabled and reasoning_effort is never sent (the endpoint ignores
+// it). Auto (empty effort) defaults to "enabled" — the GLM model default.
+func TestBuildRequestZhipuThinking(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		effort       string
+		wantThinking string
+	}{
+		{name: "auto-defaults-to-enabled", effort: "", wantThinking: "enabled"},
+		{name: "enabled", effort: "enabled", wantThinking: "enabled"},
+		{name: "disabled", effort: "disabled", wantThinking: "disabled"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := (&client{model: "glm-4.5-air", zhipu: true, effort: tc.effort}).buildRequest(provider.Request{})
+			if req.Thinking == nil || req.Thinking.Type != tc.wantThinking {
+				t.Fatalf("Thinking = %+v, want %q", req.Thinking, tc.wantThinking)
+			}
+			if req.ReasoningEffort != "" {
+				t.Fatalf("Zhipu must not send reasoning_effort, got %q", req.ReasoningEffort)
+			}
+		})
+	}
+}
+
+// TestNewZhipuEffortValidation locks in boot-time validation for the Zhipu path.
+// The config effort layer remaps depth levels, so by the time effort reaches the
+// factory it must be one of: "", "enabled", "disabled".
+func TestNewZhipuEffortValidation(t *testing.T) {
+	base := provider.Config{Name: "glm", BaseURL: "https://open.bigmodel.cn/api/paas/v4", Model: "glm-4.5-air", APIKey: "k"}
+	for _, ok := range []string{"", "enabled", "disabled"} {
+		if _, err := New(withEffort(base, ok)); err != nil {
+			t.Errorf("effort=%q should be accepted: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"high", "low", "max", "adaptive"} {
+		if _, err := New(withEffort(base, bad)); err == nil {
+			t.Errorf("effort=%q should be rejected", bad)
+		}
+	}
+}
+
+// TestNewZhipuSetsFlag is a smoke test for base-URL detection across both the
+// China (bigmodel.cn) and international (z.ai) GLM endpoints.
+func TestNewZhipuSetsFlag(t *testing.T) {
+	for _, baseURL := range []string{
+		"https://open.bigmodel.cn/api/paas/v4",
+		"https://api.z.ai/api/paas/v4",
+	} {
+		p, err := New(provider.Config{Name: "glm", BaseURL: baseURL, Model: "glm-4.5-air", APIKey: "k"})
+		if err != nil {
+			t.Fatalf("New(%q): %v", baseURL, err)
+		}
+		if c := p.(*client); !c.zhipu {
+			t.Errorf("zhipu flag not set for baseURL=%q", baseURL)
+		}
+	}
+}
+
+// TestBuildRequestGenericThinking covers the vendor-agnostic `thinking` config
+// field on a provider we don't auto-detect: thinking.type is emitted as set, and
+// an empty/unset field leaves thinking off the wire entirely.
+func TestBuildRequestGenericThinking(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		thinking string
+		wantType string // "" means no thinking field
+	}{
+		{name: "enabled", thinking: "enabled", wantType: "enabled"},
+		{name: "disabled", thinking: "disabled", wantType: "disabled"},
+		{name: "unset-omits", thinking: "", wantType: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := (&client{model: "some-model", thinkingType: tc.thinking}).buildRequest(provider.Request{})
+			if tc.wantType == "" {
+				if req.Thinking != nil {
+					t.Fatalf("expected no thinking, got %+v", req.Thinking)
+				}
+				return
+			}
+			if req.Thinking == nil || req.Thinking.Type != tc.wantType {
+				t.Fatalf("Thinking = %+v, want %q", req.Thinking, tc.wantType)
+			}
+		})
+	}
+}
+
+// TestNewThinkingConfigParsing pins how the `thinking` config field is read:
+// enabled|disabled are kept (case-insensitively), everything else is ignored so
+// an unknown value can never break a request.
+func TestNewThinkingConfigParsing(t *testing.T) {
+	base := provider.Config{Name: "gen", BaseURL: "https://api.example.com/v1", Model: "x", APIKey: "k"}
+	for in, want := range map[string]string{"enabled": "enabled", "DISABLED": "disabled", "adaptive": "", "garbage": "", "": ""} {
+		cfg := base
+		cfg.Extra = map[string]any{"thinking": in}
+		p, err := New(cfg)
+		if err != nil {
+			t.Fatalf("New(thinking=%q): %v", in, err)
+		}
+		if got := p.(*client).thinkingType; got != want {
+			t.Errorf("thinking=%q → thinkingType=%q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestBuildRequestDeepSeekDisabled covers both user-facing ways to turn
+// DeepSeek thinking off. Either input must route to thinking.type=disabled and
+// drop reasoning_effort.
+func TestBuildRequestDeepSeekDisabled(t *testing.T) {
+	base := provider.Config{Name: "ds", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4", APIKey: "k"}
+	for _, tc := range []struct {
+		name  string
+		extra map[string]any
+	}{
+		{name: "effort-disabled", extra: map[string]any{"effort": "disabled"}},
+		{name: "thinking-disabled", extra: map[string]any{"thinking": "disabled"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := base
+			cfg.Extra = tc.extra
+			p, err := New(cfg)
+			if err != nil {
+				t.Fatalf("New(%v): %v", tc.extra, err)
+			}
+			req := p.(*client).buildRequest(provider.Request{})
+			if req.Thinking == nil || req.Thinking.Type != "disabled" {
+				t.Fatalf("Thinking = %+v, want disabled", req.Thinking)
+			}
+			if req.ReasoningEffort != "" {
+				t.Fatalf("disabled DeepSeek must not send reasoning_effort, got %q", req.ReasoningEffort)
+			}
+		})
 	}
 }
 
@@ -639,7 +1008,7 @@ func TestBuildRequestOmitsResponseOnlyToolCallIndex(t *testing.T) {
 	}
 }
 
-func TestBuildRequestOmitsEmptyToolDescriptionAndParameters(t *testing.T) {
+func TestBuildRequestDefaultsEmptyToolParameters(t *testing.T) {
 	c := &client{name: "x", model: "m", baseURL: "https://api.example.com/v1"}
 	req := provider.Request{
 		Tools: []provider.ToolSchema{{Name: "noargs"}},
@@ -666,7 +1035,7 @@ func TestBuildRequestOmitsEmptyToolDescriptionAndParameters(t *testing.T) {
 	if _, ok := fn["description"]; ok {
 		t.Fatalf("empty description should be omitted: %s", body)
 	}
-	if _, ok := fn["parameters"]; ok {
-		t.Fatalf("nil parameters should be omitted: %s", body)
+	if got, want := string(fn["parameters"]), `{"properties":{},"type":"object"}`; got != want {
+		t.Fatalf("nil parameters should default to %s, got %s in %s", want, got, body)
 	}
 }

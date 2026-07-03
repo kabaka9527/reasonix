@@ -101,7 +101,9 @@ Desktop releases ride their own tag namespace, `desktop-v<semver>` (plain `v*`
 tags are the CLI release). Pushing one triggers `.github/workflows/release-desktop.yml`,
 which builds on a native runner per platform (Wails can't cross-compile a
 CGO/WebKit binary), packages each artifact, signs it with minisign, generates a
-`latest.json` manifest, publishes a GitHub release, and mirrors everything to R2.
+`latest.json` manifest, publishes a GitHub release, mirrors everything to R2,
+and attaches the current desktop manifest to the matching CLI release for old
+clients that still ask GitHub's repository-wide `latest` release for it.
 The Linux artifact links against WebKitGTK 4.1 (`-tags webkit2_41`), so it needs
 `libwebkit2gtk-4.1-0` at runtime — present by default on Ubuntu 22.04+, Fedora 40+.
 
@@ -109,9 +111,12 @@ The Linux artifact links against WebKitGTK 4.1 (`-tags webkit2_41`), so it needs
 git tag desktop-v1.1.0 && git push origin desktop-v1.1.0
 ```
 
-The app checks `latest.json` on startup (R2 first, GitHub as fallback) and shows
-an update banner when a newer version is published; **Settings → Software update**
-has a manual check. Self-update behavior by platform:
+The app checks `latest.json` on startup (R2 first, then the
+`crash.reasonix.io` desktop release gateway) and shows an update banner when a
+newer version is published; **Settings → Software update** has a manual check.
+The gateway resolves only the desktop `desktop-v*` release line and never uses
+GitHub's repository-wide `/releases/latest` shortcut, because plain `v*` tags are
+the CLI release line. Self-update behavior by platform:
 
 - **Linux / Windows** — download, verify the minisign signature, then update in
   place: Linux replaces the binary and relaunches; Windows runs the per-user NSIS
@@ -183,11 +188,18 @@ the **native** webview per OS, so the rough edges are platform-specific. What's
 handled here, and what to reach for if a target misbehaves:
 
 - **Linux / WebKitGTK** is the one real pain point — rendering varies by distro &
-  GPU driver. `main.go` sets `WebviewGpuPolicy: OnDemand` to avoid blank/flickering
-  webviews from forced compositing. If artifacts persist, launch with
-  `WEBKIT_DISABLE_COMPOSITING_MODE=1`. Test on at least one GTK target before
-  release; the CSS deliberately avoids `backdrop-filter`/blur (slow & inconsistent
-  there).
+  GPU driver. `main.go` keeps `WebviewGpuPolicy: OnDemand` when a DRI render node
+  is usable, and falls back to `Never` for xrdp/headless/software-rendered sessions
+  that cannot access `/dev/dri`. If artifacts persist, launch with
+  `WEBKIT_DISABLE_COMPOSITING_MODE=1`. Test on at least one GTK target before release;
+  the CSS deliberately avoids `backdrop-filter`/blur (slow & inconsistent there).
+  - **Wayland + NVIDIA**: On KDE Plasma Wayland with NVIDIA GPUs, WebKitGTK can
+    crash at startup (`Error 71: Protocol error`) due to an upstream WebKit
+    explicit-sync bug (WebKit #280210, #317089, NVIDIA/egl-wayland #179).
+    Reasonix automatically sets `__NV_DISABLE_EXPLICIT_SYNC=1` when it detects
+    Wayland + NVIDIA GPU. To opt out, set `__NV_DISABLE_EXPLICIT_SYNC=0`.
+    Alternative fallbacks: `WEBKIT_DISABLE_DMABUF_RENDERER=1` (poor performance)
+    or `GDK_BACKEND=x11` (forces XWayland).
 - **Windows / WebView2** — `Theme: SystemDefault` follows the OS light/dark
   setting; the installer embeds the WebView2 bootstrapper. Canary builds disable
   WebView2 GPU acceleration by default to smoke-test blank-window reports; set
@@ -240,3 +252,13 @@ Settings > Updates > "Share aggregate quality metrics", or by setting
 `metrics = false` under `[desktop]`. These metrics are anonymous signal/bucket
 counts and preference buckets; they never include conversations, prompts, keys,
 paths, base URLs, or file contents.
+
+When Memory v5 is enabled, the same aggregate metrics pipeline may include only
+content-free count/size buckets such as injection on/off, compiled-token bucket,
+IR-overhead bucket, memory-reference count, constraint/risk/step counts, and
+memory-graph size buckets. It never uploads memory text, tool outputs, prompts,
+file paths, IDs, keys, base URLs, or file contents. The Memory v5 runtime itself
+is controlled from Settings > General > "Memory v5" and shares the user/global
+`agent.memory_compiler.enabled` setting with the CLI/TUI and `reasonix serve`;
+CLI users can also run `/memory-v5 off|observe|compact|on|status` in a session
+or `reasonix config memory-v5 off|observe|compact|on|status` from a shell.

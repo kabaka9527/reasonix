@@ -3,7 +3,7 @@
 import { JSDOM } from "jsdom";
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
-import { useController } from "../lib/useController";
+import { initialState, reducer, useController, type Item } from "../lib/useController";
 import type { AppBindings } from "../lib/bridge";
 import type { BalanceInfo, CheckpointMeta, ContextInfo, EffortInfo, HistoryMessage, JobView, Meta, TabMeta } from "../lib/types";
 
@@ -74,7 +74,7 @@ function tabMeta(overrides: Partial<TabMeta> = {}): TabMeta {
   };
 }
 
-function meta(): Meta {
+function meta(overrides: Partial<Meta> = {}): Meta {
   return {
     label: "model",
     ready: true,
@@ -91,10 +91,34 @@ function meta(): Meta {
     tokenMode: "full",
     goal: "",
     goalStatus: "stopped",
+    ...overrides,
   };
 }
 
 console.log("\nnew session load race");
+
+const resetSourceItems: Item[] = [{ kind: "user", id: "old-user", text: "old prompt" }];
+const resetPlaceholderItems: Item[] = [{ kind: "user", id: "placeholder-user", text: "placeholder prompt" }];
+const resetState = reducer(
+  {
+    ...initialState,
+    items: resetSourceItems,
+    hydrating: true,
+    hydrateReason: "open-topic",
+    hydratePlaceholderItems: resetPlaceholderItems,
+  },
+  { type: "reset" },
+);
+eq(resetState.items.length, 0, "reset clears real transcript items");
+eq(resetState.hydratePlaceholderItems?.length, 1, "reset preserves hydration placeholder separately");
+
+const emptyHistoryState = reducer(resetState, { type: "history", messages: [] });
+eq(emptyHistoryState.items.length, 0, "empty history keeps the real transcript empty");
+eq(emptyHistoryState.hydrateHistoryLoaded, true, "empty history marks transcript hydration loaded");
+eq(emptyHistoryState.hydratePlaceholderItems?.length ?? 0, 0, "empty history clears hydration placeholder items");
+
+const hydrateDoneState = reducer(emptyHistoryState, { type: "hydrate_done" });
+eq(Boolean(hydrateDoneState.hydrateHistoryLoaded), false, "hydrate_done clears the history-loaded marker");
 
 const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>", {
   pretendToBeVisual: true,
@@ -137,6 +161,11 @@ window.go = {
       JobsForTab: async () => jobs,
       CheckpointsForTab: async () => checkpoints,
       HistoryForTab: async () => staleHistory.promise,
+      HistoryPageForTab: async () => {
+        const messages = await staleHistory.promise;
+        return { messages, startTurn: 0, endTurn: messages.filter((message) => message.role === "user").length, totalTurns: messages.filter((message) => message.role === "user").length, hasOlder: false };
+      },
+      HistoryCheckpointTurnsForTab: async () => [],
       ReplayPendingPrompts: async () => {},
       NewSession: async () => {
         newSessionCalls += 1;
@@ -180,6 +209,77 @@ eq(controller?.state.items.length, 0, "stale history load cannot repopulate a ne
 
 await act(async () => {
   root.unmount();
+});
+
+const guardedStartupTabs = deferred<TabMeta[]>();
+const staleProjectA = "/repo/project-a";
+const targetProjectB = "/repo/project-b";
+const ensureBlankSurfaceCalls: Array<{ scope: string; workspaceRoot: string }> = [];
+window.go.main.App = {
+  ListTabs: async () => guardedStartupTabs.promise,
+  MetaForTab: async (tabID: string) => tabID === "tab-new"
+    ? meta({ cwd: targetProjectB, workspaceRoot: targetProjectB, workspaceName: "project-b", workspacePath: targetProjectB })
+    : meta({ cwd: staleProjectA, workspaceRoot: staleProjectA, workspaceName: "project-a", workspacePath: staleProjectA }),
+  ContextUsageForTab: async () => context,
+  EffortForTab: async () => effort,
+  BalanceForTab: async () => balance,
+  JobsForTab: async () => jobs,
+  CheckpointsForTab: async () => checkpoints,
+  HistoryForTab: async () => [],
+  HistoryPageForTab: async () => ({ messages: [], startTurn: 0, endTurn: 0, totalTurns: 0, hasOlder: false }),
+  HistoryCheckpointTurnsForTab: async () => [],
+  ReplayPendingPrompts: async () => {},
+  EnsureBlankSurface: async (scope: string, workspaceRoot: string) => {
+    ensureBlankSurfaceCalls.push({ scope, workspaceRoot });
+    return tabMeta({
+      id: "tab-new",
+      topicId: "topic-new",
+      topicTitle: "New session",
+      workspaceRoot: targetProjectB,
+      workspaceName: "project-b",
+      workspacePath: targetProjectB,
+      cwd: targetProjectB,
+    });
+  },
+} as Partial<AppBindings> as AppBindings;
+
+controller = undefined;
+const guardRoot = createRoot(rootEl);
+
+await act(async () => {
+  guardRoot.render(<Probe />);
+  await flushPromises();
+});
+
+await act(async () => {
+  await controller?.ensureBlankSurface("project", targetProjectB);
+  await flushPromises();
+});
+
+eq(ensureBlankSurfaceCalls.length, 1, "EnsureBlankSurface is called once");
+eq(ensureBlankSurfaceCalls[0]?.workspaceRoot, targetProjectB, "EnsureBlankSurface keeps the requested project root");
+eq(controller?.activeTabId, "tab-new", "blank surface becomes active before startup sync resolves");
+eq(controller?.state.meta?.workspaceRoot, targetProjectB, "blank surface exposes the new project root");
+
+await act(async () => {
+  guardedStartupTabs.resolve([tabMeta({
+    id: "tab-old",
+    topicId: "topic-old",
+    topicTitle: "Old session",
+    workspaceRoot: staleProjectA,
+    workspaceName: "project-a",
+    workspacePath: staleProjectA,
+    cwd: staleProjectA,
+  })]);
+  await guardedStartupTabs.promise;
+  await flushPromises();
+});
+
+eq(controller?.activeTabId, "tab-new", "guarded startup sync cannot restore an older active tab");
+eq(controller?.state.meta?.workspaceRoot, targetProjectB, "guarded startup sync cannot restore the old project root");
+
+await act(async () => {
+  guardRoot.unmount();
 });
 dom.window.close();
 

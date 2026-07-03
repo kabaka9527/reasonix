@@ -127,6 +127,8 @@ for (const selector of [
   ".context-panel__section-head span",
   ".context-panel__metric span",
   ".context-panel__metric strong",
+  ".app--creation .context-panel__mini-stat span",
+  ".app--creation .context-panel__mini-stat strong",
   ".topbar__model",
   ".composer-modebar__item span",
   ".composer-more-menu__item span",
@@ -134,7 +136,44 @@ for (const selector of [
   clipsSingleLine(selector);
 }
 
+eq(
+  finalDeclaration(".app--creation .layout.layout--workspace-open", "transition"),
+  "grid-template-columns 0s, min-width 0s",
+  "creation dock skips zero-width grid interpolation on open",
+);
+eq(
+  finalDeclaration(".app--creation .context-panel__usage", "animation"),
+  "none",
+  "creation overview usage card disables inherited entrance animation",
+);
+ok(
+  finalDeclaration(".app--creation .context-panel__mini-stat", "justify-content") !== "space-between",
+  "creation overview rows avoid edge-pinned value alignment",
+);
+ok(
+  finalDeclaration(".app--creation .context-panel__mini-stat", "grid-template-columns") !== "minmax(0, 1fr) auto",
+  "creation overview rows avoid the spacer grid that pushes values to the edge",
+);
+ok(
+  finalDeclaration(".app--creation .context-panel__mini-stat strong", "max-width") !== "14ch",
+  "creation overview values are not capped to a fixed 14ch width",
+);
+
 eq(finalDeclaration(".composer-modebar", "overflow"), "hidden", "chat mode switcher contains enlarged labels");
+eq(
+  finalDeclaration(".app--creation .tool:not(.tool--open) > .tool__body", "height"),
+  "0 !important",
+  "collapsed creation tool bodies keep mounted content clipped",
+);
+eq(
+  finalDeclaration(".app--creation .tool:not(.tool--open) > .tool__body", "visibility"),
+  "hidden",
+  "collapsed creation tool bodies do not paint hidden tool text",
+);
+ok(
+  /@container\s*\(max-width:\s*760px\)[\s\S]*?\.composer-meta__control--model\s*\{[\s\S]*?flex\s*:\s*0 1 auto[\s\S]*?width\s*:\s*fit-content[\s\S]*?max-width\s*:\s*min\(240px,\s*42vw\)[\s\S]*?\.composer-meta--has-intent-chip\s+\.composer-meta__control--model\s*\{[\s\S]*?flex\s*:\s*0 1 auto[\s\S]*?width\s*:\s*fit-content[\s\S]*?max-width\s*:\s*min\(220px,\s*38vw\)[\s\S]*?\.composer-meta__control--effort\s*\{[\s\S]*?display\s*:\s*none[\s\S]*?\.composer-meta__control--more\s*\{[\s\S]*?display\s*:\s*inline-flex/.test(styles),
+  "composer compact controls activate at the capped theme width",
+);
 eq(finalDeclaration(".md table", "overflow-x"), "auto", "markdown tables scroll horizontally");
 eq(finalDeclaration(".code", "overflow"), "auto", "code blocks scroll instead of widening the layout");
 ok(
@@ -148,6 +187,10 @@ ok(
 ok(
   /@media\s*\(max-width:\s*760px\)[\s\S]*?\.settings-modal\s*\{[\s\S]*?width\s*:\s*100vw[\s\S]*?height\s*:\s*100vh/.test(styles),
   "settings modal only becomes fullscreen at the narrow breakpoint",
+);
+ok(
+  /@media\s*\(max-width:\s*820px\)[\s\S]*?\.app\s+\.layout[\s\S]*?grid-template-columns\s*:\s*minmax\(0,\s*1fr\)\s*!important[\s\S]*?\.app\s+\.sidebar[\s\S]*?display\s*:\s*none\s*!important[\s\S]*?\.app\s+\.chat-pane[\s\S]*?grid-column\s*:\s*1\s*!important/.test(styles),
+  "narrow workbench layout hides side panels and keeps chat single-column",
 );
 
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

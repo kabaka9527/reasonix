@@ -5,6 +5,10 @@ import {
   defaultExpandedProjectTreeKeys,
   activeSessionAncestorKeys,
   projectTreeTopicOpenRequest,
+  projectTreeShouldSuppressOpenForRename,
+  projectTreeReadActivityKey,
+  projectTreeTopicHasUnreadActivity,
+  projectTreeShouldRenderTopicActions,
 } from "../components/ProjectTree";
 import type { ProjectNode } from "../lib/types";
 
@@ -101,6 +105,85 @@ eq(
   }),
   { scope: "project", workspaceRoot: "/repo", topicId: "topic-project", sessionPath: undefined },
   "regular project topic still opens by topic",
+);
+
+const completedTopic: ProjectNode = {
+  key: "topic_complete",
+  kind: "topic",
+  label: "Completed",
+  root: "/repo",
+  topicId: "topic-complete",
+  lastActivityAt: 2000,
+};
+const completedTopicKey = projectTreeReadActivityKey(completedTopic) ?? "";
+
+eq(
+  projectTreeTopicHasUnreadActivity(completedTopic, { [completedTopicKey]: 1000 }, "project", "/repo", "other-topic"),
+  true,
+  "completed inactive topic with newer activity shows unread attention",
+);
+
+eq(
+  projectTreeTopicHasUnreadActivity(completedTopic, { [completedTopicKey]: 2000 }, "project", "/repo", "other-topic"),
+  false,
+  "completed topic stops showing unread attention once opened at its latest activity",
+);
+
+eq(
+  projectTreeTopicHasUnreadActivity(completedTopic, { [completedTopicKey]: 1000 }, "project", "/repo", "topic-complete"),
+  false,
+  "active topic does not show unread attention",
+);
+
+eq(
+  projectTreeTopicHasUnreadActivity({ ...completedTopic, status: "streaming", running: true }, { [completedTopicKey]: 1000 }, "project", "/repo", "other-topic"),
+  false,
+  "running topic keeps runtime status instead of completed-unread attention",
+);
+
+eq(
+  projectTreeShouldRenderTopicActions(false, true, false),
+  true,
+  "read workbench topic renders hover actions",
+);
+
+eq(
+  projectTreeShouldRenderTopicActions(false, true, true),
+  false,
+  "unread workbench topic omits hover actions from the keyboard tab order",
+);
+
+eq(
+  projectTreeShouldRenderTopicActions(true, true, false),
+  false,
+  "runtime session rows do not render topic hover actions",
+);
+
+eq(
+  projectTreeShouldSuppressOpenForRename(
+    { rowKey: "topic-a", canRename: true },
+    { rowKey: "topic-a", canRename: true },
+  ),
+  true,
+  "second click on the same renameable topic suppresses open for inline rename",
+);
+
+eq(
+  projectTreeShouldSuppressOpenForRename(
+    { rowKey: "session-a", canRename: false },
+    { rowKey: "session-a", canRename: false },
+  ),
+  false,
+  "runtime session double-click still allows the session row to open",
+);
+
+eq(
+  projectTreeShouldSuppressOpenForRename(
+    { rowKey: "topic-a", canRename: true },
+    { rowKey: "topic-b", canRename: true },
+  ),
+  false,
+  "quickly clicking a different topic still opens the new target",
 );
 
 eq(

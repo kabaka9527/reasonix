@@ -29,8 +29,8 @@ type modelReasoningCapability struct {
 }
 
 var modelReasoningCapabilities = map[string]modelReasoningCapability{
-	"deepseek-v4-flash": {Protocol: ReasoningProtocolDeepSeek, Levels: []string{"high", "max"}, Default: "high"},
-	"deepseek-v4-pro":   {Protocol: ReasoningProtocolDeepSeek, Levels: []string{"high", "max"}, Default: "high"},
+	"deepseek-v4-flash": {Protocol: ReasoningProtocolDeepSeek, Levels: []string{"disabled", "high", "max"}, Default: "high"},
+	"deepseek-v4-pro":   {Protocol: ReasoningProtocolDeepSeek, Levels: []string{"disabled", "high", "max"}, Default: "high"},
 }
 
 // EffortCapabilityForEntry returns the user-facing /effort levels for a resolved
@@ -74,6 +74,13 @@ func EffortCapabilityForEntry(e *ProviderEntry) EffortCapability {
 		// runs with thinking on out of the box; "auto" means "don't override
 		// the model default" (== adaptive for M3).
 		return EffortCapability{Supported: true, Levels: []string{"auto", "adaptive", "disabled"}, Default: "adaptive"}
+	case isZhipuEntry(e):
+		// Zhipu GLM exposes a binary thinking knob (enabled|disabled) on its
+		// OpenAI-compatible endpoint and ignores reasoning_effort, so /effort
+		// mirrors that vocabulary. Default is "enabled" because GLM runs with
+		// thinking on out of the box; "auto" means "don't override the model
+		// default" (== enabled for GLM).
+		return EffortCapability{Supported: true, Levels: []string{"auto", "enabled", "disabled"}, Default: "enabled"}
 	case e != nil && e.Kind == "anthropic":
 		return EffortCapability{Supported: true, Levels: []string{"auto", "low", "medium", "high", "xhigh", "max"}, Default: "auto"}
 	default:
@@ -104,6 +111,10 @@ func NormalizeEffort(e *ProviderEntry, raw string) (string, error) {
 	switch ReasoningProtocolForEntry(e) {
 	case ReasoningProtocolDeepSeek:
 		switch level {
+		case "disabled":
+			return "disabled", nil
+		case "off": // retired DeepSeek "no thinking" → disabled
+			return "disabled", nil
 		case "high", "max":
 			return level, nil
 		case "low", "medium":
@@ -111,7 +122,7 @@ func NormalizeEffort(e *ProviderEntry, raw string) (string, error) {
 		case "xhigh":
 			return "max", nil
 		default:
-			return "", fmt.Errorf("usage: /effort auto|high|max")
+			return "", fmt.Errorf("usage: /effort auto|disabled|high|max")
 		}
 	case ReasoningProtocolOpenAI:
 		switch level {
@@ -139,6 +150,21 @@ func NormalizeEffort(e *ProviderEntry, raw string) (string, error) {
 			return "disabled", nil
 		default:
 			return "", fmt.Errorf("usage: /effort auto|adaptive|disabled")
+		}
+	case isZhipuEntry(e):
+		// GLM's knob is binary (enabled|disabled); map Anthropic / OpenAI-style
+		// depth levels onto the nearest valid value so a stale /effort high|low
+		// still works. "off" is a retired DeepSeek level meaning "no thinking",
+		// which maps to "disabled".
+		switch level {
+		case "enabled", "disabled":
+			return level, nil
+		case "off":
+			return "disabled", nil
+		case "low", "medium", "high", "xhigh", "max":
+			return "enabled", nil
+		default:
+			return "", fmt.Errorf("usage: /effort auto|enabled|disabled")
 		}
 	case e != nil && e.Kind == "anthropic":
 		switch level {
@@ -196,10 +222,12 @@ func normalizeProviderEffortFields(e *ProviderEntry) {
 	if e == nil {
 		return
 	}
+	e.Headers = normalizedProviderHeaders(e.Headers)
 	e.Effort = normalizeStoredEffort(e.Effort)
 	e.ReasoningProtocol = normalizeReasoningProtocol(e.ReasoningProtocol)
 	e.DefaultEffort = normalizeEffortLevel(e.DefaultEffort)
 	e.SupportedEfforts = normalizedSupportedEfforts(e)
+	e.ModelOverrides = normalizedModelOverrides(e.ModelOverrides)
 }
 
 func normalizeStoredEffort(raw string) string {
@@ -262,6 +290,13 @@ func isMiniMaxEntry(e *ProviderEntry) bool {
 	return e != nil && e.Kind == "openai" && openai.IsMiniMax(e.BaseURL)
 }
 
+// isZhipuEntry reports whether the entry points at Zhipu's OpenAI-compatible
+// endpoint for GLM models. See openai.IsZhipu for the host-matching rule; the
+// entry-wrapper just gates on the openai kind.
+func isZhipuEntry(e *ProviderEntry) bool {
+	return e != nil && e.Kind == "openai" && openai.IsZhipu(e.BaseURL)
+}
+
 func resolvedModelReasoningCapability(e *ProviderEntry) (modelReasoningCapability, bool) {
 	if e == nil || e.Kind != "openai" {
 		return modelReasoningCapability{}, false
@@ -282,7 +317,7 @@ func effortCapabilityFromModel(cap modelReasoningCapability) EffortCapability {
 }
 
 func deepSeekEffortCapability() EffortCapability {
-	return EffortCapability{Supported: true, Levels: []string{"auto", "high", "max"}, Default: "high"}
+	return EffortCapability{Supported: true, Levels: []string{"auto", "disabled", "high", "max"}, Default: "high"}
 }
 
 func openAIEffortCapability() EffortCapability {
@@ -317,15 +352,68 @@ func normalizedSupportedEfforts(e *ProviderEntry) []string {
 	if e == nil || len(e.SupportedEfforts) == 0 {
 		return nil
 	}
-	out := make([]string, 0, len(e.SupportedEfforts))
+	return normalizedEffortLevels(e.SupportedEfforts)
+}
+
+func normalizedEffortLevels(levels []string) []string {
+	if len(levels) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(levels))
 	seen := map[string]bool{}
-	for _, raw := range e.SupportedEfforts {
+	for _, raw := range levels {
 		level := normalizeEffortLevel(raw)
 		if level == "" || level == "auto" || seen[level] {
 			continue
 		}
 		seen[level] = true
 		out = append(out, level)
+	}
+	return out
+}
+
+func normalizedProviderHeaders(headers map[string]string) map[string]string {
+	if len(headers) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(headers))
+	for rawName, rawValue := range headers {
+		name := strings.TrimSpace(rawName)
+		value := strings.TrimSpace(rawValue)
+		if name == "" || value == "" {
+			continue
+		}
+		out[name] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func normalizedModelOverrides(overrides map[string]ProviderModelOverride) map[string]ProviderModelOverride {
+	if len(overrides) == 0 {
+		return nil
+	}
+	out := make(map[string]ProviderModelOverride, len(overrides))
+	for rawModel, ov := range overrides {
+		model := strings.TrimSpace(rawModel)
+		if model == "" {
+			continue
+		}
+		ov.ReasoningProtocol = normalizeReasoningProtocol(ov.ReasoningProtocol)
+		ov.SupportedEfforts = normalizedEffortLevels(ov.SupportedEfforts)
+		ov.DefaultEffort = normalizeEffortLevel(ov.DefaultEffort)
+		if ov.DefaultEffort != "" && !containsString(ov.SupportedEfforts, ov.DefaultEffort) {
+			ov.DefaultEffort = ""
+		}
+		if ov.ReasoningProtocol == "" && len(ov.SupportedEfforts) == 0 && ov.DefaultEffort == "" && ov.Vision == nil {
+			continue
+		}
+		out[model] = ov
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

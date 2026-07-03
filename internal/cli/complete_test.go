@@ -36,9 +36,12 @@ func TestSlashCompletionFilterAndAccept(t *testing.T) {
 	if !m.completion.active || m.completion.kind != compSlash {
 		t.Fatalf("typing /co should open the slash menu: %+v", m.completion)
 	}
-	// Only /compact matches the "/co" prefix among the built-ins.
-	if len(m.completion.items) != 1 || m.completion.items[0].label != "/compact" {
-		t.Fatalf("filter = %v, want just /compact", labels(m.completion.items))
+	// /compact and /copy both start with "/co".
+	if len(m.completion.items) != 2 {
+		t.Fatalf("filter = %v, want /compact and /copy", labels(m.completion.items))
+	}
+	if m.completion.items[0].label != "/compact" || m.completion.items[1].label != "/copy" {
+		t.Fatalf("filter = %v, want [/compact /copy]", labels(m.completion.items))
 	}
 
 	m.acceptCompletion()
@@ -481,6 +484,20 @@ func TestSlashArgCompletionReasoningLanguage(t *testing.T) {
 	}
 }
 
+func TestSlashArgCompletionMemoryV5(t *testing.T) {
+	m := newTestChatTUI()
+	m.input.SetValue("/memory-v5 ")
+	m.updateCompletion()
+	if !m.completion.active || m.completion.kind != compSlashArg {
+		t.Fatalf("/memory-v5 should open arg completion: %+v", m.completion)
+	}
+	for _, want := range []string{"status", "off", "observe", "compact", "on"} {
+		if !hasLabel(m.completion.items, want) {
+			t.Fatalf("/memory-v5 completion missing %q: %v", want, labels(m.completion.items))
+		}
+	}
+}
+
 func labels(items []compItem) []string {
 	out := make([]string, len(items))
 	for i, it := range items {
@@ -522,7 +539,8 @@ func TestFuzzyFilterSlashSubsequence(t *testing.T) {
 
 // TestFuzzyFilterSlashPrefixFirst proves prefix hits rank ahead of
 // subsequence-only hits, matching the menu behavior we want: typing "/mo"
-// should put /model at the top, not buried after non-prefix matches.
+// should put /model and /mouse (both true "/mo" prefixes) at the top, not
+// buried after non-prefix matches.
 func TestFuzzyFilterSlashPrefixFirst(t *testing.T) {
 	m := newTestChatTUI()
 	m.input.SetValue("/mo")
@@ -531,15 +549,17 @@ func TestFuzzyFilterSlashPrefixFirst(t *testing.T) {
 	if !m.completion.active {
 		t.Fatal("menu should open for /mo")
 	}
-	// /model is the only built-in whose label starts with /mo.
-	if len(m.completion.items) == 0 || m.completion.items[0].label != "/model" {
-		t.Fatalf("prefix hit /model should rank first, got %v", labels(m.completion.items))
+	// /model and /mouse are the only built-ins whose label starts with /mo;
+	// slashItems() declares /model first, and the filter is stable, so it
+	// leads.
+	if len(m.completion.items) < 2 || m.completion.items[0].label != "/model" || m.completion.items[1].label != "/mouse" {
+		t.Fatalf("prefix hits /model, /mouse should rank first in declaration order, got %v", labels(m.completion.items))
 	}
 	// Any other built-ins in the list are subsequence-only matches and must
 	// therefore NOT be prefix hits of /mo.
-	for _, it := range m.completion.items[1:] {
+	for _, it := range m.completion.items[2:] {
 		if strings.HasPrefix(it.label, "/mo") {
-			t.Errorf("%q should not appear after /model (it is a prefix hit too)", it.label)
+			t.Errorf("%q should not appear after the /mo prefix hits", it.label)
 		}
 	}
 }

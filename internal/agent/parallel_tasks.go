@@ -1,22 +1,21 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 
 	"reasonix/internal/event"
-	"reasonix/internal/jobs"
 	"reasonix/internal/provider"
 	"reasonix/internal/tool"
 )
 
-// ParallelTasksTool dispatches multiple sub-agent tasks concurrently and
-// collects all results. Each sub-task runs as a foreground sub-agent in its
+// ParallelTasksTool dispatches multiple read-only sub-agent tasks concurrently
+// and collects all results. Each sub-task runs as a foreground sub-agent in its
 // own goroutine, emitting nested events so the frontend renders independent
 // cards for each sub-task.
 type ParallelTasksTool struct {
@@ -33,7 +32,7 @@ func NewParallelTasksTool(taskTool *TaskTool, reg *tool.Registry) *ParallelTasks
 func (p *ParallelTasksTool) Name() string { return "parallel_tasks" }
 
 func (p *ParallelTasksTool) Description() string {
-	return "Dispatch multiple sub-agent tasks concurrently and collect their results. Each task runs in its own sub-agent in parallel. Blocks until all complete."
+	return "Dispatch multiple read-only sub-agent tasks concurrently and collect their results. Each task runs in its own read-only sub-agent in parallel. Blocks until all complete."
 }
 
 func (p *ParallelTasksTool) Schema() json.RawMessage {
@@ -61,7 +60,9 @@ func (p *ParallelTasksTool) Schema() json.RawMessage {
 }`)
 }
 
-func (p *ParallelTasksTool) ReadOnly() bool { return false }
+func (p *ParallelTasksTool) ReadOnly() bool { return true }
+
+func (p *ParallelTasksTool) PlanModeSafe() bool { return true }
 
 type parallelTaskItem struct {
 	Prompt      string   `json:"prompt"`
@@ -70,14 +71,25 @@ type parallelTaskItem struct {
 	MaxSteps    int      `json:"max_steps"`
 	Model       string   `json:"model"`
 	Effort      string   `json:"effort"`
-	DependsOn   []int    `json:"depends_on"`
 }
+
+type parallelTaskStatus string
+
+const (
+	parallelTaskPending   parallelTaskStatus = "pending"
+	parallelTaskCompleted parallelTaskStatus = "completed"
+	parallelTaskFailed    parallelTaskStatus = "failed"
+	parallelTaskCancelled parallelTaskStatus = "cancelled"
+	parallelTaskSkipped   parallelTaskStatus = "skipped"
+)
 
 func (p *ParallelTasksTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	var params struct {
 		Tasks []parallelTaskItem `json:"tasks"`
 	}
-	if err := json.Unmarshal(args, &params); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(args))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&params); err != nil {
 		return "", fmt.Errorf("invalid args: %w", err)
 	}
 	if len(params.Tasks) == 0 {
@@ -89,11 +101,14 @@ func (p *ParallelTasksTool) Execute(ctx context.Context, args json.RawMessage) (
 	if err := validateParallelTaskItems(params.Tasks); err != nil {
 		return "", err
 	}
+	if p.taskTool == nil {
+		return "", fmt.Errorf("parallel_tasks is not configured")
+	}
 
 	parentID, sink, _, ok := CallContext(ctx)
 	if !ok || sink == nil {
-		// Fallback: no event sink available, use background-jobs approach.
-		return p.runAsBackgroundJobs(ctx, params.Tasks)
+		parentID = "parallel_tasks"
+		sink = event.Discard
 	}
 
 	type subResult struct {
@@ -104,331 +119,232 @@ func (p *ParallelTasksTool) Execute(ctx context.Context, args json.RawMessage) (
 
 	n := len(params.Tasks)
 
-	// Dependency state: remaining = number of deps not yet completed.
-	remaining := make([]int, n)
 	running := make([]bool, n)
 	done := make([]bool, n)
 	outputs := make([]string, n)
-	errors := make([]error, n)
-	for i, t := range params.Tasks {
-		remaining[i] = len(t.DependsOn)
-		running[i] = false
-		done[i] = false
+	taskErrs := make([]error, n)
+	statuses := make([]parallelTaskStatus, n)
+	for i := range params.Tasks {
+		statuses[i] = parallelTaskPending
 	}
 
-	// Channels for task completion signals and for spawning tasks.
-	type runRequest struct {
-		idx      int
-		prompt   string
-		label    string
-		tools    []string
-		maxSteps int
-		model    string
-		effort   string
-	}
-	spawnCh := make(chan runRequest, n)
 	doneCh := make(chan subResult, n)
-	allDone := make(chan struct{})
-
-	// Dispatcher goroutine: spawns tasks when their deps are satisfied,
-	// accumulating wisdom from completed tasks as files on disk.
-	go func() {
-		spawned := 0
-		completed := 0
-		wisdomDir, _ := os.MkdirTemp("", "parallel-wisdom-*")
-		if wisdomDir != "" {
-			defer os.RemoveAll(wisdomDir)
-		}
-
-		makePrompt := func(t parallelTaskItem) string {
-			var prefix strings.Builder
-			if len(t.DependsOn) > 0 && wisdomDir != "" {
-				entries, _ := os.ReadDir(wisdomDir)
-				if len(entries) > 0 {
-					fmt.Fprintf(&prefix, "Previous task results are available at %s. Read the relevant files with read_file before starting.\n\n", wisdomDir)
-				}
-			}
-			prefix.WriteString(t.Prompt)
-			return prefix.String()
-		}
-		makeLabel := func(t parallelTaskItem, idx int) string {
-			if t.Description != "" {
-				return t.Description
-			}
-			return fmt.Sprintf("task-%d", idx+1)
-		}
-
-		// Seed: spawn all tasks with no dependencies.
-		for i, t := range params.Tasks {
-			if remaining[i] == 0 && !running[i] && !done[i] {
-				running[i] = true
-				spawnCh <- runRequest{
-					idx: i, prompt: makePrompt(t), label: makeLabel(t, i),
-					tools: t.Tools, maxSteps: t.MaxSteps, model: t.Model, effort: t.Effort,
-				}
-				spawned++
-			}
-		}
-
-		for completed < n {
-			r := <-doneCh
-			completed++
-			done[r.index] = true
-			outputs[r.index] = r.output
-			errors[r.index] = r.err
-
-			// Write wisdom to file instead of inlining in prompt.
-			if wisdomDir != "" && r.output != "" {
-				fname := filepath.Join(wisdomDir, fmt.Sprintf("task-%d.md", r.index+1))
-				summary := fmt.Sprintf("# Task %d Result\n\n%s", r.index+1, strings.TrimSpace(r.output))
-				_ = os.WriteFile(fname, []byte(summary), 0o644)
-			} else if wisdomDir != "" && r.err != nil {
-				fname := filepath.Join(wisdomDir, fmt.Sprintf("task-%d.md", r.index+1))
-				summary := fmt.Sprintf("# Task %d Result\n\nFAILED: %s", r.index+1, r.err)
-				_ = os.WriteFile(fname, []byte(summary), 0o644)
-			}
-
-			// Check if any waiting tasks are now unblocked.
-			for i, t := range params.Tasks {
-				if remaining[i] > 0 && !running[i] && !done[i] {
-					for _, dep := range t.DependsOn {
-						if dep == r.index {
-							remaining[i]--
-						}
-					}
-					if remaining[i] == 0 {
-						running[i] = true
-						spawnCh <- runRequest{
-							idx: i, prompt: makePrompt(t), label: makeLabel(t, i),
-							tools: t.Tools, maxSteps: t.MaxSteps, model: t.Model, effort: t.Effort,
-						}
-						spawned++
-					}
-				}
-			}
-		}
-		close(spawnCh)
-		close(allDone)
-	}()
-
-	// Worker pool: goroutines that pick up spawn requests and run sub-tasks.
 	var wg sync.WaitGroup
-	for w := 0; w < n; w++ {
+
+	makeLabel := func(t parallelTaskItem, idx int) string {
+		if t.Description != "" {
+			return t.Description
+		}
+		return fmt.Sprintf("task-%d", idx+1)
+	}
+	startTask := func(idx int) {
+		t := params.Tasks[idx]
+		running[idx] = true
+		label := makeLabel(t, idx)
+		subID := fmt.Sprintf("%s/sub-%d", parentID, idx+1)
+		dispatchArgs, _ := json.Marshal(map[string]string{"prompt": t.Prompt, "description": label})
+		sink.Emit(event.Event{
+			Kind: event.ToolDispatch,
+			Tool: event.Tool{
+				ID: subID, ParentID: parentID, Name: "task",
+				Args: string(dispatchArgs), ReadOnly: true,
+			},
+		})
+
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for req := range spawnCh {
-				idx := req.idx
-				prompt := req.prompt
-				label := req.label
-				tools := req.tools
-				maxSteps := req.maxSteps
-				model := req.model
-				effort := req.effort
-
-				subID := fmt.Sprintf("%s/sub-%d", parentID, idx+1)
-				dispatchArgs, _ := json.Marshal(map[string]string{"prompt": prompt, "description": label})
+			nested := subSinkFor(subID, sink)
+			modelRef, effortRef := p.taskTool.effectiveProfile(t.Model, t.Effort)
+			childDepth, depthErr := p.taskTool.nextSubagentDepth(ctx)
+			if depthErr != nil {
 				sink.Emit(event.Event{
-					Kind: event.ToolDispatch,
-					Tool: event.Tool{
-						ID: subID, ParentID: parentID, Name: "task",
-						Args: string(dispatchArgs), ReadOnly: true,
-					},
+					Kind: event.ToolResult,
+					Tool: event.Tool{ID: subID, ParentID: parentID, Name: "task", Err: depthErr.Error()},
 				})
-
-				nested := subSinkFor(subID, sink)
-				modelRef, effortRef := p.taskTool.effectiveProfile(model, effort)
-				subReg := p.taskTool.buildSubReg(tools)
-
-				max := maxSteps
-				if max <= 0 {
-					max = 20
-				}
-
-				prov, pricing, ctxWin, err := resolveSubagentProvider(p.taskTool, modelRef, effortRef)
-				if err != nil {
-					sink.Emit(event.Event{
-						Kind: event.ToolResult,
-						Tool: event.Tool{ID: subID, ParentID: parentID, Name: "task", Err: err.Error()},
-					})
-					doneCh <- subResult{index: idx, err: err}
-					continue
-				}
-
-				sess := NewSession("")
-				output, runErr := RunSubAgentWithSession(ctx, prov, subReg, sess, prompt, Options{
-					MaxSteps:          max,
-					Temperature:       p.taskTool.temperature,
-					Pricing:           pricing,
-					UsageSource:       event.UsageSourceSubagent,
-					Gate:              p.taskTool.gate,
-					ContextWindow:     ctxWin,
-					RecentKeep:        p.taskTool.recentKeep,
-					SoftCompactRatio:  p.taskTool.softCompactRatio,
-					CompactRatio:      p.taskTool.compactRatio,
-					CompactForceRatio: p.taskTool.compactForceRatio,
-					ArchiveDir:        p.taskTool.archiveDir,
-					KeepPolicy:        p.taskTool.keepPolicy,
-				}, nested)
-
-				if runErr != nil {
-					sink.Emit(event.Event{
-						Kind: event.ToolResult,
-						Tool: event.Tool{ID: subID, ParentID: parentID, Name: "task", Err: runErr.Error()},
-					})
-					doneCh <- subResult{index: idx, err: runErr}
-				} else {
-					sink.Emit(event.Event{
-						Kind: event.ToolResult,
-						Tool: event.Tool{ID: subID, ParentID: parentID, Name: "task", Output: output},
-					})
-					doneCh <- subResult{index: idx, output: output}
-				}
+				doneCh <- subResult{index: idx, err: depthErr}
+				return
 			}
+			subReg := ReadOnlySubagentToolRegistryForDepth(p.taskTool.parentReg, t.Tools, childDepth, p.taskTool.maxDepth())
+
+			max := t.MaxSteps
+			if max <= 0 {
+				max = 20
+			}
+
+			prov, pricing, ctxWin, err := resolveSubagentProvider(p.taskTool, modelRef, effortRef)
+			if err != nil {
+				sink.Emit(event.Event{
+					Kind: event.ToolResult,
+					Tool: event.Tool{ID: subID, ParentID: parentID, Name: "task", Err: err.Error()},
+				})
+				doneCh <- subResult{index: idx, err: err}
+				return
+			}
+
+			sess := NewSession(DefaultReadOnlyTaskSystemPrompt)
+			output, runErr := RunSubAgentWithSession(ctx, prov, subReg, sess, t.Prompt, Options{
+				MaxSteps:            max,
+				Temperature:         p.taskTool.temperature,
+				Pricing:             pricing,
+				UsageSource:         event.UsageSourceSubagent,
+				Gate:                p.taskTool.gate,
+				ContextWindow:       ctxWin,
+				RecentKeep:          p.taskTool.recentKeep,
+				SoftCompactRatio:    p.taskTool.softCompactRatio,
+				ToolResultSnipRatio: p.taskTool.toolResultSnipRatio,
+				CompactRatio:        p.taskTool.compactRatio,
+				CompactForceRatio:   p.taskTool.compactForceRatio,
+				ArchiveDir:          p.taskTool.archiveDir,
+				KeepPolicy:          p.taskTool.keepPolicy,
+				SubagentDepth:       childDepth,
+				MaxSubagentDepth:    p.taskTool.maxDepth(),
+			}, nested)
+
+			if ctx.Err() != nil && runErr == nil {
+				runErr = ctx.Err()
+			}
+			if runErr != nil {
+				errText := runErr.Error()
+				if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
+					errText = "cancelled: " + errText
+				}
+				sink.Emit(event.Event{
+					Kind: event.ToolResult,
+					Tool: event.Tool{ID: subID, ParentID: parentID, Name: "task", Err: errText},
+				})
+				doneCh <- subResult{index: idx, err: runErr}
+				return
+			}
+			sink.Emit(event.Event{
+				Kind: event.ToolResult,
+				Tool: event.Tool{ID: subID, ParentID: parentID, Name: "task", Output: output},
+			})
+			doneCh <- subResult{index: idx, output: output}
 		}()
 	}
 
-	<-allDone
-	wg.Wait()
-
-	// Collect in order.
-	var b strings.Builder
-	fmt.Fprintf(&b, "Completed %d parallel tasks:\n", n)
-	for i := 0; i < n; i++ {
-		if errors[i] != nil {
-			fmt.Fprintf(&b, "── task-%d ──\n[FAILED] %s\n", i+1, errors[i])
-		} else {
-			fmt.Fprintf(&b, "── task-%d ──\n%s\n", i+1, strings.TrimSpace(outputs[i]))
+	markCancelled := func(err error) {
+		for i := range params.Tasks {
+			if done[i] {
+				continue
+			}
+			done[i] = true
+			if running[i] {
+				statuses[i] = parallelTaskCancelled
+				taskErrs[i] = err
+				continue
+			}
+			statuses[i] = parallelTaskSkipped
+			taskErrs[i] = err
 		}
 	}
-	return b.String(), nil
+
+	completed := 0
+	for i := range params.Tasks {
+		startTask(i)
+	}
+	processResult := func(r subResult) {
+		if done[r.index] {
+			return
+		}
+		completed++
+		done[r.index] = true
+		outputs[r.index] = r.output
+		taskErrs[r.index] = r.err
+		switch {
+		case r.err == nil:
+			statuses[r.index] = parallelTaskCompleted
+		case errors.Is(r.err, context.Canceled), errors.Is(r.err, context.DeadlineExceeded):
+			statuses[r.index] = parallelTaskCancelled
+		default:
+			statuses[r.index] = parallelTaskFailed
+		}
+	}
+	for completed < n {
+		select {
+		case r := <-doneCh:
+			processResult(r)
+		case <-ctx.Done():
+			err := ctx.Err()
+		drain:
+			for {
+				select {
+				case r := <-doneCh:
+					processResult(r)
+				default:
+					break drain
+				}
+			}
+			markCancelled(err)
+			wg.Wait()
+			return formatParallelTasksAggregate(outputs, taskErrs, statuses, true), err
+		}
+	}
+	wg.Wait()
+	if parallelTasksWereCancelled(statuses) {
+		err := ctx.Err()
+		if err == nil {
+			err = context.Canceled
+		}
+		return formatParallelTasksAggregate(outputs, taskErrs, statuses, true), err
+	}
+	return formatParallelTasksAggregate(outputs, taskErrs, statuses, false), nil
 }
 
-// runAsBackgroundJobs is the fallback path when no event sink is available.
-func (p *ParallelTasksTool) runAsBackgroundJobs(ctx context.Context, tasks []parallelTaskItem) (string, error) {
-	jm, ok := jobs.FromContext(ctx)
-	if !ok {
-		return "", fmt.Errorf("background jobs are not available in this context")
+func parallelTasksWereCancelled(statuses []parallelTaskStatus) bool {
+	for _, st := range statuses {
+		if st == parallelTaskCancelled || st == parallelTaskSkipped {
+			return true
+		}
 	}
-	session := jobs.SessionFromContext(ctx)
+	return false
+}
 
-	if err := validateParallelTaskItems(tasks); err != nil {
-		return "", err
-	}
-
-	type jobRef struct {
-		id    string
-		label string
-		idx   int
-	}
-	var refs []jobRef
-
-	for i, t := range tasks {
-		if strings.TrimSpace(t.Prompt) == "" {
-			return "", fmt.Errorf("task %d: prompt is required", i+1)
-		}
-		label := t.Description
-		if label == "" {
-			label = fmt.Sprintf("task-%d", i+1)
-		}
-
-		subArgs := map[string]interface{}{
-			"prompt":            t.Prompt,
-			"description":       label,
-			"run_in_background": true,
-		}
-		if len(t.Tools) > 0 {
-			subArgs["tools"] = t.Tools
-		}
-		if t.MaxSteps > 0 {
-			subArgs["max_steps"] = t.MaxSteps
-		}
-		if t.Model != "" {
-			subArgs["model"] = t.Model
-		}
-		if t.Effort != "" {
-			subArgs["effort"] = t.Effort
-		}
-
-		subJSON, err := json.Marshal(subArgs)
-		if err != nil {
-			return "", fmt.Errorf("task %d: marshal: %w", i+1, err)
-		}
-
-		result, err := p.taskTool.Execute(ctx, subJSON)
-		if err != nil {
-			return "", fmt.Errorf("task %d dispatch: %w", i+1, err)
-		}
-		refs = append(refs, jobRef{id: extractJobID(result), label: label, idx: i})
-		_ = result
-	}
-
-	if len(refs) == 0 {
-		return "", fmt.Errorf("no tasks were dispatched")
-	}
-
-	jobIDs := make([]string, 0, len(refs))
-	order := make(map[string]int)
-	for _, r := range refs {
-		jobIDs = append(jobIDs, r.id)
-		order[r.id] = r.idx
-	}
-
-	results := jm.WaitForSession(ctx, session, jobIDs, 0)
-	if len(results) == 0 {
-		return "No parallel task results available.", nil
-	}
-
+func formatParallelTasksAggregate(outputs []string, errs []error, statuses []parallelTaskStatus, cancelled bool) string {
+	n := len(statuses)
 	var b strings.Builder
-	fmt.Fprintf(&b, "Completed %d parallel tasks:\n", len(results))
-	for _, r := range results {
-		idx := order[r.ID]
-		label := r.ID
-		if r.Label != "" {
-			label = r.Label
+	if cancelled {
+		completed := 0
+		for _, st := range statuses {
+			if st == parallelTaskCompleted {
+				completed++
+			}
 		}
-		fmt.Fprintf(&b, "── %s ──\n[%s] %s\n%s", label, r.ID, r.Status, strings.TrimSpace(r.Output))
-		_ = idx
+		fmt.Fprintf(&b, "Cancelled parallel tasks after completing %d of %d tasks:\n", completed, n)
+	} else {
+		fmt.Fprintf(&b, "Completed %d parallel tasks:\n", n)
 	}
-	return b.String(), nil
+	for i, st := range statuses {
+		fmt.Fprintf(&b, "── task-%d ──\n", i+1)
+		switch st {
+		case parallelTaskCompleted:
+			fmt.Fprintf(&b, "%s\n", strings.TrimSpace(outputs[i]))
+		case parallelTaskCancelled:
+			if errs[i] != nil {
+				fmt.Fprintf(&b, "[CANCELLED] %s\n", errs[i])
+			} else {
+				b.WriteString("[CANCELLED]\n")
+			}
+		case parallelTaskSkipped:
+			if errs[i] != nil {
+				fmt.Fprintf(&b, "[SKIPPED] cancelled before start: %s\n", errs[i])
+			} else {
+				b.WriteString("[SKIPPED] cancelled before start\n")
+			}
+		case parallelTaskFailed:
+			fmt.Fprintf(&b, "[FAILED] %s\n", errs[i])
+		default:
+			b.WriteString("[PENDING]\n")
+		}
+	}
+	return b.String()
 }
 
 func validateParallelTaskItems(tasks []parallelTaskItem) error {
 	for i, t := range tasks {
 		if strings.TrimSpace(t.Prompt) == "" {
 			return fmt.Errorf("task %d: prompt is required", i+1)
-		}
-		for j, dep := range t.DependsOn {
-			if dep < 0 || dep >= len(tasks) {
-				return fmt.Errorf("task %d: depends_on[%d] = %d out of range (0-%d)", i+1, j, dep, len(tasks)-1)
-			}
-			if dep == i {
-				return fmt.Errorf("task %d: self-referencing depends_on", i+1)
-			}
-		}
-	}
-
-	state := make([]int, len(tasks)) // 0 = unvisited, 1 = visiting, 2 = done
-	var visit func(int) error
-	visit = func(i int) error {
-		switch state[i] {
-		case 1:
-			return fmt.Errorf("task dependency cycle detected at task %d", i+1)
-		case 2:
-			return nil
-		}
-		state[i] = 1
-		for _, dep := range tasks[i].DependsOn {
-			if err := visit(dep); err != nil {
-				return err
-			}
-		}
-		state[i] = 2
-		return nil
-	}
-	for i := range tasks {
-		if err := visit(i); err != nil {
-			return err
 		}
 	}
 	return nil
@@ -442,16 +358,4 @@ func resolveSubagentProvider(tt *TaskTool, modelRef, effortRef string) (provider
 	}
 	// Use the task tool's own defaults.
 	return tt.prov, tt.pricing, tt.contextWindow, nil
-}
-
-func extractJobID(msg string) string {
-	quote := strings.Index(msg, `"`)
-	if quote < 0 {
-		return ""
-	}
-	end := strings.Index(msg[quote+1:], `"`)
-	if end < 0 {
-		return ""
-	}
-	return msg[quote+1 : quote+1+end]
 }

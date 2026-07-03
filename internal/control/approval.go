@@ -28,11 +28,12 @@ type approvalManager struct {
 
 	// mu guards the prompt maps and posture fields; every critical section under
 	// it is short and non-blocking.
-	mu        sync.Mutex
-	approvals map[string]pendingApproval
-	asks      map[string]pendingAsk
-	granted   map[string]bool
-	nextID    int
+	mu                       sync.Mutex
+	approvals                map[string]pendingApproval
+	asks                     map[string]pendingAsk
+	granted                  map[string]bool
+	planModeReadOnlyCommands map[string]bool
+	nextID                   int
 	// toolApprovalMode is the runtime approval posture: "ask" prompts, "auto"
 	// lets the policy auto-approve the writer fallback while preserving ask/deny
 	// rules, and "yolo" skips every tool approval prompt except plan approval.
@@ -56,13 +57,32 @@ type approvalManager struct {
 
 func newApprovalManager(policy permission.Policy, mode string, timeout time.Duration) approvalManager {
 	return approvalManager{
-		policy:           policy,
-		approvals:        map[string]pendingApproval{},
-		asks:             map[string]pendingAsk{},
-		granted:          map[string]bool{},
-		toolApprovalMode: mode,
-		approvalTimeout:  timeout,
+		policy:                   policy,
+		approvals:                map[string]pendingApproval{},
+		asks:                     map[string]pendingAsk{},
+		granted:                  map[string]bool{},
+		planModeReadOnlyCommands: map[string]bool{},
+		toolApprovalMode:         mode,
+		approvalTimeout:          timeout,
 	}
+}
+
+// NewHeadlessPermissionGate builds the non-interactive gate used by `reasonix run`
+// and sub-agents. It preserves headless autonomy for ordinary Ask decisions, but
+// refuses tools whose contract requires a fresh human approval.
+func NewHeadlessPermissionGate(policy permission.Policy) *freshHumanHeadlessGate {
+	return &freshHumanHeadlessGate{gate: permission.NewGate(policy, nil)}
+}
+
+type freshHumanHeadlessGate struct {
+	gate *permission.Gate
+}
+
+func (g *freshHumanHeadlessGate) Check(ctx context.Context, toolName string, args json.RawMessage, readOnly bool) (bool, string, error) {
+	if RequiresFreshHumanApprovalTool(toolName) {
+		return false, "this tool requires fresh human approval and cannot run in a non-interactive session. Use an interactive session or a user-initiated memory command.", nil
+	}
+	return g.gate.Check(ctx, toolName, args, readOnly)
 }
 
 // preApproved reports whether a tool call can skip the prompt — either the
@@ -74,15 +94,38 @@ func (a *approvalManager) preApproved(tool, subject string) bool {
 	return a.bypassAllowsLocked(tool) || a.sessionGrantAllowsLocked(tool, subject)
 }
 
+// preApprovedForDecision reports whether a prompt can be skipped for a decision
+// class. Fresh user decisions may reuse an explicit session grant, but they are
+// never answered by YOLO/full-access or the approved-plan execution window.
+func (a *approvalManager) preApprovedForDecision(tool, subject string, fresh bool) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if fresh {
+		return a.sessionGrantAllowsLocked(tool, subject)
+	}
+	return a.bypassAllowsLocked(tool) || a.sessionGrantAllowsLocked(tool, subject)
+}
+
 // register allocates an approval ID, records the pending prompt, and returns the
 // reply channel the resolve path will signal.
-func (a *approvalManager) register(tool, subject string) (string, chan approvalReply) {
+func (a *approvalManager) register(tool, subject, reason string) (string, chan approvalReply) {
+	return a.registerDecision(tool, subject, reason, false)
+}
+
+// registerDecision allocates an approval ID for either an ordinary tool
+// permission or a fresh user decision. Fresh decisions are not auto-drained when
+// the user switches to auto/yolo tool approval while the prompt is visible.
+func (a *approvalManager) registerDecision(tool, subject, reason string, fresh bool) (string, chan approvalReply) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.nextID++
 	id := strconv.Itoa(a.nextID)
 	reply := make(chan approvalReply, 1)
-	a.approvals[id] = pendingApproval{tool: tool, subject: subject, autoDrain: a.autoApprovalWouldAllowLocked(tool, subject), reply: reply}
+	autoDrain := false
+	if !fresh {
+		autoDrain = a.autoApprovalWouldAllowLocked(tool, subject)
+	}
+	a.approvals[id] = pendingApproval{tool: tool, subject: subject, reason: reason, fresh: fresh, autoDrain: autoDrain, reply: reply}
 	return id, reply
 }
 
@@ -92,6 +135,26 @@ func (a *approvalManager) grantSession(tool, subject string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.granted[permission.SessionGrantRuleForScope(tool, subject)] = true
+}
+
+func (a *approvalManager) planModeReadOnlyCommandTrusted(prefix string) bool {
+	prefix = normalizePlanModeReadOnlyCommandPrefix(prefix)
+	if prefix == "" {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.planModeReadOnlyCommands[prefix]
+}
+
+func (a *approvalManager) grantPlanModeReadOnlyCommand(prefix string) {
+	prefix = normalizePlanModeReadOnlyCommandPrefix(prefix)
+	if prefix == "" {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.planModeReadOnlyCommands[prefix] = true
 }
 
 // cancel drops a pending approval (timeout/abort path).
@@ -199,13 +262,17 @@ func (a *approvalManager) snapshotPrompts() ([]event.Approval, []event.Ask) {
 	defer a.mu.Unlock()
 	approvals := make([]event.Approval, 0, len(a.approvals))
 	for id, p := range a.approvals {
-		approvals = append(approvals, event.Approval{ID: id, Tool: p.tool, Subject: p.subject})
+		approvals = append(approvals, event.Approval{ID: id, Tool: p.tool, Subject: p.subject, Reason: p.reason})
 	}
 	asks := make([]event.Ask, 0, len(a.asks))
 	for id, p := range a.asks {
 		asks = append(asks, event.Ask{ID: id, Questions: p.questions})
 	}
 	return approvals, asks
+}
+
+func normalizePlanModeReadOnlyCommandPrefix(prefix string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(prefix)), " ")
 }
 
 // --- decision helpers (caller holds a.mu) ---
@@ -244,7 +311,7 @@ func (a *approvalManager) sessionGrantAllowsLocked(tool, subject string) bool {
 func (a *approvalManager) drainLocked(includeExplicitAsk bool) []chan approvalReply {
 	pending := make([]chan approvalReply, 0, len(a.approvals))
 	for id, approval := range a.approvals {
-		if requiresFreshApprovalTool(approval.tool) {
+		if approval.fresh || requiresFreshApprovalTool(approval.tool) {
 			continue
 		}
 		if !includeExplicitAsk && !approval.autoDrain {
@@ -269,13 +336,20 @@ func normalizeToolApprovalMode(mode string) string {
 	}
 }
 
-func requiresFreshApprovalTool(tool string) bool {
+// RequiresFreshHumanApprovalTool reports whether a tool must be answered by a
+// human each time, not by YOLO/auto approval, session grants, Guardian, or a
+// non-interactive nil approver.
+func RequiresFreshHumanApprovalTool(tool string) bool {
 	switch tool {
 	case planApprovalTool, memoryRememberTool, memoryForgetTool:
 		return true
 	default:
 		return false
 	}
+}
+
+func requiresFreshApprovalTool(tool string) bool {
+	return RequiresFreshHumanApprovalTool(tool)
 }
 
 func approvalNotificationText(tool, subject string) string {

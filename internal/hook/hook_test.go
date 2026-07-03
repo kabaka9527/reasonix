@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"testing"
 	"time"
+
+	"reasonix/internal/pluginpkg"
 )
 
 func writeSettings(t *testing.T, dir, json string) {
@@ -17,6 +19,16 @@ func writeSettings(t *testing.T, dir, json string) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(d, SettingsFilename), []byte(json), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeHookTestFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -54,6 +66,106 @@ func TestLoadPermissionRequestHook(t *testing.T) {
 	}
 	if got[0].Event != PermissionRequest || got[0].Match != "bash" || got[0].Command != "notify" {
 		t.Fatalf("loaded hook = %+v, want PermissionRequest/bash/notify", got[0])
+	}
+}
+
+func TestLoadIncludesPluginSessionStartHook(t *testing.T) {
+	home := t.TempDir()
+	reasonixHome := filepath.Join(home, ".reasonix")
+	root := filepath.Join(reasonixHome, "plugins", "superpowers")
+	writeSettings(t, home, `{"hooks":{"PostToolUse":[{"command":"echo global"}]}}`)
+	writeHookTestFile(t, filepath.Join(root, pluginpkg.CodexManifest), `{
+  "name": "superpowers",
+  "version": "6.1.0",
+  "skills": "./skills/"
+}`)
+	writeHookTestFile(t, filepath.Join(root, "hooks", "session-start-codex"), "#!/usr/bin/env bash\necho ok\n")
+	if err := pluginpkg.Upsert(reasonixHome, pluginpkg.InstalledPlugin{
+		Name:         "superpowers",
+		Root:         "plugins/superpowers",
+		Version:      "6.1.0",
+		ManifestKind: "codex",
+		Enabled:      true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := Load(LoadOptions{HomeDir: home, ProjectRoot: "/workspace", Trusted: true})
+	if len(got) != 2 {
+		t.Fatalf("hooks = %+v, want plugin + global", got)
+	}
+	if got[0].Scope != ScopePlugin || got[0].Event != SessionStart {
+		t.Fatalf("first hook = %+v, want plugin SessionStart", got[0])
+	}
+	if got[0].Env["REASONIX_PLUGIN_NAME"] != "superpowers" || got[0].Env["REASONIX_WORKSPACE_ROOT"] != "/workspace" {
+		t.Fatalf("plugin env = %#v", got[0].Env)
+	}
+	if got[1].Scope != ScopeGlobal {
+		t.Fatalf("second hook = %+v, want global", got[1])
+	}
+}
+
+func TestLoadIncludesPluginClaudeCompatibilityHooks(t *testing.T) {
+	home := t.TempDir()
+	reasonixHome := filepath.Join(home, ".reasonix")
+	root := filepath.Join(reasonixHome, "plugins", "claude-pack")
+	writeHookTestFile(t, filepath.Join(root, pluginpkg.CodexManifest), `{
+  "name": "claude-pack",
+  "version": "1.0.0",
+  "skills": "skills"
+}`)
+	writeHookTestFile(t, filepath.Join(root, "CLAUDE.md"), "Use the bundled workflow.")
+	writeHookTestFile(t, filepath.Join(root, ".claude", "settings.json"), `{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "bash",
+        "hooks": [
+          { "type": "command", "command": "node hooks/post-tool.js", "timeout": 2 }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node hooks/prompt.js" }
+        ]
+      }
+    ]
+  }
+}`)
+	if err := pluginpkg.Upsert(reasonixHome, pluginpkg.InstalledPlugin{
+		Name:         "claude-pack",
+		Root:         "plugins/claude-pack",
+		Version:      "1.0.0",
+		ManifestKind: "codex",
+		Enabled:      true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := Load(LoadOptions{HomeDir: home, ProjectRoot: "/workspace", Trusted: true})
+	if len(got) != 3 {
+		t.Fatalf("hooks = %+v, want three plugin hooks", got)
+	}
+	byEvent := map[Event]ResolvedHook{}
+	for _, h := range got {
+		if h.Scope != ScopePlugin {
+			t.Fatalf("hook scope = %s, want plugin: %+v", h.Scope, h)
+		}
+		byEvent[h.Event] = h
+	}
+	if h := byEvent[SessionStart]; h.ContextFile != filepath.Join(root, "CLAUDE.md") || h.Command != "" {
+		t.Fatalf("SessionStart hook = %+v, want CLAUDE.md context file", h)
+	}
+	if h := byEvent[PostToolUse]; h.Match != "bash" || h.Command != "node hooks/post-tool.js" || h.Timeout != 2000 || h.Cwd != root {
+		t.Fatalf("PostToolUse hook = %+v", h)
+	}
+	if h := byEvent[UserPromptSubmit]; h.Command != "node hooks/prompt.js" || h.Cwd != root {
+		t.Fatalf("UserPromptSubmit hook = %+v", h)
+	}
+	if h := byEvent[PostToolUse]; h.Env["CLAUDE_PROJECT_DIR"] != "/workspace" || h.Env["REASONIX_PLUGIN_NAME"] != "claude-pack" {
+		t.Fatalf("plugin env = %#v", h.Env)
 	}
 }
 
@@ -201,6 +313,46 @@ func TestDecideOutcome(t *testing.T) {
 		if got := decideOutcome(c.event, c.r); got != c.want {
 			t.Errorf("%s: decideOutcome = %s, want %s", c.name, got, c.want)
 		}
+	}
+}
+
+func TestParseOutputSessionStartJSONAdditionalContext(t *testing.T) {
+	out, warnings := ParseOutput(SessionStart, `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"Load conventions."}}`)
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", warnings)
+	}
+	if out.AdditionalContext != "Load conventions." {
+		t.Fatalf("AdditionalContext = %q, want context", out.AdditionalContext)
+	}
+}
+
+func TestParseOutputSessionStartPlainText(t *testing.T) {
+	out, warnings := ParseOutput(SessionStart, "  Load workspace notes.  ")
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", warnings)
+	}
+	if out.AdditionalContext != "Load workspace notes." {
+		t.Fatalf("AdditionalContext = %q, want plain text", out.AdditionalContext)
+	}
+}
+
+func TestParseOutputRejectsMismatchedEvent(t *testing.T) {
+	out, warnings := ParseOutput(SessionStart, `{"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":"wrong"}}`)
+	if out.AdditionalContext != "" {
+		t.Fatalf("AdditionalContext = %q, want empty", out.AdditionalContext)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %v, want one warning", warnings)
+	}
+}
+
+func TestParseOutputInvalidJSONWarns(t *testing.T) {
+	out, warnings := ParseOutput(SessionStart, `{"hookSpecificOutput":`)
+	if out.AdditionalContext != "" {
+		t.Fatalf("AdditionalContext = %q, want empty", out.AdditionalContext)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %v, want one warning", warnings)
 	}
 }
 

@@ -17,6 +17,7 @@ import {
   type ThemeStyle,
 } from "../lib/theme";
 import { TEXT_SIZES, applyTextSize, getTextSize, type TextSize } from "../lib/textSize";
+import { snapZoom, zoomToPercent, saveRestartZoom, getRestartZoom, type ZoomLevel } from "../lib/dpiScale";
 import {
   applyFontFamily,
   applyMonoFontFamily,
@@ -32,6 +33,7 @@ import {
 import { getAvailableFontFamilies, getAvailableMonoFontFamilies } from "../lib/fontAvailability";
 import { getDisplayMode, onDisplayModeChange, setDisplayMode as setLocalDisplayMode } from "../lib/displayMode";
 import { DEFAULT_STATUS_BAR_ITEMS, normalizeStatusBarItems, type StatusBarItemId } from "../lib/statusBarItems";
+import { normalizeToolApprovalMode } from "../lib/types";
 import {
   comboFromKeyboardEvent,
   detectShortcutPlatform,
@@ -54,11 +56,13 @@ import { getSuccessPreference, setSuccessPreference, getAttentionPreference, set
 import { ModalCloseButton } from "./ModalCloseButton";
 import { ShortcutComboDisplay } from "./ShortcutComboDisplay";
 
-const SETTINGS_TABS: SettingsTab[] = ["general", "models", "bots", "mcp", "skills", "memory", "hooks", "shortcuts", "permissions", "sandbox", "network", "appearance", "updates"];
+const SETTINGS_TABS: SettingsTab[] = ["general", "models", "bots", "mcp", "skills", "plugins", "memory", "hooks", "shortcuts", "permissions", "sandbox", "network", "appearance", "updates"];
 export type SettingsInitialFocus = { target: "bot-allowlist"; connectionId?: string };
+type DesktopPlatform = "darwin" | "windows" | "linux";
 
 const MCPServersSettingsPage = lazy(() => import("./CapabilitiesPanel").then((module) => ({ default: module.MCPServersSettingsPage })));
 const SkillsSettingsPage = lazy(() => import("./CapabilitiesPanel").then((module) => ({ default: module.SkillsSettingsPage })));
+const PluginsSettingsPage = lazy(() => import("./CapabilitiesPanel").then((module) => ({ default: module.PluginsSettingsPage })));
 const MemorySettingsPage = lazy(() => import("./MemoryPanel").then((module) => ({ default: module.MemorySettingsPage })));
 const QRCodeSVG = lazy(() => import("qrcode.react").then((module) => ({ default: module.QRCodeSVG })));
 
@@ -71,21 +75,26 @@ export function SettingsPanel({
   initialTab,
   initialFocus,
   agentRunning = false,
+  desktopPlatform,
 }: {
   onClose: () => void;
   onChanged: (settings?: SettingsView | null) => void;
   initialTab?: SettingsTab;
   initialFocus?: SettingsInitialFocus;
   agentRunning?: boolean;
+  desktopPlatform: DesktopPlatform;
 }) {
   const t = useT();
   const [s, setS] = useState<SettingsView | null>(null);
+  const [loadingSettings, setLoadingSettings] = useState(true);
+  const [settingsLoadFailed, setSettingsLoadFailed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
   const [theme, setThemeState] = useState<Theme>(getTheme());
   const [themeStyle, setThemeStyleState] = useState<ThemeStyle>(() => getThemeStyle(getTheme()));
   const [textSize, setTextSizeState] = useState<TextSize>(getTextSize());
+  const [zoomPct, setZoomPct] = useState<number>(zoomToPercent(getRestartZoom()));
   const [fontFamily, setFontFamilyState] = useState<FontFamily>(getFontFamily());
   const [monoFontFamily, setMonoFontFamilyState] = useState<MonoFontFamily>(getMonoFontFamily());
   const [customFontName, setCustomFontNameState] = useState<string>(getCustomFontName());
@@ -95,9 +104,19 @@ export function SettingsPanel({
   const { status, requestClose } = useDeferredClose(onClose, 240);
 
   const reload = useCallback(async () => {
-    const next = normalizeSettingsView(await app.Settings().catch(() => null));
-    setS(next);
-    return next;
+    setLoadingSettings(true);
+    setSettingsLoadFailed(false);
+    try {
+      const next = normalizeSettingsView(await app.Settings());
+      setS(next);
+      return next;
+    } catch {
+      setS(null);
+      setSettingsLoadFailed(true);
+      return null;
+    } finally {
+      setLoadingSettings(false);
+    }
   }, []);
   useEffect(() => {
     void reload();
@@ -151,7 +170,8 @@ export function SettingsPanel({
   }, [requestClose]);
 
   // The settings-reliant pages (general, models, network, permissions,
-  // sandbox, appearance, updates) need SettingsView loaded. MCP, Skills, and Memory
+  // sandbox, appearance, updates) need SettingsView loaded. MCP, Skills, Plugins,
+  // and Memory
   // load their own data and render regardless.
   const needsSettings = tab === "general" || tab === "models" || tab === "bots" || tab === "network" || tab === "permissions" || tab === "sandbox" || tab === "appearance" || tab === "updates";
   const lazySettingsPageFallback = <div className="empty">{t("settings.loading")}</div>;
@@ -178,10 +198,16 @@ export function SettingsPanel({
             ))}
           </nav>
           <main className="settings-center__content">
+            {needsSettings && settingsLoadFailed && (
+              <div className="banner banner--error settings-load-error" role="alert">
+                <span>{t("settings.loadFailed")}</span>
+                <button className="btn btn--small" type="button" onClick={() => void reload()}>{t("common.retry")}</button>
+              </div>
+            )}
             {needsSettings && err && <div className="banner banner--error">{err}</div>}
             {needsSettings && warning && <div className="banner banner--warning">{warning}</div>}
             {needsSettings && !s ? (
-              <div className="empty">{t("settings.loading")}</div>
+              loadingSettings ? <div className="empty">{t("settings.loading")}</div> : null
             ) : (
               <>
                 {tab === "general" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><GeneralSection s={s} busy={busy} apply={apply} agentRunning={agentRunning} /></SettingsPageShell>}
@@ -189,6 +215,7 @@ export function SettingsPanel({
                 {tab === "bots" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><BotsSection s={s} busy={busy} apply={apply} initialFocus={initialFocus} /></SettingsPageShell>}
                 {tab === "mcp" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><Suspense fallback={lazySettingsPageFallback}><MCPServersSettingsPage /></Suspense></SettingsPageShell>}
                 {tab === "skills" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><Suspense fallback={lazySettingsPageFallback}><SkillsSettingsPage /></Suspense></SettingsPageShell>}
+                {tab === "plugins" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><Suspense fallback={lazySettingsPageFallback}><PluginsSettingsPage /></Suspense></SettingsPageShell>}
                 {tab === "memory" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><Suspense fallback={lazySettingsPageFallback}><MemorySettingsPage /></Suspense></SettingsPageShell>}
                 {tab === "hooks" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><HooksSection onChanged={onChanged} /></SettingsPageShell>}
                 {tab === "shortcuts" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><ShortcutsSection /></SettingsPageShell>}
@@ -201,6 +228,8 @@ export function SettingsPanel({
                       theme={theme}
                       themeStyle={themeStyle}
                       textSize={textSize}
+                      showDisplayZoom={desktopPlatform === "windows"}
+                      zoomPct={zoomPct}
                       fontFamily={fontFamily}
                       monoFontFamily={monoFontFamily}
                       customFontName={customFontName}
@@ -218,6 +247,18 @@ export function SettingsPanel({
                       onTextSize={(size) => {
                         applyTextSize(size);
                         setTextSizeState(size);
+                      }}
+                      onRestartZoom={async (zoom) => {
+                        const snapped = snapZoom(zoom);
+                        setErr(null);
+                        setWarning(null);
+                        try {
+                          await app.SetDesktopZoomFactor(snapped);
+                          saveRestartZoom(snapped);
+                          setZoomPct(zoomToPercent(snapped));
+                        } catch (e) {
+                          setErr(String((e as Error)?.message ?? e));
+                        }
                       }}
                       onFontFamily={(font) => {
                         applyFontFamily(font);
@@ -281,6 +322,7 @@ function settingsPageKind(tab: SettingsTab): "form" | "manager" {
     case "models":
     case "mcp":
     case "skills":
+    case "plugins":
     case "memory":
       return "manager";
     default:
@@ -364,6 +406,7 @@ function settingsTabPageTitle(id: SettingsTab, t: ReturnType<typeof useT>): stri
   switch (id) {
     case "mcp": return t("settings.tab.mcp");
     case "skills": return t("settings.tab.skills");
+    case "plugins": return t("settings.tab.plugins");
     case "memory": return t("settings.tab.memory");
     case "shortcuts": return t("settings.tab.shortcuts");
     default: return settingsTabLabel(id, t);
@@ -394,6 +437,8 @@ function settingsTabLabel(id: SettingsTab, t: ReturnType<typeof useT>): string {
       return t("settings.tab.mcp");
     case "skills":
       return t("settings.tab.skills");
+    case "plugins":
+      return t("settings.tab.plugins");
     case "memory":
       return t("settings.tab.memory");
     case "hooks":
@@ -427,6 +472,8 @@ function settingsTabMeta(id: SettingsTab, s: SettingsView, t: ReturnType<typeof 
       return t("caps.connectorsTab");
     case "skills":
       return t("caps.skillsTab");
+    case "plugins":
+      return t("settings.tabSub.plugins");
     case "memory":
       return t("settings.tabSub.memory");
     case "hooks":
@@ -593,20 +640,20 @@ function toRef(model: string, s: SettingsView): string {
 
 const PROXY_MODES = ["auto", "custom", "off"] as const;
 
-// EFFORT_PRESETS is the canonical union of /effort levels the kernel
-// recognises. The settings UI exposes these as toggleable checkboxes; users
-// can additionally add arbitrary custom names via the "Add" input. The order
-// here is what the user sees in the dropdown.
+// EFFORT_PRESETS is the canonical union of /effort levels the kernel recognises.
+// The settings UI uses it for subagent defaults; provider-specific levels are
+// inferred by the backend or edited in TOML for rare gateways.
 const EFFORT_PRESETS: readonly string[] = ["low", "medium", "high", "xhigh", "max"];
 const REASONING_PROTOCOLS: readonly string[] = ["", "deepseek", "openai", "none"];
+const THINKING_MODES: readonly string[] = ["", "enabled", "disabled", "adaptive"];
 const PROXY_TYPES = ["http", "https", "socks5", "socks5h"] as const;
 const LANGUAGE_PREFS: LangPref[] = ["", "zh", "en"];
 const AUTO_PLAN_MODES = ["off", "on"] as const;
+const TOOL_APPROVAL_MODES = ["ask", "auto", "yolo"] as const;
 const BOT_TOOL_APPROVAL_MODES = ["", "ask", "auto", "yolo"] as const;
 
 type ProxyMode = (typeof PROXY_MODES)[number];
 type AutoPlanMode = (typeof AUTO_PLAN_MODES)[number];
-type BotConnectionToolApprovalMode = (typeof BOT_TOOL_APPROVAL_MODES)[number];
 
 function normalizeProxyMode(mode: string): ProxyMode {
   switch (mode) {
@@ -629,6 +676,128 @@ function normalizeAutoPlan(mode: string | undefined): AutoPlanMode {
 
 function normalizeReasoningProtocol(protocol: string | undefined): string {
   return REASONING_PROTOCOLS.includes(protocol ?? "") ? protocol ?? "" : "";
+}
+
+function normalizeThinkingMode(thinking: string | undefined): string {
+  const v = String(thinking ?? "").trim().toLowerCase();
+  return THINKING_MODES.includes(v) ? v : "";
+}
+
+export function providerEditorEffectiveKind(isNewCustomProvider: boolean, kind: string, kinds: string[]): string {
+  return isNewCustomProvider ? "openai" : (kind.trim() || kinds[0] || "openai");
+}
+
+function trimmedURL(value: string): string {
+  return value.trim().replace(/\/+$/, "");
+}
+
+export function providerChatURLPreview(baseUrl: string, chatUrl: string, fullURL: boolean): string {
+  if (fullURL) return trimmedURL(chatUrl);
+  const base = trimmedURL(baseUrl);
+  return base ? `${base}/chat/completions` : "";
+}
+
+export function providerBaseURLFromChatURL(chatUrl: string): string {
+  const full = trimmedURL(chatUrl);
+  for (const suffix of ["/chat/completions", "/responses", "/response"]) {
+    if (full.endsWith(suffix)) return trimmedURL(full.slice(0, -suffix.length));
+  }
+  return full;
+}
+
+function formatProviderHeaders(headers: Record<string, string> | null | undefined): string {
+  const entries = Object.entries(headers ?? {})
+    .map(([key, value]) => [key.trim(), String(value ?? "").trim()] as const)
+    .filter(([key, value]) => key && value)
+    .sort(([a], [b]) => a.localeCompare(b));
+  return entries.map(([key, value]) => `${key}: ${value}`).join("\n");
+}
+
+function parseProviderHeaders(raw: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const colon = trimmed.indexOf(":");
+    const eq = trimmed.indexOf("=");
+    const cut = colon >= 0 && (eq < 0 || colon < eq) ? colon : eq;
+    if (cut <= 0) continue;
+    const key = trimmed.slice(0, cut).trim();
+    const value = trimmed.slice(cut + 1).trim();
+    if (key && value) out[key] = value;
+  }
+  return out;
+}
+
+function sortedJSONValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortedJSONValue);
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value as Record<string, unknown>).sort((a, b) => a.localeCompare(b))) {
+      out[key] = sortedJSONValue((value as Record<string, unknown>)[key]);
+    }
+    return out;
+  }
+  return value;
+}
+
+function validateProviderExtraBodyValue(value: unknown, path = "extra_body"): void {
+  if (value === null) {
+    throw new Error(`${path} cannot contain null`);
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => validateProviderExtraBodyValue(item, `${path}[${index}]`));
+    return;
+  }
+  if (typeof value === "object") {
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      validateProviderExtraBodyValue(child, `${path}.${key}`);
+    }
+  }
+}
+
+export function formatProviderExtraBody(extraBody: Record<string, unknown> | null | undefined): string {
+  const cleaned: Record<string, unknown> = {};
+  for (const [rawKey, value] of Object.entries(extraBody ?? {})) {
+    const key = rawKey.trim();
+    if (!key || value === undefined) continue;
+    cleaned[key] = value;
+  }
+  if (Object.keys(cleaned).length === 0) return "";
+  return JSON.stringify(sortedJSONValue(cleaned), null, 2);
+}
+
+export function parseProviderExtraBody(raw: string): Record<string, unknown> {
+  const trimmed = raw.trim();
+  if (!trimmed) return {};
+  const parsed = JSON.parse(trimmed) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("extra body must be a JSON object");
+  }
+  validateProviderExtraBodyValue(parsed);
+  const out: Record<string, unknown> = {};
+  for (const [rawKey, value] of Object.entries(parsed as Record<string, unknown>)) {
+    const key = rawKey.trim();
+    if (key) out[key] = value;
+  }
+  return out;
+}
+
+function providerModelFetchFallbackMessage(error: unknown, t: ReturnType<typeof useT>): string {
+  const message = String((error as Error)?.message ?? error);
+  if (/\bstatus\s+(401|403)\b/i.test(message)) {
+    return t("settings.fetchModelsManualFallbackAuth");
+  }
+  if (/\bstatus\s+(404|405)\b/i.test(message)) {
+    return t("settings.fetchModelsManualFallbackUnsupported");
+  }
+  if (/\b(status\s+5\d\d|request failed|network|timeout|timed out|connection|deadline|fetch failed)\b/i.test(message)) {
+    return t("settings.fetchModelsManualFallbackNetwork");
+  }
+  if (/\b(decode response|invalid character|unexpected end|unexpected format)\b/i.test(message)) {
+    return t("settings.fetchModelsManualFallbackDecode");
+  }
+  return t("settings.fetchModelsManualFallbackGeneric", { err: message });
 }
 
 function normalizeReasoningLanguage(lang: string | undefined): string {
@@ -756,6 +925,27 @@ function normalizeBotMappingScope(scope: unknown, workspaceRoot: unknown): "glob
   return String(workspaceRoot ?? "").trim() ? "project" : "global";
 }
 
+function normalizeStringMap(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out: Record<string, string> = {};
+  for (const [rawKey, rawValue] of Object.entries(value as Record<string, unknown>)) {
+    const key = rawKey.trim();
+    const val = String(rawValue ?? "").trim();
+    if (key && val) out[key] = val;
+  }
+  return out;
+}
+
+function normalizeExtraBodyMap(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out: Record<string, unknown> = {};
+  for (const [rawKey, rawValue] of Object.entries(value as Record<string, unknown>)) {
+    const key = rawKey.trim();
+    if (key && rawValue !== undefined) out[key] = rawValue;
+  }
+  return out;
+}
+
 function normalizeProviderView(p: ProviderView): ProviderView {
   const visionModels = asArray(p.visionModels);
   const requiresKey = providerRequiresKey(p);
@@ -763,12 +953,17 @@ function normalizeProviderView(p: ProviderView): ProviderView {
     ...p,
     builtIn: Boolean(p.builtIn),
     added: Boolean(p.added),
+    chatUrl: p.chatUrl ?? "",
     models: asArray(p.models),
     visionModels,
     visionModelsConfigured: Boolean(p.visionModelsConfigured ?? visionModels.length > 0),
     modelsUrl: p.modelsUrl ?? "",
+    headers: normalizeStringMap(p.headers),
+    extraBody: normalizeExtraBodyMap(p.extraBody),
     reasoningProtocol: normalizeReasoningProtocol(p.reasoningProtocol),
+    thinking: normalizeThinkingMode(p.thinking),
     supportedEfforts: asArray(p.supportedEfforts),
+    modelOverrides: asArray(p.modelOverrides),
     requiresKey,
     configured: providerIsConfigured({ ...p, requiresKey }),
     keySource: p.keySource ?? "",
@@ -779,16 +974,17 @@ function normalizeProviderView(p: ProviderView): ProviderView {
 function normalizeSettingsView(view: SettingsView | null | undefined): SettingsView | null {
   if (!view) return null;
   const permissions = view.permissions ?? { mode: "ask", allow: [], ask: [], deny: [] };
-  const sandbox = view.sandbox ?? { bash: "enforce", network: false, workspaceRoot: "", allowWrite: [], shell: "auto" };
+  const sandbox = view.sandbox ?? { bash: "enforce", network: false, workspaceRoot: "", allowWrite: [], effectiveWorkspaceRoot: "", effectiveWriteRoots: [], shell: "auto" };
   const network = view.network ?? {
     proxyMode: "auto",
     proxyUrl: "",
     noProxy: "",
     proxy: { type: "socks5", server: "", port: 0, username: "", password: "" },
   };
-  const agent = view.agent ?? { temperature: 0, maxSteps: 0, plannerMaxSteps: 0, systemPrompt: "", coldResumePrune: true, reasoningLanguage: "auto" };
+  const agent = view.agent ?? { temperature: 0, maxSteps: 0, plannerMaxSteps: 0, maxSubagentDepth: 2, systemPrompt: "", coldResumePrune: true, reasoningLanguage: "auto" };
   agent.plannerMaxSteps = Number.isFinite(agent.plannerMaxSteps) ? Math.max(0, Math.trunc(agent.plannerMaxSteps)) : 0;
   agent.maxSteps = Number.isFinite(agent.maxSteps) ? Math.max(0, Math.trunc(agent.maxSteps)) : 0;
+  agent.maxSubagentDepth = Number.isFinite(agent.maxSubagentDepth) && agent.maxSubagentDepth <= 1 ? 1 : 2;
   agent.reasoningLanguage = normalizeReasoningLanguage(agent.reasoningLanguage);
   return {
     ...view,
@@ -804,6 +1000,8 @@ function normalizeSettingsView(view: SettingsView | null | undefined): SettingsV
     sandbox: {
       ...sandbox,
       allowWrite: asArray(sandbox.allowWrite),
+      effectiveWorkspaceRoot: String(sandbox.effectiveWorkspaceRoot ?? ""),
+      effectiveWriteRoots: asArray(sandbox.effectiveWriteRoots),
     },
     network: {
       ...network,
@@ -812,6 +1010,7 @@ function normalizeSettingsView(view: SettingsView | null | undefined): SettingsV
     agent,
     bot: normalizeBotSettings(view.bot),
     autoPlan: normalizeAutoPlan(view.autoPlan),
+    defaultToolApprovalMode: normalizeToolApprovalMode(view.defaultToolApprovalMode),
     autoApproveTools: Boolean(view.autoApproveTools ?? view.bypass),
     bypass: Boolean(view.autoApproveTools ?? view.bypass),
     desktopLanguage: normalizeLangPref(view.desktopLanguage),
@@ -823,6 +1022,7 @@ function normalizeSettingsView(view: SettingsView | null | undefined): SettingsV
     statusBarStyle: normalizeStatusBarStyle(view.statusBarStyle),
     statusBarItems: normalizeStatusBarItems(view.statusBarItems),
     checkUpdates: view.checkUpdates !== false,
+    memoryCompilerEnabled: view.memoryCompilerEnabled !== false,
   };
 }
 
@@ -924,6 +1124,19 @@ function reasoningProtocolLabel(protocol: string, t: ReturnType<typeof useT>): s
   }
 }
 
+function thinkingModeLabel(mode: string, t: ReturnType<typeof useT>): string {
+  switch (mode) {
+    case "enabled":
+      return t("settings.thinkingMode.enabled");
+    case "disabled":
+      return t("settings.thinkingMode.disabled");
+    case "adaptive":
+      return t("settings.thinkingMode.adaptive");
+    default:
+      return t("settings.thinkingMode.auto");
+  }
+}
+
 function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agentRunning: boolean }) {
   const { t, setPref } = useI18n();
   const closeBehavior = normalizeCloseBehavior(s.closeBehavior);
@@ -939,6 +1152,8 @@ function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agent
   useEffect(() => onDisplayModeChange((mode) => setDisplayMode(mode)), []);
   useEffect(() => () => mouseDragCleanupRef.current?.(), []);
   const autoPlan = normalizeAutoPlan(s.autoPlan);
+  const defaultToolApprovalMode = normalizeToolApprovalMode(s.defaultToolApprovalMode);
+  const memoryCompilerEnabled = s.memoryCompilerEnabled !== false;
   const languagePref = normalizeLangPref(s.desktopLanguage);
   const desktopLayoutStyle = normalizeDesktopLayoutStyle(s.desktopLayoutStyle);
   const [genMusicPreset, setGenMusicPreset] = useState<GenerativePreset>(getGenerativePreset());
@@ -1156,6 +1371,20 @@ function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agent
           ))}
         </div>
       </SettingsField>
+      <SettingsField label={t("settings.defaultToolApprovalMode")} hint={t("settings.defaultToolApprovalModeHint")}>
+        <div className="set-seg">
+          {TOOL_APPROVAL_MODES.map((mode) => (
+            <button
+              key={mode}
+              className={`set-seg__btn${defaultToolApprovalMode === mode ? " set-seg__btn--on" : ""}`}
+              disabled={busy}
+              onClick={() => void apply(() => app.SetDefaultToolApprovalMode(mode))}
+            >
+              {t(`settings.defaultToolApprovalMode.${mode}`)}
+            </button>
+          ))}
+        </div>
+      </SettingsField>
       <SettingsField label={t("settings.autoPlan")}>
         <div className="set-seg">
           {AUTO_PLAN_MODES.map((mode) => (
@@ -1169,6 +1398,13 @@ function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agent
             </button>
           ))}
         </div>
+      </SettingsField>
+      <SettingsField label={t("settings.memoryCompiler")} hint={t("settings.memoryCompilerHint")}>
+        <ToggleSegment
+          value={memoryCompilerEnabled}
+          disabled={busy}
+          onChange={(enabled) => void apply(() => app.SetMemoryCompilerEnabled(enabled))}
+        />
       </SettingsField>
       <SettingsField label={t("settings.sound")} hint={t("settings.soundHint")} stacked>
         <div className={`settings-sound-editor${soundExpanded ? " settings-sound-editor--expanded" : ""}`}>
@@ -1742,6 +1978,11 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
     setConnections((items) => items.map((item) => item.id === id ? { ...item, ...patch } : item));
   const persistConnection = (id: string, patch: Partial<BotConnectionView>) =>
     persistConnections((items) => items.map((item) => item.id === id ? { ...item, ...patch } : item));
+  const persistConnectionToolApprovalMode = (id: string, mode: string) => {
+    const normalizedMode = normalizeBotToolApprovalMode(mode, true);
+    setConnections((items) => items.map((item) => item.id === id ? { ...item, toolApprovalMode: normalizedMode } : item));
+    void apply(() => app.SetBotConnectionToolApprovalMode(id, normalizedMode));
+  };
   const updateConnectionCredential = (id: string, patch: Partial<BotConnectionView["credential"]>) =>
     setConnections((items) => items.map((item) => item.id === id ? { ...item, credential: { ...item.credential, ...patch } } : item));
   const persistConnectionCredential = (id: string, patch: Partial<BotConnectionView["credential"]>) =>
@@ -2559,7 +2800,7 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
                         type="button"
                         className={selectedConnectionToolApprovalMode === mode ? "provider-add-segmented__item provider-add-segmented__item--active" : "provider-add-segmented__item"}
                         disabled={busy}
-                        onClick={() => void persistConnection(selectedConnection.id, { toolApprovalMode: mode as BotConnectionToolApprovalMode })}
+                        onClick={() => persistConnectionToolApprovalMode(selectedConnection.id, mode)}
                       >
                         {t(`settings.botToolApprovalMode.${mode || "inherit"}` as DictKey)}
                       </button>
@@ -2980,7 +3221,8 @@ function ModelsSection({ s, busy, apply, backgroundApply }: ModelsSectionProps) 
     : !providerIsConfigured(defaultProviderView)
       ? t("settings.modelNeedsKey", { provider: modelProviderLabel(defaultProvider, defaultProviderView, t) })
       : "";
-  const agent = s.agent ?? { temperature: 0, maxSteps: 0, plannerMaxSteps: 0, systemPrompt: "", coldResumePrune: true, reasoningLanguage: "auto" };
+  const agent = s.agent ?? { temperature: 0, maxSteps: 0, plannerMaxSteps: 0, maxSubagentDepth: 2, systemPrompt: "", coldResumePrune: true, reasoningLanguage: "auto" };
+  const subagentDepth = Number.isFinite(agent.maxSubagentDepth) && agent.maxSubagentDepth <= 1 ? 1 : 2;
   const setAgentSteps = (maxSteps: number, plannerMaxSteps: number) => (
     app.SetAgentParams(agent.temperature, maxSteps, plannerMaxSteps, agent.systemPrompt)
   );
@@ -3043,7 +3285,7 @@ function ModelsSection({ s, busy, apply, backgroundApply }: ModelsSectionProps) 
       {subtab === "usage" ? (
         <>
           <SettingsSection title={t("settings.modelUsage")}>
-            <SettingsField label={t("settings.defaultModel")}>
+            <SettingsField label={t("settings.defaultModel")} hint={t("settings.defaultModelHint")}>
               <ModelPicker
                 s={s}
                 refs={refs}
@@ -3090,6 +3332,23 @@ function ModelsSection({ s, busy, apply, backgroundApply }: ModelsSectionProps) 
                   </option>
                 ))}
               </select>
+            </SettingsField>
+
+            <SettingsField label={t("settings.subagentDepth")} hint={t("settings.subagentDepthHint")}>
+              <div className="provider-add-segmented" role="group" aria-label={t("settings.subagentDepth")}>
+                {[1, 2].map((depth) => (
+                  <button
+                    key={depth}
+                    type="button"
+                    className={subagentDepth === depth ? "provider-add-segmented__item provider-add-segmented__item--active" : "provider-add-segmented__item"}
+                    disabled={busy}
+                    aria-pressed={subagentDepth === depth}
+                    onClick={() => void apply(() => app.SetMaxSubagentDepth(depth))}
+                  >
+                    {depth === 1 ? t("settings.subagentDepthOne") : t("settings.subagentDepthTwo")}
+                  </button>
+                ))}
+              </div>
             </SettingsField>
 
             {modelIssue && <div className="provider-fetch-banner provider-fetch-banner--warn">{modelIssue}</div>}
@@ -4202,19 +4461,93 @@ function parseBotListInput(value: string): string[] {
     .filter(Boolean));
 }
 
-// Memoized model chips for ProviderEditor — prevents re-render when typing
-// in name/key/baseUrl fields.
-const ModelChips = memo(function ModelChips({ modelNames }: { modelNames: string[] }) {
+const ProviderEditorModelPicker = memo(function ProviderEditorModelPicker({
+  candidates,
+  selectedModels,
+  visionModels,
+  disabled,
+  onToggleModel,
+  onToggleVision,
+  onSelectAll,
+  onClear,
+}: {
+  candidates: string[];
+  selectedModels: string[];
+  visionModels: string[];
+  disabled: boolean;
+  onToggleModel: (model: string) => void;
+  onToggleVision: (model: string) => void;
+  onSelectAll: () => void;
+  onClear: () => void;
+}) {
   const t = useT();
-  if (modelNames.length === 0) return null;
+  const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(query), 150);
+    return () => clearTimeout(timer);
+  }, [query]);
+  if (candidates.length === 0) return null;
+  const selected = new Set(selectedModels);
+  const vision = new Set(visionModels);
+  const q = debouncedQuery.trim().toLowerCase();
+  const visibleCandidates = q
+    ? candidates.filter((model) => model.toLowerCase().includes(q))
+    : candidates;
   return (
-    <div className="provider-model-chips">
-      {modelNames.slice(0, 8).map((model) => (
-        <span className="provider-model-chip" key={model}>{model}</span>
-      ))}
-      {modelNames.length > 8 && (
-        <span className="provider-model-chip provider-model-chip--more">{t("settings.moreModels", { n: modelNames.length - 8 })}</span>
+    <div className="provider-model-draft provider-model-draft--inline">
+      <div className="provider-model-draft__head">
+        <div>
+          <div className="provider-card-block__label">{t("settings.modelCandidates")}</div>
+          <span>{t("settings.modelCandidatesSelected", { n: selectedModels.length })}</span>
+        </div>
+        <div className="provider-model-draft__tools">
+          <button type="button" className="btn btn--small" disabled={disabled || selectedModels.length === candidates.length} onClick={onSelectAll}>
+            {t("settings.selectAllModels")}
+          </button>
+          <button type="button" className="btn btn--small" disabled={disabled || selectedModels.length === 0} onClick={onClear}>
+            {t("settings.clearModelSelection")}
+          </button>
+        </div>
+      </div>
+      {candidates.length > 8 && (
+        <input
+          className="mem-input provider-model-draft__search"
+          placeholder={t("settings.modelCandidateSearch")}
+          value={query}
+          disabled={disabled}
+          onChange={(e) => setQuery(e.target.value)}
+        />
       )}
+      <div className="provider-model-draft__list" role="list" aria-label={t("settings.modelCandidates")}>
+        {visibleCandidates.length > 0 ? visibleCandidates.map((model) => {
+          const enabled = selected.has(model);
+          return (
+            <div className="provider-model-draft__option" key={model}>
+              <label className="provider-model-draft__model">
+                <input
+                  type="checkbox"
+                  checked={enabled}
+                  disabled={disabled}
+                  onChange={() => onToggleModel(model)}
+                />
+                <span>{model}</span>
+              </label>
+              <label className="provider-model-draft__vision">
+                <input
+                  type="checkbox"
+                  checked={enabled && vision.has(model)}
+                  disabled={disabled || !enabled}
+                  onChange={() => onToggleVision(model)}
+                />
+                <span>{t("settings.visionModel")}</span>
+              </label>
+            </div>
+          );
+        }) : (
+          <div className="provider-model-draft__empty">{t("settings.noMatchingCandidateModels")}</div>
+        )}
+      </div>
     </div>
   );
 });
@@ -4238,68 +4571,69 @@ function ProviderEditor({
 }) {
   const t = useT();
   const [name, setName] = useState(initial?.name ?? "");
-  const [kind, setKind] = useState(initial?.kind ?? kinds[0] ?? "openai");
+  const [kind] = useState(initial?.kind ?? "openai");
   const [baseUrl, setBaseUrl] = useState(initial?.baseUrl ?? "");
+  const [chatUrl, setChatUrl] = useState(initial?.chatUrl ?? "");
+  const [fullChatUrl, setFullChatUrl] = useState(Boolean((initial?.chatUrl ?? "").trim()));
   const [models, setModels] = useState((initial?.models ?? []).join(", "));
+  const [modelCandidates, setModelCandidates] = useState<string[]>(initial?.models ?? []);
   const [visionModels, setVisionModels] = useState((initial?.visionModels ?? []).join(", "));
   const [visionModelsConfigured, setVisionModelsConfigured] = useState(
     Boolean(initial?.visionModelsConfigured ?? ((initial?.visionModels ?? []).length > 0)),
   );
-  const [modelsUrl] = useState(initial?.modelsUrl ?? "");
+  const [modelsUrl, setModelsUrl] = useState(initial?.modelsUrl ?? "");
   const [apiKeyEnv, setApiKeyEnv] = useState(initial?.apiKeyEnv ?? "");
+  const [headersDraft, setHeadersDraft] = useState(formatProviderHeaders(initial?.headers));
+  const [extraBodyDraft, setExtraBodyDraft] = useState(formatProviderExtraBody(initial?.extraBody));
   const [keyDraft, setKeyDraft] = useState("");
   const [balanceUrl, setBalanceUrl] = useState(initial?.balanceUrl ?? "");
   // Empty when unset so the placeholder (and its "0 = default" hint) reads instead
   // of a bare "0"; saved back as 0.
   const [ctx, setCtx] = useState(initial?.contextWindow ? String(initial.contextWindow) : "");
   const [reasoningProtocol, setReasoningProtocol] = useState(normalizeReasoningProtocol(initial?.reasoningProtocol));
-  const [supportedEfforts, setSupportedEfforts] = useState<string[]>(initial?.supportedEfforts ?? []);
-  const [customEffortDraft, setCustomEffortDraft] = useState("");
-  const [defaultEffort, setDefaultEffort] = useState(initial?.defaultEffort ?? "");
+  const [thinking, setThinking] = useState(normalizeThinkingMode(initial?.thinking));
+  const [supportedEfforts] = useState<string[]>(initial?.supportedEfforts ?? []);
+  const [defaultEffort] = useState(initial?.defaultEffort ?? "");
   const [fetchingModels, setFetchingModels] = useState(false);
   const [fetchStatus, setFetchStatus] = useState<string | null>(null);
-  const [fetchErr, setFetchErr] = useState<string | null>(null);
+  const [fetchFallback, setFetchFallback] = useState<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const builtIn = initial?.builtIn ?? false;
   const isNewCustomProvider = !initial;
-
-  // Offer the kinds the kernel actually registered; if the stored kind is a
-  // legacy/unknown one, keep it as an option so editing doesn't silently change it.
-  const kindOptions = kind && !kinds.includes(kind) ? [kind, ...kinds] : kinds;
-
-  // Split supportedEfforts into the 5 canonical presets (for checkbox UI) and
-  // any user-added custom names (rendered as removable chips). The preset order
-  // is fixed; custom names keep insertion order.
-  const presetEfforts = supportedEfforts.filter((e) => EFFORT_PRESETS.includes(e));
-  const customEfforts = supportedEfforts.filter((e) => !EFFORT_PRESETS.includes(e));
-
-  const togglePreset = (level: string) => {
-    const has = presetEfforts.includes(level);
-    const nextPresets = has ? presetEfforts.filter((e) => e !== level) : [...presetEfforts, level];
-    setSupportedEfforts([...nextPresets, ...customEfforts]);
-    // If the removed preset was the default, fall back to "auto" (empty string).
-    if (has && defaultEffort === level) setDefaultEffort("");
-  };
-
-  const addCustomEffort = () => {
-    const v = customEffortDraft.trim().toLowerCase();
-    if (!v || supportedEfforts.includes(v)) {
-      setCustomEffortDraft("");
-      return;
+  const effectiveKind = providerEditorEffectiveKind(isNewCustomProvider, kind, kinds);
+  const effectiveBaseUrl = fullChatUrl ? providerBaseURLFromChatURL(chatUrl) : baseUrl.trim();
+  const effectiveChatUrl = fullChatUrl ? trimmedURL(chatUrl) : "";
+  const effectiveModelsUrl = modelsUrl.trim();
+  const effectiveHeaders = parseProviderHeaders(headersDraft);
+  const extraBodyParse = useMemo(() => {
+    try {
+      return { value: parseProviderExtraBody(extraBodyDraft), error: "" };
+    } catch {
+      return { value: {}, error: t("settings.providerExtraBodyError") };
     }
-    setSupportedEfforts([...presetEfforts, ...customEfforts, v]);
-    setCustomEffortDraft("");
-  };
+  }, [extraBodyDraft, t]);
+  const effectiveExtraBody = extraBodyParse.value;
+  const extraBodyInvalid = Boolean(extraBodyDraft.trim() && extraBodyParse.error);
+  const previewChatUrl = providerChatURLPreview(baseUrl, chatUrl, fullChatUrl);
 
-  const removeCustomEffort = (level: string) => {
-    setSupportedEfforts(supportedEfforts.filter((e) => e !== level));
-    if (defaultEffort === level) setDefaultEffort("");
-  };
+  // Empty supportedEfforts means "use protocol defaults". The simplified
+  // provider flow no longer edits these levels directly, but it preserves
+  // existing advanced TOML unless the user explicitly disables reasoning.
+  const cleanedSupportedEfforts = reasoningProtocol !== "none"
+    ? uniqueStrings(
+        supportedEfforts
+          .map((level) => level.toLowerCase().trim())
+          .filter((level) => level && level !== "auto")
+      )
+    : [];
+  const normalizedDefaultEffort = defaultEffort.toLowerCase().trim();
+  const cleanDefaultEffort = cleanedSupportedEfforts.includes(normalizedDefaultEffort) ? normalizedDefaultEffort : "";
 
   const fetchModels = async () => {
+    if (extraBodyInvalid) return;
     setFetchingModels(true);
     setFetchStatus(null);
-    setFetchErr(null);
+    setFetchFallback(null);
     try {
       const effectiveApiKeyEnv = providerApiKeyEnvForSave(name, apiKeyEnv, keyDraft);
       if (!apiKeyEnv.trim()) setApiKeyEnv(effectiveApiKeyEnv);
@@ -4308,22 +4642,31 @@ function ProviderEditor({
         name: name.trim() || t("settings.newProviderDraftName"),
         builtIn: initial?.builtIn ?? false,
         added: initial?.added ?? true,
-        kind: kind.trim() || kinds[0] || "openai",
-        baseUrl: baseUrl.trim(),
-        modelsUrl,
+        kind: effectiveKind,
+        baseUrl: effectiveBaseUrl,
+        chatUrl: effectiveChatUrl,
+        modelsUrl: effectiveModelsUrl,
         models: [],
         visionModels: [],
         visionModelsConfigured: false,
         default: "",
         apiKeyEnv: effectiveApiKeyEnv,
+        headers: effectiveHeaders,
+        extraBody: effectiveExtraBody,
         keySet: Boolean(keyDraft.trim()) || (initial?.keySet ?? false),
         balanceUrl: balanceUrl.trim(),
         contextWindow: Number(ctx) || 0,
         reasoningProtocol,
-        supportedEfforts,
-        defaultEffort,
+        thinking,
+        supportedEfforts: cleanedSupportedEfforts,
+        defaultEffort: cleanDefaultEffort,
+        modelOverrides: initial?.modelOverrides ?? [],
       });
-      if (fetched.length === 0) throw new Error(t("settings.fetchModelsEmpty"));
+      if (fetched.length === 0) {
+        setFetchFallback(t("settings.fetchModelsManualFallbackEmpty"));
+        return;
+      }
+      setModelCandidates(fetched);
       setModels(fetched.join(", "));
       setVisionModels((current) => {
         const existing = parseProviderListInput(current).filter((model) => fetched.includes(model));
@@ -4331,16 +4674,16 @@ function ProviderEditor({
       });
       setVisionModelsConfigured(true);
       if (keyDraft.trim()) setKeyDraft("");
-      setDefaultEffort((v) => v);
       setFetchStatus(t("settings.fetchModelsSuccess", { n: fetched.length }));
     } catch (e) {
-      setFetchErr(String((e as Error)?.message ?? e));
+      setFetchFallback(providerModelFetchFallbackMessage(e, t));
     } finally {
       setFetchingModels(false);
     }
   };
 
   const save = async () => {
+    if (extraBodyInvalid) return;
     const ms = parseProviderListInput(models);
     const vms = parseProviderListInput(visionModels).filter((model) => ms.includes(model));
     const effectiveApiKeyEnv = providerApiKeyEnvForSave(name, apiKeyEnv, keyDraft);
@@ -4349,22 +4692,27 @@ function ProviderEditor({
       name: name.trim(),
       builtIn: initial?.builtIn ?? false,
       added: initial?.added ?? true,
-      kind: kind.trim() || kinds[0] || "openai",
-      baseUrl: baseUrl.trim(),
+      kind: effectiveKind,
+      baseUrl: effectiveBaseUrl,
+      chatUrl: effectiveChatUrl,
       models: ms,
       visionModels: vms,
       visionModelsConfigured: visionModelsConfigured || vms.length > 0,
       default: ms[0] ?? "",
       apiKeyEnv: effectiveApiKeyEnv,
-      modelsUrl,
+      headers: effectiveHeaders,
+      extraBody: effectiveExtraBody,
+      modelsUrl: effectiveModelsUrl,
       keySet: Boolean(keyDraft.trim()) || (initial?.keySet ?? false),
       balanceUrl: balanceUrl.trim(),
       contextWindow: Number(ctx) || 0,
       reasoningProtocol,
-      supportedEfforts,
+      thinking,
+      supportedEfforts: cleanedSupportedEfforts,
       // Clear the stored default if no levels are selected; the backend's
       // NormalizeEffort would otherwise silently ignore an unsupported value.
-      defaultEffort: supportedEfforts.length > 0 ? defaultEffort : "",
+      defaultEffort: cleanedSupportedEfforts.length > 0 ? cleanDefaultEffort : "",
+      modelOverrides: initial?.modelOverrides ?? [],
     });
   };
 
@@ -4403,29 +4751,75 @@ function ProviderEditor({
   }
 
   const modelNames = useMemo(
-    () => models.split(",").map((m) => m.trim()).filter(Boolean),
+    () => parseProviderListInput(models),
     [models],
   );
-  const canFetch = Boolean(name.trim() && baseUrl.trim());
-
-  const protocolField = initial ? (
-    <select className="mem-select" value={kind} onChange={(e) => setKind(e.target.value)}>
-      {kindOptions.map((k) => (
-        <option key={k} value={k}>
-          {k === "openai" ? t("settings.providerProtocolOpenAI") : k}
-        </option>
-      ))}
-    </select>
-  ) : (
-    <div className="provider-readonly-field provider-readonly-field--stacked" aria-readonly="true">
-      <strong>{t("settings.providerProtocolOpenAI")}</strong>
-      <span>{t("settings.providerProtocolOpenAIHint")}</span>
-    </div>
+  const modelCandidateNames = useMemo(
+    () => uniqueStrings([...modelCandidates, ...modelNames]),
+    [modelCandidates, modelNames],
   );
+  const visionModelNames = useMemo(
+    () => parseProviderListInput(visionModels).filter((model) => modelNames.includes(model)),
+    [modelNames, visionModels],
+  );
+  const canFetch = Boolean(name.trim() && effectiveBaseUrl);
+
+  const setModelsFromList = (nextModels: string[]) => {
+    setModels(uniqueStrings(nextModels).join(", "));
+  };
+
+  const updateManualModels = (value: string) => {
+    setModels(value);
+    const typedModels = parseProviderListInput(value);
+    if (typedModels.length > 0) {
+      setModelCandidates((current) => uniqueStrings([...current, ...typedModels]));
+    }
+  };
+
+  const toggleEditorModel = (model: string) => {
+    const selected = new Set(modelNames);
+    if (selected.has(model)) {
+      selected.delete(model);
+      setVisionModels(visionModelNames.filter((candidate) => candidate !== model).join(", "));
+    } else {
+      selected.add(model);
+    }
+    setModelsFromList(modelCandidateNames.filter((candidate) => selected.has(candidate)));
+    setVisionModelsConfigured(true);
+  };
+
+  const toggleEditorVisionModel = (model: string) => {
+    if (!modelNames.includes(model)) return;
+    const vision = new Set(visionModelNames);
+    if (vision.has(model)) vision.delete(model);
+    else vision.add(model);
+    setVisionModels(modelCandidateNames.filter((candidate) => vision.has(candidate)).join(", "));
+    setVisionModelsConfigured(true);
+  };
+
+  const selectAllEditorModels = () => {
+    setModelsFromList(modelCandidateNames);
+    setVisionModels(visionModelNames.filter((model) => modelCandidateNames.includes(model)).join(", "));
+    setVisionModelsConfigured(true);
+  };
+
+  const clearEditorModels = () => {
+    setModels("");
+    setVisionModels("");
+    setVisionModelsConfigured(true);
+  };
 
   const advancedFields = (
     <details className="provider-editor-advanced" open={advancedOpen} onToggle={(e) => setAdvancedOpen(e.currentTarget.open)}>
-      <summary>{t("settings.providerAdvancedSettings")}</summary>
+      <summary>
+        <span className="provider-editor-advanced__title">
+          <ChevronDown className="provider-editor-advanced__icon" size={16} aria-hidden="true" />
+          {t("settings.providerAdvancedSettings")}
+        </span>
+        <span className="provider-editor-advanced__hint">
+          {advancedOpen ? t("settings.providerAdvancedCollapseHint") : t("settings.providerAdvancedExpandHint")}
+        </span>
+      </summary>
       <div className="provider-editor-advanced__body">
         <label className="set-label">{t("settings.providerApiKeyEnv")}</label>
         <input
@@ -4435,23 +4829,34 @@ function ProviderEditor({
           onChange={(e) => setApiKeyEnv(e.target.value)}
         />
         <div className="mem-hint">{t("settings.providerApiKeyEnvHint")}</div>
-        <label className="set-label">{t("settings.providerBalanceUrl")}</label>
-        <input className="mem-input" placeholder={t("settings.balanceUrlPlaceholder")} value={balanceUrl} onChange={(e) => setBalanceUrl(e.target.value)} />
-        <div className="mem-hint">{t("settings.balanceUrlHint")}</div>
-        <label className="set-label">{t("settings.providerContextWindow")}</label>
-        <input className="mem-input" placeholder={t("settings.contextWindowPlaceholder")} value={ctx} onChange={(e) => setCtx(e.target.value)} inputMode="numeric" />
-        <div className="mem-hint">{t("settings.contextWindowHint")}</div>
-        <label className="set-label">{t("settings.visionModels")}</label>
+        <label className="set-label">{t("settings.providerModelsUrl")}</label>
         <input
           className="mem-input"
-          placeholder={t("settings.providerModels")}
-          value={visionModels}
-          onChange={(e) => {
-            setVisionModelsConfigured(true);
-            setVisionModels(e.target.value);
-          }}
+          placeholder={t("settings.providerModelsUrlPlaceholder")}
+          value={modelsUrl}
+          onChange={(e) => setModelsUrl(e.target.value)}
         />
-        <div className="mem-hint">{t("settings.visionModelsHint")}</div>
+        <div className="mem-hint">{t("settings.providerModelsUrlHint")}</div>
+        <label className="set-label">{t("settings.providerHeaders")}</label>
+        <textarea
+          className="mem-textarea provider-headers-textarea"
+          placeholder={t("settings.providerHeadersPlaceholder")}
+          value={headersDraft}
+          onChange={(e) => setHeadersDraft(e.target.value)}
+          rows={3}
+        />
+        <div className="mem-hint">{t("settings.providerHeadersHint")}</div>
+        <label className="set-label">{t("settings.providerExtraBody")}</label>
+        <textarea
+          className="mem-textarea provider-headers-textarea"
+          placeholder={t("settings.providerExtraBodyPlaceholder")}
+          value={extraBodyDraft}
+          onChange={(e) => setExtraBodyDraft(e.target.value)}
+          rows={4}
+        />
+        <div className={`mem-hint${extraBodyInvalid ? " mem-hint--error" : ""}`}>
+          {extraBodyInvalid ? extraBodyParse.error : t("settings.providerExtraBodyHint")}
+        </div>
         <label className="set-label">{t("settings.reasoningProtocol")}</label>
         <select className="mem-select" value={reasoningProtocol} onChange={(e) => setReasoningProtocol(e.target.value)}>
           {REASONING_PROTOCOLS.map((protocol) => (
@@ -4461,81 +4866,34 @@ function ProviderEditor({
           ))}
         </select>
         <div className="mem-hint">{t("settings.reasoningProtocolHint")}</div>
-        <label className="set-label">{t("settings.supportedEfforts")}</label>
-        {EFFORT_PRESETS.map((level) => (
-          <label key={level} className="set-check">
-            <input
-              type="checkbox"
-              checked={presetEfforts.includes(level)}
-              onChange={() => togglePreset(level)}
-            />
-            {level}
-          </label>
-        ))}
-        <div className="set-row">
-          <input
-            className="mem-input set-grow"
-            placeholder={t("settings.supportedEffortsCustomPlaceholder")}
-            value={customEffortDraft}
-            onChange={(e) => setCustomEffortDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                addCustomEffort();
-              }
-            }}
-          />
-          <button
-            type="button"
-            className="btn btn--small"
-            disabled={
-              !customEffortDraft.trim() || supportedEfforts.includes(customEffortDraft.trim().toLowerCase())
-            }
-            onClick={addCustomEffort}
-          >
-            {t("common.add")}
-          </button>
-        </div>
-        {customEfforts.length > 0 && (
-          <div className="set-rules__chips">
-            {customEfforts.map((level) => (
-              <span className="set-rule" key={level}>
-                {level}
-                <Tooltip label={t("common.delete")}>
-                  <button
-                    type="button"
-                    className="set-rule__x"
-                    disabled={busy}
-                    onClick={() => removeCustomEffort(level)}
-                  >
-                    ×
-                  </button>
-                </Tooltip>
-              </span>
-            ))}
-          </div>
-        )}
-        <div className="mem-hint">{t("settings.supportedEffortsHint")}</div>
-        <label className="set-label">{t("settings.defaultEffort")}</label>
-        {supportedEfforts.length > 0 ? (
-          <select
-            className="mem-select"
-            value={defaultEffort}
-            onChange={(e) => setDefaultEffort(e.target.value)}
-          >
-            <option value="">{t("settings.defaultEffortAuto")}</option>
-            {supportedEfforts.map((level) => (
-              <option key={level} value={level}>
-                {level}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <select className="mem-select" value="" disabled>
-            <option value="">{t("settings.defaultEffortAuto")}</option>
-          </select>
-        )}
-        <div className="mem-hint">{t("settings.defaultEffortHint")}</div>
+        <label className="set-label">{t("settings.thinkingMode")}</label>
+        <select className="mem-select" value={thinking} onChange={(e) => setThinking(normalizeThinkingMode(e.target.value))}>
+          {THINKING_MODES.map((mode) => (
+            <option key={mode || "auto"} value={mode}>
+              {thinkingModeLabel(mode, t)}
+            </option>
+          ))}
+        </select>
+        <div className="mem-hint">{t("settings.thinkingModeHint")}</div>
+        <label className="set-label">{t("settings.providerBalanceUrl")}</label>
+        <input
+          className="mem-input"
+          placeholder={t("settings.balanceUrlPlaceholder")}
+          value={balanceUrl}
+          onChange={(e) => setBalanceUrl(e.target.value)}
+        />
+        <div className="mem-hint">{t("settings.balanceUrlHint")}</div>
+        <label className="set-label">{t("settings.providerContextWindow")}</label>
+        <input
+          className="mem-input"
+          inputMode="numeric"
+          min={0}
+          placeholder={t("settings.contextWindowPlaceholder")}
+          type="number"
+          value={ctx}
+          onChange={(e) => setCtx(e.target.value)}
+        />
+        <div className="mem-hint">{t("settings.contextWindowHint")}</div>
       </div>
     </details>
   );
@@ -4544,10 +4902,44 @@ function ProviderEditor({
     <div className={`provider-editor${isNewCustomProvider ? " provider-editor--wizard" : ""}`}>
       <label className="set-label">{t("settings.customProviderName")}</label>
       <input className="mem-input" placeholder={t("settings.customProviderNamePlaceholder")} value={name} onChange={(e) => setName(e.target.value)} disabled={!!initial} />
-      <label className="set-label">{t("settings.providerProtocol")}</label>
-      {protocolField}
-      <label className="set-label">{t("settings.providerBaseUrlLabel")}</label>
-      <input className="mem-input" placeholder={t("settings.providerBaseUrl")} value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
+      <div className="set-row">
+        <label className="set-label set-grow">
+          {t(fullChatUrl ? "settings.providerChatUrlLabel" : "settings.providerBaseUrlLabel")}
+        </label>
+        <label className="set-check">
+          <input
+            type="checkbox"
+            checked={fullChatUrl}
+            onChange={(e) => {
+              const checked = e.target.checked;
+              setFullChatUrl(checked);
+              if (checked && !chatUrl.trim()) {
+                setChatUrl(providerChatURLPreview(baseUrl, "", false));
+              } else if (!checked && !baseUrl.trim()) {
+                setBaseUrl(providerBaseURLFromChatURL(chatUrl));
+              }
+            }}
+          />
+          {t("settings.providerUseFullChatUrl")}
+        </label>
+      </div>
+      <input
+        className="mem-input"
+        placeholder={t(fullChatUrl ? "settings.providerChatUrlPlaceholder" : "settings.providerBaseUrl")}
+        value={fullChatUrl ? chatUrl : baseUrl}
+        onChange={(e) => {
+          const value = e.target.value;
+          if (fullChatUrl) {
+            setChatUrl(value);
+            setBaseUrl(providerBaseURLFromChatURL(value));
+          } else {
+            setBaseUrl(value);
+          }
+        }}
+      />
+      <div className="mem-hint">
+        {previewChatUrl ? t("settings.providerRequestPreview", { url: previewChatUrl }) : t("settings.providerRequestPreviewEmpty")}
+      </div>
       {!initial && (
         <>
           <label className="set-label">{t("settings.providerKey")}</label>
@@ -4580,7 +4972,7 @@ function ProviderEditor({
         <button
           type="button"
           className="btn btn--small"
-          disabled={busy || fetchingModels || !canFetch}
+          disabled={busy || fetchingModels || !canFetch || extraBodyInvalid}
           onClick={() => void fetchModels()}
         >
           {fetchingModels ? t("settings.fetchingModels") : t("settings.testFetchModels")}
@@ -4588,22 +4980,26 @@ function ProviderEditor({
         <span>{t("settings.testFetchModelsHint")}</span>
       </div>
       {fetchStatus && <div className="provider-fetch-status provider-fetch-status--ok">{fetchStatus}</div>}
-      {fetchErr && <div className="provider-fetch-status provider-fetch-status--error">{fetchErr}</div>}
-      {modelNames.length > 0 && (
-        <div className="provider-card-block">
-          <div className="provider-card-block__label">{t("settings.availableModels")}</div>
-          <ModelChips modelNames={modelNames} />
-        </div>
-      )}
+      {fetchFallback && <div className="provider-fetch-status provider-fetch-status--warn">{fetchFallback}</div>}
       <label className="set-label">{t("settings.manualModels")}</label>
-      <input className="mem-input" placeholder={t("settings.providerModels")} value={models} onChange={(e) => setModels(e.target.value)} />
+      <input className="mem-input" placeholder={t("settings.providerModels")} value={models} onChange={(e) => updateManualModels(e.target.value)} />
       <div className="mem-hint">{t("settings.manualModelsHint")}</div>
+      <ProviderEditorModelPicker
+        candidates={modelCandidateNames}
+        selectedModels={modelNames}
+        visionModels={visionModelNames}
+        disabled={busy || fetchingModels}
+        onToggleModel={toggleEditorModel}
+        onToggleVision={toggleEditorVisionModel}
+        onSelectAll={selectAllEditorModels}
+        onClear={clearEditorModels}
+      />
       {advancedFields}
       <div className="prov-card__actions">
         <button className="btn btn--small" onClick={onCancel} disabled={busy}>
           {t("common.cancel")}
         </button>
-        <button className="btn btn--primary btn--small" onClick={() => void save()} disabled={busy || !name.trim() || !baseUrl.trim() || !models.trim()}>
+        <button className="btn btn--primary btn--small" onClick={() => void save()} disabled={busy || !name.trim() || !effectiveBaseUrl || !models.trim() || extraBodyInvalid}>
           {t("common.save")}
         </button>
       </div>
@@ -5085,11 +5481,24 @@ function SandboxSection({ s, busy, apply }: SectionProps) {
   const t = useT();
   const sb = s.sandbox;
   const [root, setRoot] = useState(sb.workspaceRoot);
+  const effectiveWriteRoots = asArray(sb.effectiveWriteRoots).filter((path) => String(path).trim());
   const set = (next: Partial<typeof sb>) =>
     apply(() => app.SetSandbox(next.bash ?? sb.bash, next.network ?? sb.network, next.workspaceRoot ?? sb.workspaceRoot, next.allowWrite ?? sb.allowWrite, next.shell ?? sb.shell));
+  const reload = () => apply(() => app.ReloadSettings());
 
   return (
-    <SettingsSection title={t("settings.sandboxTitle")}>
+    <SettingsSection
+      title={t("settings.sandboxTitle")}
+      description={t("settings.sandboxBoundaryHint")}
+      actions={
+        <Tooltip label={t("settings.reloadSessionConfigHint")}>
+          <button className="btn btn--small" disabled={busy} title={t("settings.reloadSessionConfigHint")} onClick={() => void reload()}>
+            <RefreshCw size={14} aria-hidden="true" />
+            <span>{t("settings.reloadSessionConfig")}</span>
+          </button>
+        </Tooltip>
+      }
+    >
       <SettingsField label={t("settings.shellInterpreter")}>
         <select className="mem-select set-grow" value={sb.shell || "auto"} disabled={busy} onChange={(e) => void set({ shell: e.target.value })}>
           <option value="auto">{t("settings.shellAuto")}</option>
@@ -5120,6 +5529,18 @@ function SandboxSection({ s, busy, apply }: SectionProps) {
           onBlur={() => root !== sb.workspaceRoot && void set({ workspaceRoot: root })}
         />
       </SettingsField>
+      <SettingsField label={t("settings.effectiveWriteRoots")} hint={t("settings.effectiveWriteRootsHint")} stacked>
+        <div className="set-rules set-rules--readonly">
+          <div className="set-rules__chips">
+            {effectiveWriteRoots.length === 0 && <span className="mem-empty">{t("settings.noEffectiveWriteRoots")}</span>}
+            {effectiveWriteRoots.map((path, index) => (
+              <span className="set-rule set-rule--path" key={`${path}-${index}`}>
+                {path}
+              </span>
+            ))}
+          </div>
+        </div>
+      </SettingsField>
       <RuleList
         list="allow_write"
         rules={sb.allowWrite}
@@ -5147,6 +5568,8 @@ function AppearanceSection({
   theme,
   themeStyle,
   textSize,
+  showDisplayZoom,
+  zoomPct,
   fontFamily,
   monoFontFamily,
   customFontName,
@@ -5154,6 +5577,7 @@ function AppearanceSection({
   onTheme,
   onThemeStyle,
   onTextSize,
+  onRestartZoom,
   onFontFamily,
   onMonoFontFamily,
   onCustomFontNameChange,
@@ -5162,6 +5586,8 @@ function AppearanceSection({
   theme: Theme;
   themeStyle: ThemeStyle;
   textSize: TextSize;
+  showDisplayZoom: boolean;
+  zoomPct: number;
   fontFamily: FontFamily;
   monoFontFamily: MonoFontFamily;
   customFontName: string;
@@ -5169,6 +5595,7 @@ function AppearanceSection({
   onTheme: (t: Theme) => void;
   onThemeStyle: (style: ThemeStyle) => void;
   onTextSize: (size: TextSize) => void;
+  onRestartZoom: (zoom: ZoomLevel) => Promise<void>;
   onFontFamily: (font: FontFamily) => void;
   onMonoFontFamily: (font: MonoFontFamily) => void;
   onCustomFontNameChange: (name: string) => void;
@@ -5240,6 +5667,37 @@ function AppearanceSection({
           ))}
         </div>
       </SettingsField>
+      {showDisplayZoom && (
+        <SettingsField label={t("settings.displayZoom")}>
+          <div className="zoom-slider-wrap">
+            <div className="zoom-slider__value">{zoomPct}%</div>
+            <div className="zoom-slider-row">
+              <span className="zoom-slider__label">50%</span>
+              <div className="slider-track">
+                <div className="slider-track__bg" />
+                <div
+                  className="slider-track__fill"
+                  style={{ width: `calc(${((zoomPct - 50) / 150) * 100}% + 15px)` }}
+                />
+                <div className="slider-thumb" style={{ left: `${((zoomPct - 50) / 150) * 100}%` }}>
+                  <div className="slider-thumb__left" />
+                  <div className="slider-thumb__mid" />
+                  <div className="slider-thumb__right" />
+                </div>
+                <input
+                  type="range"
+                  min={50}
+                  max={200}
+                  step={5}
+                  value={zoomPct}
+                  onChange={(e) => { void onRestartZoom(Number(e.target.value) / 100); }}
+                />
+              </div>
+              <span className="zoom-slider__label">200%</span>
+            </div>
+          </div>
+        </SettingsField>
+      )}
       <SettingsField label={t("settings.fontFamily")}>
         <div className="set-seg">
           {availableFontFamilies.map((font) => (

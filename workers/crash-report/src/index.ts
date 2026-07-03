@@ -5,23 +5,24 @@ import { z } from "zod";
 import type { Env } from "./env";
 import { html, redirect } from "./shell";
 import { renderGroup, renderStats, type Group, type StatsModule } from "./stats";
-import { renderLogin, renderRegister, renderAccount } from "./auth_pages";
+import { renderAccount } from "./auth_pages";
 import { renderUsers, renderAudit, type UserRow, type AuditRow } from "./admin";
 import {
   atLeast,
-  createSession,
   currentUser,
-  endSession,
-  hashPassword,
-  isAdminEmail,
+  loginUrl,
   logAction,
   sameOrigin,
-  sessionCookie,
-  clearCookie,
-  verifyPassword,
+  sharedLogout,
   type Role,
   type User,
 } from "./auth";
+import registryApp from "./registry/app";
+import type { Bindings as RegistryBindings } from "./registry/env";
+import { PackageRepo } from "./registry/db/packages";
+import { EventRepo } from "./registry/db/events";
+import { renderCommunity } from "./community";
+import { desktopReleaseChannel, handleDesktopReleaseManifest } from "./desktop_release";
 
 const MAX_BODY_BYTES = 96 * 1024;
 const LATEST_SAMPLES_PER_GROUP = 5;
@@ -85,6 +86,7 @@ const METRIC_SIGNALS = [
   "provider_error",
   "cache_hit",
   "tool_error",
+  "updater_error",
   "compaction",
   "turns",
   "client_surface",
@@ -245,12 +247,37 @@ export function crashTitle(message: string): string {
   return head.slice(0, 200);
 }
 
+type SeverityInput = {
+  kind: string;
+  source: string;
+  label: string;
+  errorType: string;
+  errorMessage: string;
+  topFrame: string;
+};
+
+export function isOpaqueScriptErrorReport(input: SeverityInput): boolean {
+  return (
+    input.kind === "crash" &&
+    input.source === "frontend.global" &&
+    input.label === "window.error" &&
+    input.errorType === "string" &&
+    input.errorMessage.trim() === "Script error." &&
+    input.topFrame.trim() === ""
+  );
+}
+
 function severityForKind(kind: string): string {
   if (kind === "crash") return "high";
   if (kind === "performance") return "medium";
   if (kind === "bot") return "medium";
   if (kind === "exception") return "medium";
   return "low";
+}
+
+export function severityForReport(input: SeverityInput): string {
+  if (isOpaqueScriptErrorReport(input)) return "low";
+  return severityForKind(input.kind);
 }
 
 async function sha256Hex(s: string): Promise<string> {
@@ -308,7 +335,7 @@ async function handleReport(request: Request, env: Env): Promise<Response> {
   const errorType = r.errorType ?? "";
   const buildCommit = r.buildCommit ?? "";
   const channel = r.channel ?? "";
-  const severity = severityForKind(r.kind);
+  const severity = severityForReport({ kind: r.kind, source, label, errorType, errorMessage, topFrame });
   const prior = await env.DB.prepare("SELECT status FROM groups WHERE fingerprint = ?1")
     .bind(fingerprint)
     .first<{ status: string }>();
@@ -447,16 +474,6 @@ async function handleMetrics(request: Request, env: Env): Promise<Response> {
   return new Response("ok", { status: 202 });
 }
 
-const Credentials = z.object({
-  email: z.string().email().max(254),
-  password: z.string().min(8).max(200),
-});
-
-const PasswordChange = z.object({
-  current: z.string().min(1).max(200),
-  next: z.string().min(8).max(200),
-});
-
 const UserAction = z.object({
   action: z.enum(["role", "delete"]),
   userId: z.coerce.number().int().positive(),
@@ -476,62 +493,6 @@ async function formObject(request: Request): Promise<Record<string, string>> {
   const out: Record<string, string> = {};
   for (const [k, v] of form) out[k] = typeof v === "string" ? v : "";
   return out;
-}
-
-async function handleRegister(request: Request, env: Env): Promise<Response> {
-  if (!sameOrigin(request)) return new Response("forbidden", { status: 403 });
-  const parsed = Credentials.safeParse(await formObject(request));
-  if (!parsed.success)
-    return html(renderRegister({ kind: "err", text: "Enter a valid email and a password of at least 8 characters." }));
-  const email = parsed.data.email.toLowerCase();
-
-  const existing = await env.DB.prepare("SELECT id FROM users WHERE email = ?1").bind(email).first();
-  if (existing) return html(renderRegister({ kind: "err", text: "That email is already registered — try signing in." }));
-
-  const role: Role = isAdminEmail(env, email) ? "admin" : "pending";
-  const now = new Date().toISOString();
-  const hash = await hashPassword(parsed.data.password);
-  const res = await env.DB.prepare(
-    "INSERT INTO users (email, password_hash, role, created_at, approved_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-  )
-    .bind(email, hash, role, now, role === "admin" ? now : null)
-    .run();
-
-  const token = await createSession(env, res.meta.last_row_id);
-  return redirect(role === "pending" ? "/account" : "/stats", sessionCookie(token));
-}
-
-async function handleLogin(request: Request, env: Env): Promise<Response> {
-  if (!sameOrigin(request)) return new Response("forbidden", { status: 403 });
-  const parsed = Credentials.safeParse(await formObject(request));
-  if (!parsed.success) return html(renderLogin({ kind: "err", text: "Enter a valid email and password." }));
-  const email = parsed.data.email.toLowerCase();
-
-  const row = await env.DB.prepare("SELECT id, password_hash, role FROM users WHERE email = ?1")
-    .bind(email)
-    .first<{ id: number; password_hash: string; role: Role }>();
-  const ok = row ? await verifyPassword(parsed.data.password, row.password_hash) : false;
-  if (!row || !ok) return html(renderLogin({ kind: "err", text: "Wrong email or password." }));
-
-  const token = await createSession(env, row.id);
-  return redirect(atLeast(row.role, "viewer") ? "/stats" : "/account", sessionCookie(token));
-}
-
-async function handleAccountPassword(request: Request, env: Env, user: User): Promise<Response> {
-  if (!sameOrigin(request)) return new Response("forbidden", { status: 403 });
-  const parsed = PasswordChange.safeParse(await formObject(request));
-  if (!parsed.success) return html(renderAccount(user, { kind: "err", text: "New password must be at least 8 characters." }));
-
-  const row = await env.DB.prepare("SELECT password_hash FROM users WHERE id = ?1")
-    .bind(user.id)
-    .first<{ password_hash: string }>();
-  if (!row || !(await verifyPassword(parsed.data.current, row.password_hash)))
-    return html(renderAccount(user, { kind: "err", text: "Current password is incorrect." }));
-
-  await env.DB.prepare("UPDATE users SET password_hash = ?1 WHERE id = ?2")
-    .bind(await hashPassword(parsed.data.next), user.id)
-    .run();
-  return html(renderAccount(user, { kind: "ok", text: "Password updated." }));
 }
 
 type StatsFilters = {
@@ -748,43 +709,77 @@ async function metricUserRows(env: Env, days: 7 | 30): Promise<{ signal: string;
   }
 }
 
+type Bar = { label: string; users: number };
+type MetricTotals = { signal: string; bucket: string; total: number }[];
+
+// Each stats module renders only its own section, so a page load should query
+// only what that section shows — the 30-day COUNT(DISTINCT) over metric_users,
+// the heaviest query, is read solely by the preferences module.
 async function handleStats(request: Request, env: Env, user: User, activeModule: StatsModule): Promise<Response> {
   const url = new URL(request.url);
   const filters = statsFilters(url);
-  const latestVersion = await latestObservedVersion(env);
   const days = filters.windowDays;
-  const [daily, versions, platforms, crashes, metrics, previousMetrics, metricUsers, sources, overview] = await Promise.all([
-    env.DB.prepare(
-      `SELECT date, COUNT(*) AS users, SUM(opens) AS opens FROM pings WHERE date >= date('now', '${currentWindowSince(days)}') GROUP BY date`,
-    ).all<{ date: string; users: number; opens: number }>(),
-    env.DB.prepare(
-      `SELECT version AS label, COUNT(DISTINCT install_id) AS users FROM pings WHERE date >= date('now', '${currentWindowSince(days)}') GROUP BY label ORDER BY users DESC LIMIT 15`,
-    ).all<{ label: string; users: number }>(),
-    env.DB.prepare(
-      `SELECT os || ' ' || arch AS label, COUNT(DISTINCT install_id) AS users FROM pings WHERE date >= date('now', '${currentWindowSince(days)}') GROUP BY label ORDER BY users DESC`,
-    ).all<{ label: string; users: number }>(),
-    crashGroups(env, filters, latestVersion),
-    metricRows(env, days),
-    metricRows(env, days, true),
-    metricUserRows(env, days),
-    env.DB.prepare("SELECT source AS label, COUNT(*) AS users FROM groups GROUP BY source ORDER BY users DESC").all<{ label: string; users: number }>(),
-    diagnosticOverview(env, latestVersion, days),
-  ]);
+  const since = currentWindowSince(days);
+  const bars = (sql: string) => env.DB.prepare(sql).all<Bar>().then((r) => r.results);
+  const pingVersions = () =>
+    bars(`SELECT version AS label, COUNT(DISTINCT install_id) AS users FROM pings WHERE date >= date('now', '${since}') GROUP BY label ORDER BY users DESC LIMIT 15`);
+  const pingPlatforms = () =>
+    bars(`SELECT os || ' ' || arch AS label, COUNT(DISTINCT install_id) AS users FROM pings WHERE date >= date('now', '${since}') GROUP BY label ORDER BY users DESC`);
+
+  let daily: { date: string; users: number; opens: number }[] = [];
+  let versions: Bar[] = [];
+  let platforms: Bar[] = [];
+  let crashes: Awaited<ReturnType<typeof crashGroups>>["results"] = [];
+  let metrics: MetricTotals = [];
+  let previousMetrics: MetricTotals = [];
+  let metricUsers: MetricTotals = [];
+  let sources: Bar[] = [];
+  let overview: OverviewCounts = {
+    latestAdoptionPct: null,
+    openReports: 0,
+    newLatestReports: 0,
+    regressedReports: 0,
+    criticalOpenReports: 0,
+  };
+  let latestVersion = "";
+
+  if (activeModule === "usage") {
+    latestVersion = await latestObservedVersion(env);
+    const [dailyR, versionsR, platformsR, metricsR, overviewR] = await Promise.all([
+      env.DB.prepare(
+        `SELECT date, COUNT(*) AS users, SUM(opens) AS opens FROM pings WHERE date >= date('now', '${since}') GROUP BY date`,
+      ).all<{ date: string; users: number; opens: number }>(),
+      pingVersions(),
+      pingPlatforms(),
+      metricRows(env, days),
+      diagnosticOverview(env, latestVersion, days),
+    ]);
+    daily = dailyR.results;
+    versions = versionsR;
+    platforms = platformsR;
+    metrics = metricsR;
+    overview = overviewR;
+  } else if (activeModule === "diagnostics") {
+    latestVersion = await latestObservedVersion(env);
+    const [crashesR, sourcesR, versionsR, platformsR] = await Promise.all([
+      crashGroups(env, filters, latestVersion),
+      bars("SELECT source AS label, COUNT(*) AS users FROM groups GROUP BY source ORDER BY users DESC"),
+      pingVersions(),
+      pingPlatforms(),
+    ]);
+    crashes = crashesR.results;
+    sources = sourcesR;
+    versions = versionsR;
+    platforms = platformsR;
+  } else if (activeModule === "preferences") {
+    [metrics, metricUsers] = await Promise.all([metricRows(env, days), metricUserRows(env, days)]);
+  } else {
+    [metrics, previousMetrics] = await Promise.all([metricRows(env, days), metricRows(env, days, true)]);
+  }
+
   return html(
     renderStats(
-      {
-        daily: daily.results,
-        versions: versions.results,
-        platforms: platforms.results,
-        crashes: crashes.results,
-        metrics,
-        previousMetrics,
-        metricUsers,
-        sources: sources.results,
-        overview,
-        latestVersion,
-        filters,
-      },
+      { daily, versions, platforms, crashes, metrics, previousMetrics, metricUsers, sources, overview, latestVersion, filters },
       user,
       activeModule,
     ),
@@ -874,24 +869,21 @@ async function handleAdminUsers(request: Request, env: Env, admin: User): Promis
   const a = parsed.data;
   if (a.userId === admin.id) return redirect("/admin");
 
-  const target = await env.DB.prepare("SELECT email, role FROM users WHERE id = ?1")
+  const target = await env.DB.prepare("SELECT email, role FROM access WHERE id = ?1")
     .bind(a.userId)
     .first<{ email: string; role: Role }>();
   if (!target) return redirect("/admin");
 
   if (a.action === "delete") {
-    await env.DB.batch([
-      env.DB.prepare("DELETE FROM sessions WHERE user_id = ?1").bind(a.userId),
-      env.DB.prepare("DELETE FROM users WHERE id = ?1").bind(a.userId),
-    ]);
+    await env.DB.prepare("DELETE FROM access WHERE id = ?1").bind(a.userId).run();
     await logAction(env, admin, "delete_user", target.email);
     return redirect("/admin");
   }
 
   const role: Role = a.role ?? "pending";
   const now = new Date().toISOString();
-  await env.DB.prepare("UPDATE users SET role = ?1, approved_at = ?2, approved_by = ?3 WHERE id = ?4")
-    .bind(role, role === "pending" ? null : now, admin.id, a.userId)
+  await env.DB.prepare("UPDATE access SET role = ?1, approved_at = ?2, approved_by = ?3 WHERE id = ?4")
+    .bind(role, role === "pending" ? null : now, admin.email, a.userId)
     .run();
   await logAction(env, admin, "set_role", target.email, `${target.role} → ${role}`);
   return redirect("/admin");
@@ -899,7 +891,7 @@ async function handleAdminUsers(request: Request, env: Env, admin: User): Promis
 
 async function handleAdminList(env: Env, admin: User): Promise<Response> {
   const users = await env.DB.prepare(
-    "SELECT id, email, role, created_at, approved_at FROM users ORDER BY (role = 'pending') DESC, created_at DESC",
+    "SELECT id, email, role, created_at, approved_at FROM access ORDER BY (role = 'pending') DESC, created_at DESC",
   ).all<UserRow>();
   return html(renderUsers(admin, users.results));
 }
@@ -911,10 +903,75 @@ async function handleAdminAudit(env: Env, admin: User): Promise<Response> {
   return html(renderAudit(admin, rows.results));
 }
 
-function requireViewer(user: User | null): Response | null {
-  if (!user) return redirect("/login");
+function requireViewer(user: User | null, login: string): Response | null {
+  if (!user) return redirect(login);
   if (!atLeast(user.role, "viewer")) return redirect("/account");
   return null;
+}
+
+// The folded registry API runs against its own database and resolves identity
+// itself; hand it the second binding plus the account/site origins it expects.
+function registryBindings(env: Env): RegistryBindings {
+  return {
+    DB: env.REGISTRY_DB,
+    WRITE_LIMITER: env.WRITE_LIMITER,
+    ACCOUNTS_ORIGIN: env.ID_ORIGIN ?? "https://id.reasonix.io",
+    APP_ORIGIN: env.APP_ORIGIN ?? "https://reasonix.io",
+    ALLOWED_ORIGINS: env.ALLOWED_ORIGINS ?? "https://reasonix.io,https://www.reasonix.io",
+  };
+}
+
+function communityStatus(url: URL): string {
+  const s = url.searchParams.get("status") ?? "pending";
+  return ["pending", "active", "hidden", "rejected"].includes(s) ? s : "pending";
+}
+
+async function handleCommunityList(env: Env, admin: User, status: string): Promise<Response> {
+  const rows = await new PackageRepo(env.REGISTRY_DB).listByStatus(status, 200);
+  return html(renderCommunity(admin, rows, status));
+}
+
+async function handleCommunityAction(
+  request: Request,
+  env: Env,
+  admin: User,
+  handle: string,
+  name: string,
+  action: string,
+): Promise<Response> {
+  if (!sameOrigin(request)) return new Response("forbidden", { status: 403 });
+  const form = await formObject(request);
+  const backStatus = ["pending", "active", "hidden", "rejected"].includes(form.status) ? form.status : "pending";
+  const back = redirect(`/community?status=${backStatus}`);
+  const slug = `${handle}/${name}`;
+  const repo = new PackageRepo(env.REGISTRY_DB);
+  const now = new Date().toISOString();
+
+  if (action === "verify" || action === "unverify") {
+    await repo.setVerified(slug, action === "verify", now);
+    await logAction(env, admin, `pkg_${action}`, slug);
+    return back;
+  }
+  if (action === "approve") {
+    const before = await repo.bySlug(slug);
+    const row = await repo.setStatus(slug, "active", now);
+    // Emit the publish event on first approval so the feed only announces
+    // packages that actually went public.
+    if (row && before && before.status !== "active") {
+      await new EventRepo(env.REGISTRY_DB).log({
+        type: "publish",
+        packageId: row.id,
+        actorHandle: row.scope_handle,
+        summary: `published ${row.slug}@${row.latest_version}`,
+        now,
+      });
+    }
+    await logAction(env, admin, "pkg_approve", slug);
+    return back;
+  }
+  await repo.setStatus(slug, action === "reject" ? "rejected" : "hidden", now);
+  await logAction(env, admin, `pkg_${action}`, slug);
+  return back;
 }
 
 export default {
@@ -923,44 +980,48 @@ export default {
     const path = url.pathname;
     const method = request.method;
 
+    const desktopRelease = desktopReleaseChannel(path);
+    if (desktopRelease && method === "GET") return handleDesktopReleaseManifest(desktopRelease);
+
     if (path === "/v1/report" && method === "POST") return handleReport(request, env);
     if (path === "/v1/ping" && method === "POST") return handlePing(request, env);
     if (path === "/v1/metrics" && method === "POST") return handleMetrics(request, env);
 
-    if (path === "/register" && method === "GET") return html(renderRegister());
-    if (path === "/register" && method === "POST") return handleRegister(request, env);
-    if (path === "/login" && method === "GET") return html(renderLogin());
-    if (path === "/login" && method === "POST") return handleLogin(request, env);
-    if (path === "/logout" && method === "POST") {
-      await endSession(request, env);
-      return redirect("/login", clearCookie());
+    // Skill/MCP registry API — the folded Hono app handles its own auth, CORS
+    // and rate limiting against the registry database (public reads + publish,
+    // plus the JSON /v1/admin the site's moderation panel calls).
+    if (path.startsWith("/v1/packages") || path === "/v1/activity" || path.startsWith("/v1/admin")) {
+      return registryApp.fetch(request, registryBindings(env));
     }
+
+    const login = loginUrl(env, request);
+
+    // Authentication moved to id.reasonix.io; these paths just bounce there.
+    if ((path === "/login" || path === "/register") && method === "GET") return redirect(login);
+    if (path === "/logout" && method === "POST") return redirect(login, await sharedLogout(request, env));
 
     const user = await currentUser(request, env);
 
-    if (path === "/") return redirect(user ? (atLeast(user.role, "viewer") ? "/stats" : "/account") : "/login");
+    if (path === "/") return redirect(user ? (atLeast(user.role, "viewer") ? "/stats" : "/account") : login);
 
-    if (path === "/account" && method === "GET")
-      return user ? html(renderAccount(user)) : redirect("/login");
-    if (path === "/account/password" && method === "POST")
-      return user ? handleAccountPassword(request, env, user) : redirect("/login");
+    if (path === "/account" && method === "GET") return user ? html(renderAccount(user)) : redirect(login);
 
     const groupMatch = path.match(/^\/stats\/group\/([0-9a-f]{64})$/);
     const statsModuleMatch = path.match(/^\/stats\/(diagnostics|usage|preferences|health)$/);
     if ((path === "/stats" || statsModuleMatch) && method === "GET")
-      return requireViewer(user) ?? handleStats(request, env, user as User, (statsModuleMatch?.[1] as StatsModule | undefined) ?? "usage");
-    if (groupMatch && method === "GET") return requireViewer(user) ?? handleGroup(env, groupMatch[1], user as User);
+      return requireViewer(user, login) ?? handleStats(request, env, user as User, (statsModuleMatch?.[1] as StatsModule | undefined) ?? "usage");
+    if (groupMatch && method === "GET") return requireViewer(user, login) ?? handleGroup(env, groupMatch[1], user as User);
     if (groupMatch && method === "POST") {
       if (user?.role !== "admin") return new Response("forbidden", { status: 403 });
       return handleGroupAction(request, env, user, groupMatch[1]);
     }
 
     if (path === "/admin" && method === "GET") {
-      if (!user) return redirect("/login");
+      if (!user) return redirect(login);
       return user.role === "admin" ? handleAdminList(env, user) : redirect("/account");
     }
     if (path === "/admin/audit" && method === "GET") {
-      if (!user) return redirect("/login");
+      if (!user) return redirect(login);
       return user.role === "admin" ? handleAdminAudit(env, user) : redirect("/account");
     }
     if (path === "/admin/users" && method === "POST") {
@@ -968,17 +1029,28 @@ export default {
       return handleAdminUsers(request, env, user);
     }
 
+    if (path === "/community" && method === "GET") {
+      if (!user) return redirect(login);
+      return user.role === "admin" ? handleCommunityList(env, user, communityStatus(url)) : redirect("/account");
+    }
+    const pkgActionMatch = path.match(/^\/community\/([^/]+)\/([^/]+)\/(approve|reject|hide|verify|unverify)$/);
+    if (pkgActionMatch && method === "POST") {
+      if (user?.role !== "admin") return new Response("forbidden", { status: 403 });
+      return handleCommunityAction(request, env, user, pkgActionMatch[1], pkgActionMatch[2], pkgActionMatch[3]);
+    }
+
     if (
       path === "/v1/report" ||
       path === "/v1/ping" ||
       path === "/v1/metrics" ||
+      desktopReleaseChannel(path) ||
       path === "/login" ||
       path === "/register" ||
       path === "/logout" ||
       path === "/account" ||
-      path === "/account/password" ||
       path.startsWith("/stats") ||
-      path.startsWith("/admin")
+      path.startsWith("/admin") ||
+      path.startsWith("/community")
     ) {
       return new Response("method not allowed", { status: 405 });
     }

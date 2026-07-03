@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"reasonix/internal/agent"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
@@ -209,6 +210,51 @@ func TestKeepOnlyVisibleTabCancelsBuildingHiddenTab(t *testing.T) {
 	}
 	if !building.removed {
 		t.Fatal("building tab was not marked removed")
+	}
+}
+
+func TestConcurrentActivateTopicSerializesSingleSurfacePruning(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	t.Cleanup(func() { app.shutdown(context.Background()) })
+
+	topics := []string{
+		"topic-a",
+		"topic-b",
+		"topic-c",
+		"topic-d",
+		"topic-e",
+		"topic-f",
+		"topic-g",
+		"topic-h",
+	}
+	start := make(chan struct{})
+	errs := make(chan error, len(topics))
+	var wg sync.WaitGroup
+	for _, topicID := range topics {
+		wg.Add(1)
+		go func(topicID string) {
+			defer wg.Done()
+			<-start
+			_, err := app.ActivateTopic("global", "", topicID, "")
+			errs <- err
+		}(topicID)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("ActivateTopic returned error under concurrent navigation: %v", err)
+		}
+	}
+	tabs := app.ListTabs()
+	if len(tabs) != 1 {
+		t.Fatalf("ListTabs returned %d tabs after single-surface navigation, want 1: %+v", len(tabs), tabs)
+	}
+	if !tabs[0].Active {
+		t.Fatalf("remaining tab is not active: %+v", tabs[0])
 	}
 }
 
@@ -631,6 +677,42 @@ func TestBuildTabControllerReusesOpenSessionPathRuntime(t *testing.T) {
 	}
 	if _, ok := app.tabs[oldTab.ID]; ok {
 		t.Fatal("source tab for reused runtime should be removed")
+	}
+}
+
+func TestBuildTabControllerBlocksWhenSessionLeaseHeld(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := desktopSessionDir(globalTabWorkspaceRoot())
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	path := filepath.Join(dir, "leased.jsonl")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatalf("write placeholder session: %v", err)
+	}
+	lease, err := agent.TryAcquireSessionLease(path)
+	if err != nil {
+		t.Fatalf("TryAcquireSessionLease: %v", err)
+	}
+	defer lease.Release()
+
+	app := NewApp()
+	tab := app.createTabEntryWithID("global", globalTabWorkspaceRoot(), "", "leased")
+	tab.SessionPath = path
+	tab.sink = &tabEventSink{tabID: "leased", app: app}
+	app.tabs[tab.ID] = tab
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+
+	app.buildTabController(tab)
+	if tab.Ctrl != nil {
+		t.Fatalf("tab controller = %T, want nil when lease is held", tab.Ctrl)
+	}
+	if !tab.Ready {
+		t.Fatal("tab should be ready with startup error")
+	}
+	if !strings.Contains(tab.StartupErr, agent.ErrSessionLeaseHeld.Error()) {
+		t.Fatalf("startup error = %q, want lease-held error", tab.StartupErr)
 	}
 }
 

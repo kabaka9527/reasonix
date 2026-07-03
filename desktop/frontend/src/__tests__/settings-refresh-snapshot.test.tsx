@@ -4,7 +4,14 @@ import { JSDOM } from "jsdom";
 import React from "react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { SettingsPanel } from "../components/SettingsPanel";
+import {
+  SettingsPanel,
+  formatProviderExtraBody,
+  parseProviderExtraBody,
+  providerBaseURLFromChatURL,
+  providerChatURLPreview,
+  providerEditorEffectiveKind,
+} from "../components/SettingsPanel";
 import { LocaleProvider } from "../lib/i18n";
 import type { AppBindings } from "../lib/bridge";
 import type { SettingsView } from "../lib/types";
@@ -34,6 +41,16 @@ function flushPromises(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+async function waitFor(label: string, predicate: () => boolean) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    await act(async () => {
+      await flushPromises();
+    });
+    if (predicate()) return;
+  }
+  throw new Error(`timed out waiting for ${label}`);
+}
+
 function baseSettings(displayMode: "standard" | "compact" = "standard"): SettingsView {
   return {
     defaultModel: "",
@@ -44,9 +61,9 @@ function baseSettings(displayMode: "standard" | "compact" = "standard"): Setting
     providers: [],
     officialProviders: [],
     permissions: { mode: "ask", allow: [], ask: [], deny: [] },
-    sandbox: { bash: "enforce", network: false, workspaceRoot: "", allowWrite: [], shell: "auto" },
+    sandbox: { bash: "enforce", network: false, workspaceRoot: "", allowWrite: [], effectiveWorkspaceRoot: "/work", effectiveWriteRoots: ["/work"], shell: "auto" },
     network: { proxyMode: "auto", proxyUrl: "", noProxy: "", proxy: { type: "socks5", server: "", port: 0, username: "", password: "" } },
-    agent: { temperature: 0, maxSteps: 0, plannerMaxSteps: 0, systemPrompt: "", coldResumePrune: true, reasoningLanguage: "auto" },
+    agent: { temperature: 0, maxSteps: 0, plannerMaxSteps: 0, maxSubagentDepth: 2, systemPrompt: "", coldResumePrune: true, reasoningLanguage: "auto" },
     bot: {
       enabled: false,
       model: "",
@@ -67,9 +84,11 @@ function baseSettings(displayMode: "standard" | "compact" = "standard"): Setting
     displayMode,
     statusBarStyle: "text",
     statusBarItems: ["model", "workspace", "git_branch", "cache", "balance"],
+    defaultToolApprovalMode: "ask",
     checkUpdates: true,
     telemetry: true,
     metrics: true,
+    memoryCompilerEnabled: true,
     configPath: "/tmp/reasonix/config.toml",
     providerKinds: [],
     autoApproveTools: false,
@@ -78,6 +97,21 @@ function baseSettings(displayMode: "standard" | "compact" = "standard"): Setting
 }
 
 console.log("\nsettings refresh snapshot");
+
+eq(providerEditorEffectiveKind(true, "anthropic", ["anthropic", "openai"]), "openai", "new custom providers ignore sorted providerKinds and default to OpenAI");
+eq(providerEditorEffectiveKind(false, "anthropic", ["anthropic", "openai"]), "anthropic", "existing providers preserve their stored kind");
+eq(providerChatURLPreview("https://proxy.example.com/v1", "", false), "https://proxy.example.com/v1/chat/completions", "base URL mode previews chat completions URL");
+eq(providerChatURLPreview("", "https://proxy.example.com/custom/chat", true), "https://proxy.example.com/custom/chat", "full URL mode previews configured URL");
+eq(providerBaseURLFromChatURL("https://proxy.example.com/v1/chat/completions"), "https://proxy.example.com/v1", "chat URL derives base URL for model discovery");
+eq(formatProviderExtraBody({ top_p: 0.7, enable_thinking: true }), "{\n  \"enable_thinking\": true,\n  \"top_p\": 0.7\n}", "extra body editor formats stable JSON");
+eq(JSON.stringify(parseProviderExtraBody('{ "enable_thinking": true, "top_p": 0.7 }')), "{\"enable_thinking\":true,\"top_p\":0.7}", "extra body editor parses JSON object");
+let extraBodyRejected = false;
+try {
+  parseProviderExtraBody("[true]");
+} catch {
+  extraBodyRejected = true;
+}
+ok(extraBodyRejected, "extra body editor rejects non-object JSON");
 
 const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>", {
   pretendToBeVisual: true,
@@ -147,6 +181,55 @@ ok(onChangedSettings?.displayMode === "compact", "onChanged receives the post-sa
 
 await act(async () => {
   root.unmount();
+});
+
+const retryRootEl = document.createElement("div");
+document.body.appendChild(retryRootEl);
+const retryRoot = createRoot(retryRootEl);
+let failingSettingsCalls = 0;
+window.go = {
+  main: {
+    App: {
+      Settings: async () => {
+        failingSettingsCalls += 1;
+        if (failingSettingsCalls === 1) throw new Error("/Users/example/.reasonix/settings.toml: permission denied");
+        return baseSettings("standard");
+      },
+    } as Partial<AppBindings> as AppBindings,
+  },
+};
+
+await act(async () => {
+  retryRoot.render(
+    <LocaleProvider>
+      <SettingsPanel
+        initialTab="general"
+        onClose={() => {}}
+        onChanged={() => {}}
+      />
+    </LocaleProvider>,
+  );
+  await flushPromises();
+});
+await waitFor("settings load failure", () => Boolean(document.querySelector(".banner--error")));
+
+ok(document.body.textContent?.includes("Settings could not be loaded.") === true, "failed initial settings load shows a visible error");
+ok(document.body.textContent?.includes("Loading…") === false, "failed initial settings load stops showing the loading state");
+
+const retryButton = Array.from(document.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Retry") as HTMLButtonElement | undefined;
+if (!retryButton) throw new Error("settings retry button did not render");
+
+await act(async () => {
+  retryButton.click();
+  await flushPromises();
+});
+await waitFor("settings retry success", () => Boolean(Array.from(document.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Compact")));
+
+eq(failingSettingsCalls, 2, "settings retry calls Settings again");
+ok(document.body.textContent?.includes("Settings could not be loaded.") === false, "settings retry clears the load error");
+
+await act(async () => {
+  retryRoot.unmount();
 });
 dom.window.close();
 

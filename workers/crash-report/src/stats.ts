@@ -172,6 +172,7 @@ const METRIC_SIGNAL_LABELS: Record<string, { en: string; zh: string }> = {
   provider_error: { en: "Provider errors", zh: "Provider 错误" },
   cache_hit: { en: "Cache hit rate", zh: "缓存命中率" },
   tool_error: { en: "Tool errors", zh: "工具错误" },
+  updater_error: { en: "Updater errors", zh: "更新器错误" },
   compaction: { en: "Compactions", zh: "压缩" },
   turns: { en: "Turns", zh: "轮次" },
   client_surface: { en: "Client surface", zh: "客户端形态" },
@@ -210,7 +211,7 @@ const METRIC_SIGNAL_LABELS: Record<string, { en: string; zh: string }> = {
   settings_bot_connection_approval: { en: "Bot: connection approval", zh: "机器人：连接审批" },
 };
 
-const AGENT_METRIC_SIGNALS = ["finish_reason", "empty_final", "provider_error", "cache_hit", "tool_error", "compaction", "turns"];
+const AGENT_METRIC_SIGNALS = ["finish_reason", "empty_final", "provider_error", "cache_hit", "tool_error", "updater_error", "compaction", "turns"];
 const DEFAULT_OPEN_SETTING_GROUPS = new Set(["Client", "Models", "Providers"]);
 
 const SETTINGS_METRIC_GROUPS: { en: string; zh: string; signals: string[] }[] = [

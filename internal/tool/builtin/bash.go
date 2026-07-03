@@ -15,9 +15,12 @@ import (
 	"sync"
 	"time"
 
+	"mvdan.cc/sh/v3/syntax"
+
 	"reasonix/internal/jobs"
 	"reasonix/internal/proc"
 	"reasonix/internal/sandbox"
+	"reasonix/internal/shellparse"
 	"reasonix/internal/tool"
 )
 
@@ -113,13 +116,20 @@ func (b bash) resolved() sandbox.Shell {
 }
 
 func (bash) Schema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute"},"run_in_background":{"type":"boolean","description":"Run detached: returns a job id immediately and keeps running across turns (no foreground timeout). Read new output with bash_output, wait with wait, stop it with kill_shell. Use for long-running commands like servers, watchers, or builds you don't need to block on."},"preserve_background_processes":{"type":"boolean","description":"After the shell command exits normally, keep any process-group members it intentionally left behind. Use only for deliberate daemonization, such as nohup/disown/setsid; cancellation and timeouts still kill the process group."}},"required":["command"]}`)
+	return json.RawMessage(`{"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute"},"run_in_background":{"type":"boolean","description":"Run detached: returns a job id immediately and keeps running across turns (no foreground timeout). Read new output with bash_output, wait with wait, stop it with kill_shell. Use for long-running commands like servers, watchers, or builds you don't need to block on."},"preserve_background_processes":{"type":"boolean","description":"After the shell command exits normally, keep any process-group members it intentionally left behind. Use only for deliberate daemonization, browser/GUI/session launchers such as playwright-cli open, or nohup/disown/setsid; cancellation and timeouts still kill the process group."}},"required":["command"]}`)
 }
 
 // ReadOnly is false: bash's effect cannot be inferred from args (rm, curl,
 // git commit, etc. are all reachable). Conservative even when a particular
 // command happens to be read-only — the agent batch decision can't tell.
 func (bash) ReadOnly() bool { return false }
+
+// SnipHint keeps both ends of command output equally: a build/test run's
+// failure usually sits at the tail while the command and early context sit at
+// the head, so neither end can be favored.
+func (bash) SnipHint() tool.SnipHint {
+	return tool.SnipHint{Head: 40, Tail: 40, HeadChars: 8000, TailChars: 8000}
+}
 
 func (b bash) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	var p struct {
@@ -142,7 +152,10 @@ func (b bash) Execute(ctx context.Context, args json.RawMessage) (string, error)
 	}
 
 	// Wrap in the OS sandbox when configured; otherwise argv is just the shell.
-	argv, _ := sandbox.Command(b.sb, sh, p.Command)
+	argv, wrapped := sandbox.Command(b.sb, sh, p.Command)
+	if b.sb.Enforce() && !wrapped {
+		return "", fmt.Errorf("bash sandbox requested but unavailable on this platform; refusing to run unconfined")
+	}
 	cmdEnv := bashCommandEnv(ctx)
 
 	if p.RunInBackground {
@@ -157,15 +170,14 @@ func (b bash) Execute(ctx context.Context, args json.RawMessage) (string, error)
 			cmd := exec.CommandContext(jobCtx, argv[0], argv[1:]...)
 			cmd.Dir = workDir
 			cmd.Env = cmdEnv
-			setKillTree(cmd)
 			cmd.WaitDelay = bashWaitDelay
 			cmd.Stdout = out
 			cmd.Stderr = out
-			runErr := cmd.Run()
+			tracked, runErr := runShellProcess(jobCtx, cmd, sh, p.Command, shouldTrackShellProcess(sh, p.Command, p.PreserveBackgroundProcesses))
 			if shouldReapAfterRun(jobCtx, sh, p.Command, p.PreserveBackgroundProcesses) {
-				reapTree(cmd) // reap process-group stragglers the job left running (#3702)
+				reapShellProcess(cmd, tracked) // reap process-group stragglers the job left running (#3702)
 			}
-			return "", runErr
+			return "", normalizeBashRunError(jobCtx, runErr, p.PreserveBackgroundProcesses)
 		})
 		return fmt.Sprintf("Started background job %q. It keeps running across turns; read new output with bash_output(job_id=%q), wait for it with wait, or stop it with kill_shell(job_id=%q).", job.ID, job.ID, job.ID), nil
 	}
@@ -181,7 +193,6 @@ func (b bash) Execute(ctx context.Context, args json.RawMessage) (string, error)
 	cmd := exec.CommandContext(runCtx, argv[0], argv[1:]...)
 	cmd.Dir = b.workDir // "" lets exec use the process working directory
 	cmd.Env = cmdEnv
-	setKillTree(cmd)
 	cmd.WaitDelay = bashWaitDelay
 	var buf bytes.Buffer
 	w := io.Writer(&buf)
@@ -190,14 +201,15 @@ func (b bash) Execute(ctx context.Context, args json.RawMessage) (string, error)
 	}
 	cmd.Stdout = w
 	cmd.Stderr = w
-	err := cmd.Run()
+	tracked, err := runShellProcess(runCtx, cmd, sh, p.Command, shouldTrackShellProcess(sh, p.Command, p.PreserveBackgroundProcesses))
 	// A foreground command that spawned a lingering child (e.g. `bazel run`'s
 	// server) leaves it in the process group; Wait only reaped the shell leader.
 	// Kill the group so those don't accumulate into an OOM (#3702). On cancel/
-	// timeout setKillTree's Cancel already did this; this covers normal exit.
+	// timeout the command's Cancel path already did this; this covers normal exit.
 	if shouldReapAfterRun(runCtx, sh, p.Command, p.PreserveBackgroundProcesses) {
-		reapTree(cmd)
+		reapShellProcess(cmd, tracked)
 	}
+	err = normalizeBashRunError(runCtx, err, p.PreserveBackgroundProcesses)
 	out := buf.String()
 
 	if errors.Is(context.Cause(runCtx), errBashTimeout) {
@@ -208,6 +220,13 @@ func (b bash) Execute(ctx context.Context, args json.RawMessage) (string, error)
 		return out, fmt.Errorf("command exited: %w", err)
 	}
 	return out, nil
+}
+
+func normalizeBashRunError(ctx context.Context, err error, preserveBackgroundProcesses bool) error {
+	if preserveBackgroundProcesses && ctx.Err() == nil && errors.Is(err, exec.ErrWaitDelay) {
+		return nil
+	}
+	return err
 }
 
 func shouldReapAfterRun(ctx context.Context, sh sandbox.Shell, command string, preserveBackgroundProcesses bool) bool {
@@ -223,14 +242,32 @@ func shouldReapAfterRun(ctx context.Context, sh sandbox.Shell, command string, p
 // hasExplicitBackgroundKeepalive detects common shell-level daemonization intent
 // without letting a plain "cmd &" bypass #3702's stray process cleanup.
 func hasExplicitBackgroundKeepalive(command string) bool {
-	if !hasUnquotedBackgroundOperator(command) {
+	file, err := shellparse.ParseBash(command)
+	if err != nil {
 		return false
 	}
-	return hasShellCommandWord(command, map[string]struct{}{
-		"disown": {},
-		"nohup":  {},
-		"setsid": {},
+
+	hasBackground := false
+	hasKeepaliveCommand := false
+	syntax.Walk(file, func(node syntax.Node) bool {
+		switch n := node.(type) {
+		case *syntax.Stmt:
+			if n.Background {
+				hasBackground = true
+			}
+		case *syntax.CallExpr:
+			name, ok := staticShellCallName(n)
+			if !ok {
+				break
+			}
+			switch name {
+			case "disown", "nohup", "setsid":
+				hasKeepaliveCommand = true
+			}
+		}
+		return !(hasBackground && hasKeepaliveCommand)
 	})
+	return hasBackground && hasKeepaliveCommand
 }
 
 func (b bash) foregroundTimeout() time.Duration {
@@ -238,6 +275,32 @@ func (b bash) foregroundTimeout() time.Duration {
 		return 0
 	}
 	return b.timeout
+}
+
+func shouldTrackShellProcess(sh sandbox.Shell, command string, preserveBackgroundProcesses bool) bool {
+	if preserveBackgroundProcesses {
+		return false
+	}
+	return sh.Kind != sandbox.ShellBash || !hasExplicitBackgroundKeepalive(command)
+}
+
+func runShellProcess(ctx context.Context, cmd *exec.Cmd, sh sandbox.Shell, command string, track bool) (*proc.TrackedCommand, error) {
+	return proc.RunCommand(ctx, cmd, proc.RunOptions{
+		Track:           track,
+		CancelWaitGrace: bashWaitDelay + time.Second,
+		Source:          "bash_tool",
+		ShellKind:       sh.Kind.String(),
+		ShellPath:       sh.Path,
+		CommandPreview:  commandPreview(command),
+	})
+}
+
+func reapShellProcess(cmd *exec.Cmd, tracked *proc.TrackedCommand) {
+	if tracked != nil {
+		tracked.Kill()
+		return
+	}
+	proc.KillTree(cmd)
 }
 
 // progressWriter forwards each chunk the command writes to a tool.ProgressFunc,
@@ -275,191 +338,22 @@ func hasUnquotedSeq(s, seq string) bool {
 	return false
 }
 
-func hasUnquotedBackgroundOperator(s string) bool {
-	var quote byte
-	escaped := false
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if escaped {
-			escaped = false
+func staticShellCallName(call *syntax.CallExpr) (string, bool) {
+	for _, arg := range call.Args {
+		word, ok := shellparse.StaticWord(arg)
+		if !ok {
+			return "", false
+		}
+		if shellparse.IsAssignment(word) {
 			continue
 		}
-		if c == '\\' {
-			escaped = true
-			continue
-		}
-		if quote != 0 {
-			if c == quote {
-				quote = 0
-			}
-			continue
-		}
-		if c == '\'' || c == '"' {
-			quote = c
-			continue
-		}
-		if c != '&' {
-			continue
-		}
-		if i+1 < len(s) && s[i+1] == '&' {
-			i++
-			continue
-		}
-		prev := previousNonSpace(s, i)
-		if prev == '>' {
-			continue
-		}
-		next := nextNonSpace(s, i+1)
-		if next == '>' {
-			continue
-		}
-		return true
-	}
-	return false
-}
-
-func hasShellCommandWord(s string, want map[string]struct{}) bool {
-	expectCommand := true
-	skipNextWord := false
-	for i := 0; i < len(s); {
-		c := s[i]
-		if isShellSpace(c) {
-			i++
-			continue
-		}
-		switch c {
-		case ';', '\n', '&', '|', '(':
-			if i+1 < len(s) && (s[i:i+2] == "&&" || s[i:i+2] == "||") {
-				i += 2
-			} else {
-				i++
-			}
-			expectCommand = true
-			skipNextWord = false
-			continue
-		case '<', '>':
-			i = skipShellRedirect(s, i)
-			skipNextWord = true
-			continue
-		}
-
-		word, next := readShellWord(s, i)
-		i = next
-		if word == "" {
-			continue
-		}
-		if skipNextWord {
-			skipNextWord = false
-			continue
-		}
-		if !expectCommand {
-			continue
-		}
-		if isShellAssignment(word) {
-			continue
-		}
-		base := shellWordBase(word)
-		if _, ok := want[base]; ok {
-			return true
-		}
+		base := shellparse.WordBase(word)
 		if base == "command" || base == "env" {
 			continue
 		}
-		expectCommand = false
+		return base, true
 	}
-	return false
-}
-
-func readShellWord(s string, start int) (string, int) {
-	var b strings.Builder
-	for i := start; i < len(s); i++ {
-		c := s[i]
-		if isShellSpace(c) || strings.ContainsRune(";|&()<>", rune(c)) {
-			return b.String(), i
-		}
-		switch c {
-		case '\\':
-			if i+1 < len(s) {
-				i++
-				b.WriteByte(s[i])
-			}
-		case '\'':
-			for i++; i < len(s) && s[i] != '\''; i++ {
-				b.WriteByte(s[i])
-			}
-		case '"':
-			for i++; i < len(s) && s[i] != '"'; i++ {
-				if s[i] == '\\' && i+1 < len(s) {
-					i++
-				}
-				b.WriteByte(s[i])
-			}
-		default:
-			b.WriteByte(c)
-		}
-	}
-	return b.String(), len(s)
-}
-
-func skipShellRedirect(s string, i int) int {
-	for i < len(s) && (s[i] == '<' || s[i] == '>' || s[i] == '&') {
-		i++
-	}
-	return i
-}
-
-func previousNonSpace(s string, before int) byte {
-	for i := before - 1; i >= 0; i-- {
-		if !isShellSpace(s[i]) {
-			return s[i]
-		}
-	}
-	return 0
-}
-
-func nextNonSpace(s string, after int) byte {
-	for i := after; i < len(s); i++ {
-		if !isShellSpace(s[i]) {
-			return s[i]
-		}
-	}
-	return 0
-}
-
-func isShellSpace(c byte) bool {
-	switch c {
-	case ' ', '\t', '\r', '\n':
-		return true
-	default:
-		return false
-	}
-}
-
-func isShellAssignment(word string) bool {
-	name, _, ok := strings.Cut(word, "=")
-	if !ok || name == "" {
-		return false
-	}
-	for i := 0; i < len(name); i++ {
-		c := name[i]
-		if i == 0 {
-			if c != '_' && (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') {
-				return false
-			}
-			continue
-		}
-		if c != '_' && (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') && (c < '0' || c > '9') {
-			return false
-		}
-	}
-	return true
-}
-
-func shellWordBase(word string) string {
-	if i := strings.LastIndexByte(word, '/'); i >= 0 {
-		return word[i+1:]
-	}
-	return word
+	return "", false
 }
 
 // commandPreview is a short single-line label for a background bash job, surfaced

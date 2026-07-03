@@ -68,32 +68,40 @@ type Messages struct {
 	ResumePickHint  string // keyboard hint in the interactive resume picker
 
 	// chat TUI status line / approval banner.
-	ChatThinking                string // live reasoning marker label, e.g. "thinking…"
-	ChatThoughtForFmt           string // collapsed reasoning summary, "%d" = elapsed s
-	ChatStatusThinkingFmt       string // "%s thinking… (%ds · <cancel hint>)" — %s = spinner, %d = elapsed s
-	ChatToolWorkingFmt          string // "%s working · %ds" under a running tool — %s = spinner, %d = elapsed s
-	ChatStatusRetryingFmt       string // "%s retrying (%d/%d)…" — %s = spinner, %d/%d = attempt/max
-	ChatStatusCancellingFmt     string // "%s stopping… (%ds · Ctrl+C exits)" — %s = spinner, %d = elapsed s
-	ChatStatusIdle              string // shortcuts hint when idle
-	ChatStatusYoloIdle          string // shortcuts hint when idle in YOLO/bypass mode
-	ChatStatusCycleHint         string // plan-toggle shortcut hint shown when no modal prompt owns the status row
-	ChatStatusCacheNowFmt       string // cache status tag, "%s" = latest-turn hit rate with percent sign
-	ChatStatusCacheAvgFmt       string // cache status tag, "%s" = session-average hit rate with percent sign
-	ChatStatusPlanApproval      string // shortcuts hint while a plan is pending
-	PlanApprovalPrompt          string // one-line "plan above is ready" banner shown above the input
-	ChatStatusToolApproval      string // shortcuts hint while a tool call awaits approval
-	ToolApprovalPromptFmt       string // approval banner — tool, subject suffix, source/intent detail, choices
-	ToolApprovalChoices         string // standard approval choice list
-	BashPrefixChoices           string // approval choice list when a bash prefix can be granted
-	ToolApprovalSourceFmt       string // "Source: %s" / "来源: %s"
-	ToolApprovalBuiltIn         string // built-in tool source label
-	ToolApprovalImageUse        string // image-understanding detail for understand_image-style tools
-	PermissionSavedFmt          string // permission rule saved notice: path, rule
-	PermissionAlreadyAllowedFmt string // permission rule already covered notice: path, rule
-	PermissionSaveFailedFmt     string // permission rule save failure notice: rule, error
-	DiffFoldedFmt               string // "… +%d more lines" footer when a writer diff is folded
-	DiffFoldEnabledFmt          string // notice when /diff-fold enables folding, %d = line limit
-	DiffFoldDisabled            string // notice when /diff-fold disables folding (shows all lines)
+	ChatThinking                           string // live reasoning marker label, e.g. "thinking…"
+	ChatThoughtForFmt                      string // collapsed reasoning summary, "%d" = elapsed s
+	ChatStatusThinkingFmt                  string // "%s thinking… (%ds · <cancel hint>)" — %s = spinner, %d = elapsed s
+	ChatToolWorkingFmt                     string // "%s working · %ds" under a running tool — %s = spinner, %d = elapsed s
+	ChatStatusRetryingFmt                  string // "%s retrying (%d/%d)…" — %s = spinner, %d/%d = attempt/max
+	ChatStatusCancellingFmt                string // "%s stopping… (%ds · Ctrl+C exits)" — %s = spinner, %d = elapsed s
+	ChatStatusIdle                         string // shortcuts hint when idle
+	ChatStatusYoloIdle                     string // shortcuts hint when idle in YOLO/bypass mode
+	ChatStatusCycleHint                    string // plan-toggle shortcut hint shown when no modal prompt owns the status row
+	ChatStatusCacheNowFmt                  string // cache status tag, "%s" = latest-turn hit rate with percent sign
+	ChatStatusCacheAvgFmt                  string // cache status tag, "%s" = session-average hit rate with percent sign
+	ChatStatusPlanApproval                 string // shortcuts hint while a plan is pending
+	PlanApprovalPrompt                     string // one-line "plan above is ready" banner shown above the input
+	ChatStatusToolApproval                 string // shortcuts hint while a tool call awaits approval
+	ToolApprovalPromptFmt                  string // approval banner — tool, subject suffix, source/intent detail, choices
+	ToolApprovalChoices                    string // standard approval choice list
+	BashPrefixChoices                      string // approval choice list when a bash prefix can be granted
+	PlanModeReadOnlyCommandChoices         string // approval choice list for plan-mode read-only command trust
+	FreshHumanApprovalChoices              string // approval choice list for prompts that cannot be remembered
+	ToolApprovalSourceFmt                  string // "Source: %s" / "来源: %s"
+	ToolApprovalBuiltIn                    string // built-in tool source label
+	ToolApprovalImageUse                   string // image-understanding detail for understand_image-style tools
+	PermissionSavedFmt                     string // permission rule saved notice: path, rule
+	PermissionAlreadyAllowedFmt            string // permission rule already covered notice: path, rule
+	PermissionSaveFailedFmt                string // permission rule save failure notice: rule, error
+	MCPReadOnlyTrustSavedFmt               string // MCP trusted read-only saved notice: path, server, tool
+	MCPReadOnlyTrustAlreadyFmt             string // MCP trusted read-only already covered notice: path, server, tool
+	MCPReadOnlyTrustFailedFmt              string // MCP trusted read-only save failure notice: server, tool, error
+	PlanModeReadOnlyCommandTrustSavedFmt   string // plan-mode bash read-only prefix saved notice: path, prefix
+	PlanModeReadOnlyCommandTrustAlreadyFmt string // plan-mode bash read-only prefix already covered notice: path, prefix
+	PlanModeReadOnlyCommandTrustFailedFmt  string // plan-mode bash read-only prefix save failure notice: prefix, error
+	DiffFoldedFmt                          string // "… +%d more lines" footer when a writer diff is folded
+	DiffFoldEnabledFmt                     string // notice when /diff-fold enables folding, %d = line limit
+	DiffFoldDisabled                       string // notice when /diff-fold disables folding (shows all lines)
 
 	// `ask` tool question card.
 	AskTypeSomething   string // the "type your own answer" option label
@@ -125,22 +133,27 @@ type Messages struct {
 	CompactionManual  string // trigger label: user ran /compact
 
 	// chat TUI slash commands.
-	SlashCompactDone   string // "/compact" succeeded
-	SlashCompactFailed string // "/compact" errored, prefixed before the underlying error
-	SlashNewDone       string // "/new" succeeded
-	SlashNewFailed     string // "/new" errored
-	SlashClearPrompt   string // "/clear" destructive confirmation prompt
-	SlashClearDone     string // "/clear" succeeded
-	SlashClearFailed   string // "/clear" errored
-	SlashTodoCleared   string // "/todo" dismissed the pinned task list
-	SlashUnavailable   string // the command is configured off (no callback wired)
-	SlashUnknown       string // shown when the user types an unrecognised "/cmd"
-	SlashHelp          string // listed commands
-	SlashPromptEmpty   string // an MCP prompt returned no text to send
-	SlashMCPNone       string // /mcp when no MCP servers are connected
-	CtrlCQuitHint      string // shown on first Ctrl+C while idle; second press exits
-	CompHintSlash      string // key hint footer under the slash-command menu
-	CompHintFile       string // key hint footer under the @ file/resource menu
+	SlashCompactDone    string // "/compact" succeeded
+	SlashCompactFailed  string // "/compact" errored, prefixed before the underlying error
+	SlashNewDone        string // "/new" succeeded
+	SlashNewFailed      string // "/new" errored
+	SlashClearPrompt    string // "/clear" destructive confirmation prompt
+	SlashClearDone      string // "/clear" succeeded
+	SlashClearFailed    string // "/clear" errored
+	SlashClsDone        string // "/cls" succeeded
+	SlashTodoCleared    string // "/todo" dismissed the pinned task list
+	SlashUnavailable    string // the command is configured off (no callback wired)
+	SlashUnknown        string // shown when the user types an unrecognised "/cmd"
+	SlashHelp           string // listed commands
+	SlashPromptEmpty    string // an MCP prompt returned no text to send
+	SlashMCPNone        string // /mcp when no MCP servers are connected
+	CtrlCQuitHint       string // shown on first Ctrl+C while idle; second press exits
+	CompHintSlash       string // key hint footer under the slash-command menu
+	CompHintFile        string // key hint footer under the @ file/resource menu
+	MouseCopiedHint     string // transient status-line hint after a mouse/Ctrl+C selection copy
+	MouseCaptureOnHint  string // "/mouse" turned in-app mouse handling back on
+	MouseCaptureOffHint string // "/mouse" released mouse capture to the terminal
+	MouseCaptureTag     string // persistent status-line marker while mouse capture is off
 
 	// shell execution (! prefix).
 	ShellExecEmpty      string // bare "!" with no command
@@ -150,59 +163,70 @@ type Messages struct {
 
 	// slash command + sub-command descriptions shown in the menu (CLI and desktop
 	// share these via i18n.M, so both frontends localize identically).
-	CmdNew          string // /new
-	CmdClear        string // /clear
-	CmdCompact      string // /compact
-	CmdRewind       string // /rewind
-	CmdTree         string // /tree
-	CmdBranch       string // /branch
-	CmdSwitchBranch string // /switch
-	CmdResume       string // /resume
-	CmdRename       string // /rename
-	CmdModel        string // /model
-	CmdMemory       string // /memory
-	CmdMigrate      string // /migrate
-	CmdGoal         string // /goal
-	CmdRemember     string // /remember
-	CmdForget       string // /forget
-	CmdMcp          string // /mcp
-	CmdHooks        string // /hooks
-	CmdPasteImage   string // /paste-image
-	CmdOutputStyle  string // /output-style
-	CmdTheme        string // /theme
-	CmdLanguage     string // /language
-	CmdSkill        string // /skills
-	CmdVerbose      string // /verbose
-	CmdReloadCmd    string // /reload-cmd
-	CmdDiffFold     string // /diff-fold
-	CmdSandbox      string // /sandbox
-	CmdEffort       string // /effort
-	CmdAutoPlan     string // /auto-plan
-	CmdReasonLang   string // /reasoning-language
-	CmdHelp         string // /help
-	CmdTodo         string // /todo
-	CmdQuit         string // /quit (also accepts /exit as hidden alias)
-	ArgSkillList    string // /skills list
-	ArgSkillShow    string // /skills show
-	ArgSkillNew     string // /skills new
-	ArgSkillPaths   string // /skills paths
-	ArgMcpAdd       string // /mcp add
-	ArgMcpRemove    string // /mcp remove
-	ArgMcpList      string // /mcp list
-	ArgMcpConnected string // /mcp remove <server> tag
-	ArgHooksList    string // /hooks list
-	ArgHooksTrust   string // /hooks trust
-	ArgModelCurrent string // /model <ref> active tag
-	ArgEffortAuto   string // /effort auto
-	ArgEffortLow    string // /effort low
-	ArgEffortMedium string // /effort medium
-	ArgEffortHigh   string // /effort high
-	ArgEffortXHigh  string // /effort xhigh
-	ArgEffortMax    string // /effort max
-	ArgThemeCurrent string // /theme <style> active tag
-	ArgLanguageAuto string // /language auto
-	ArgLanguageEn   string // /language en
-	ArgLanguageZh   string // /language zh
+	CmdNew              string // /new
+	CmdClear            string // /clear
+	CmdCls              string // /cls
+	CmdCompact          string // /compact
+	CmdRewind           string // /rewind
+	CmdTree             string // /tree
+	CmdBranch           string // /branch
+	CmdSwitchBranch     string // /switch
+	CmdResume           string // /resume
+	CmdRename           string // /rename
+	CmdModel            string // /model
+	CmdMemory           string // /memory
+	CmdMigrate          string // /migrate
+	CmdGoal             string // /goal
+	CmdRemember         string // /remember
+	CmdForget           string // /forget
+	CmdMcp              string // /mcp
+	CmdHooks            string // /hooks
+	CmdPlugins          string // /plugins
+	CmdPasteImage       string // /paste-image
+	CmdOutputStyle      string // /output-style
+	CmdTheme            string // /theme
+	CmdLanguage         string // /language
+	CmdSkill            string // /skills
+	CmdVerbose          string // /verbose
+	CmdReloadCmd        string // /reload-cmd
+	CmdDiffFold         string // /diff-fold
+	CmdSandbox          string // /sandbox
+	CmdEffort           string // /effort
+	CmdMouse            string // /mouse
+	CmdAutoPlan         string // /auto-plan
+	CmdReasonLang       string // /reasoning-language
+	CmdMemoryV5         string // /memory-v5
+	CmdHelp             string // /help
+	CmdTodo             string // /todo
+	CmdQuit             string // /quit (also accepts /exit as hidden alias)
+	CmdCopy             string // /copy
+	CmdExport           string // /export
+	SlashCopyDone       string // "/copy" succeeded
+	SlashCopyEmpty      string // no assistant response to copy
+	SlashCopyListHeader string // header shown before the numbered list
+	SlashExportDoneFmt  string // "/export" succeeded, %s = file path
+	SlashExportEmpty    string // no messages to export
+	ArgSkillList        string // /skills list
+	ArgSkillShow        string // /skills show
+	ArgSkillNew         string // /skills new
+	ArgSkillPaths       string // /skills paths
+	ArgMcpAdd           string // /mcp add
+	ArgMcpRemove        string // /mcp remove
+	ArgMcpList          string // /mcp list
+	ArgMcpConnected     string // /mcp remove <server> tag
+	ArgHooksList        string // /hooks list
+	ArgHooksTrust       string // /hooks trust
+	ArgModelCurrent     string // /model <ref> active tag
+	ArgEffortAuto       string // /effort auto
+	ArgEffortLow        string // /effort low
+	ArgEffortMedium     string // /effort medium
+	ArgEffortHigh       string // /effort high
+	ArgEffortXHigh      string // /effort xhigh
+	ArgEffortMax        string // /effort max
+	ArgThemeCurrent     string // /theme <style> active tag
+	ArgLanguageAuto     string // /language auto
+	ArgLanguageEn       string // /language en
+	ArgLanguageZh       string // /language zh
 
 	// management listing notices (the Submit path: desktop / HTTP frontends)
 	ListModelsHeaderFmt string // "models (active: %s)"

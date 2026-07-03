@@ -249,9 +249,10 @@ func (s *Searcher) Around(ctx context.Context, req AroundRequest) ([]MessageCont
 	if start < 0 {
 		start = 0
 	}
-	end := req.MessageIndex + after + 1
-	if end > len(msgs) {
-		end = len(msgs)
+	remainingAfter := len(msgs) - req.MessageIndex - 1
+	end := len(msgs)
+	if after < remainingAfter {
+		end = len(msgs) - (remainingAfter - after)
 	}
 	out := make([]MessageContext, 0, end-start)
 	for i := start; i < end; i++ {

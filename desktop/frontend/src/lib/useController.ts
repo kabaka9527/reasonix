@@ -8,10 +8,11 @@ import { asArray } from "./array";
 import { addBreadcrumb } from "./breadcrumbs";
 import { app, onEvent, onReady } from "./bridge";
 import { invalidateCache } from "./composerHistory";
+import { formatGuardianAssessmentNotice } from "./guardianEvents";
 import { createRafBatch } from "./rafBatch";
 import { t } from "./i18n";
 import { fileDiffFromWire, summarize, summarizeFileDiff, type ToolFileDiff } from "./tools";
-import { modeHasAutoApproveTools } from "./types";
+import { modeHasAutoApproveTools, normalizeMode, normalizeToolApprovalMode } from "./types";
 import type {
   BalanceInfo,
   CheckpointMeta,
@@ -19,7 +20,9 @@ import type {
   ContextInfo,
   EffortInfo,
   HistoryMessage,
+  HistoryPage,
   JobView,
+  MemoryCitation,
   MemoryView,
   Meta,
   Mode,
@@ -40,10 +43,15 @@ export type LiveStream = { id: string; text: string; reasoning: string; reasonin
 export type MessageActionScope = "fork" | "summ-from" | "summ-upto" | "conversation" | "code" | "both";
 export type MessageActionState = { turn: number; scope: MessageActionScope };
 export type HydrateReason = "switch-tab" | "new-session" | "resume-session" | "open-topic" | "startup";
+type SyncActiveTabOptions = {
+  preserveCachedHistory?: boolean;
+};
+
+const HISTORY_PAGE_TURNS = 60;
 
 export type Item =
-  | { kind: "user"; id: string; text: string; submitText?: string; failed?: boolean; createdAt?: number }
-  | { kind: "assistant"; id: string; text: string; reasoning: string; streaming: boolean; reasoningComplete?: boolean }
+  | { kind: "user"; id: string; text: string; submitText?: string; failed?: boolean; createdAt?: number; checkpointTurn?: number }
+  | { kind: "assistant"; id: string; text: string; reasoning: string; streaming: boolean; reasoningComplete?: boolean; memoryCitations?: MemoryCitation[] }
   | { kind: "phase"; id: string; text: string }
   | { kind: "notice"; id: string; level: "info" | "warn"; text: string }
   | {
@@ -97,6 +105,12 @@ interface State {
   hydrating: boolean;
   hydrateReason?: HydrateReason;
   hydrateError?: string;
+  hydrateHistoryLoaded?: boolean;
+  hydratePlaceholderItems?: Item[];
+  historyStartTurn: number;
+  historyTotalTurns: number;
+  historyHasOlder: boolean;
+  historyOlderLoading: boolean;
   backendActivationPending: boolean;
   messageAction?: MessageActionState;
   currentAssistant?: string;
@@ -127,6 +141,10 @@ export const initialState: State = {
   jobs: [],
   checkpoints: [],
   hydrating: false,
+  historyStartTurn: 0,
+  historyTotalTurns: 0,
+  historyHasOlder: false,
+  historyOlderLoading: false,
   backendActivationPending: false,
   turnStartAt: 0,
   turnTokens: 0,
@@ -150,6 +168,7 @@ type RuntimeMetaSnapshot = {
   running: boolean;
   pendingPrompt?: boolean;
   backgroundJobs?: number;
+  cancelRequested?: boolean;
   cancellable?: boolean;
 };
 
@@ -164,9 +183,15 @@ function updatesContextGauge(usage?: WireUsage): boolean {
   return !source || source === "executor";
 }
 
-function metaFromTab(tab: TabMeta, existing?: Meta): Meta {
+export function metaFromTab(tab: TabMeta, existing?: Meta): Meta {
   const cwd = tab.cwd || tab.workspaceRoot || existing?.cwd || "";
-  const autoApproveTools = existing?.autoApproveTools ?? modeHasAutoApproveTools(tab.mode);
+  const toolApprovalMode = normalizeToolApprovalMode(
+    tab.toolApprovalMode,
+    normalizeMode(tab.mode),
+    modeHasAutoApproveTools(tab.mode),
+    (tab.toolApprovalMode ?? "").trim() === "" ? existing?.toolApprovalMode : undefined,
+  );
+  const autoApproveTools = toolApprovalMode === "yolo";
   return {
     label: tab.label || existing?.label || "",
     ready: tab.ready,
@@ -176,11 +201,12 @@ function metaFromTab(tab: TabMeta, existing?: Meta): Meta {
     workspaceRoot: tab.workspaceRoot || existing?.workspaceRoot || cwd,
     workspaceName: tab.workspaceName || existing?.workspaceName,
     workspacePath: tab.workspacePath || tab.workspaceRoot || existing?.workspacePath,
+    sessionPath: tab.sessionPath !== undefined ? tab.sessionPath : existing?.sessionPath,
     gitBranch: tab.gitBranch || existing?.gitBranch,
     autoApproveTools,
     bypass: autoApproveTools,
     collaborationMode: tab.collaborationMode ?? existing?.collaborationMode ?? "normal",
-    toolApprovalMode: tab.toolApprovalMode ?? existing?.toolApprovalMode ?? "ask",
+    toolApprovalMode,
     tokenMode: tab.tokenMode ?? existing?.tokenMode ?? "full",
     goal: tab.goal ?? existing?.goal,
     goalStatus: tab.goalStatus ?? existing?.goalStatus,
@@ -203,7 +229,9 @@ export function sameMeta(a?: Meta, b?: Meta): boolean {
     a.workspaceRoot === b.workspaceRoot &&
     a.workspaceName === b.workspaceName &&
     a.workspacePath === b.workspacePath &&
+    a.sessionPath === b.sessionPath &&
     a.gitBranch === b.gitBranch &&
+    a.imageInputEnabled === b.imageInputEnabled &&
     a.autoApproveTools === b.autoApproveTools &&
     a.bypass === b.bypass &&
     a.collaborationMode === b.collaborationMode &&
@@ -215,6 +243,7 @@ export function sameMeta(a?: Meta, b?: Meta): boolean {
 }
 
 const STALE_TURN_RECONCILE_MS = 30_000;
+const CANCEL_RECONCILE_DELAYS_MS = [0, 100, 300, 1_000] as const;
 
 export function shouldReconcileStaleTurn(
   state: Pick<State, "running" | "turnActive"> | undefined,
@@ -233,6 +262,13 @@ function hasCachedLiveTurn(state: State | undefined): boolean {
     (item.kind === "assistant" && item.streaming) ||
     (item.kind === "tool" && item.status === "running")
   );
+}
+
+function hasReusableCachedTranscript(state: State | undefined, sessionPath?: string): boolean {
+  if (!state || state.items.length === 0) return false;
+  const expectedSessionPath = (sessionPath ?? "").trim();
+  if (!expectedSessionPath) return true;
+  return (state.meta?.sessionPath ?? "").trim() === expectedSessionPath;
 }
 
 /** Mirrors Go backend's ReadOnly() hints. */
@@ -302,7 +338,7 @@ type Action =
   | { type: "effort"; effort: EffortInfo }
   | { type: "jobs"; jobs: JobView[] }
   | { type: "checkpoints"; checkpoints: CheckpointMeta[] }
-  | { type: "hydrate_start"; reason: HydrateReason }
+  | { type: "hydrate_start"; reason: HydrateReason; placeholderItems?: Item[] }
   | { type: "hydrate_done" }
   | { type: "hydrate_error"; reason: HydrateReason; error: string }
   | { type: "backend_activation_start" }
@@ -310,10 +346,26 @@ type Action =
   | { type: "message_action_start"; action: MessageActionState }
   | { type: "message_action_done" }
   | { type: "history"; messages: HistoryMessage[] }
+  | { type: "history_page"; page: HistoryPage; mode: "replace" | "prepend" }
+  | { type: "history_older_start" }
+  | { type: "history_older_error" }
+  | { type: "history_checkpoint_turns"; turns: number[] }
   | { type: "local_notice"; level: "info" | "warn"; text: string }
   | { type: "clearApproval" }
   | { type: "clearAsk" }
   | { type: "reset" };
+
+function backendStatusFromRuntimeMeta(meta: RuntimeMetaSnapshot): Extract<Action, { type: "backend_status" }> {
+  const foregroundRunning = foregroundRunningFromRuntimeMeta(meta);
+  return {
+    type: "backend_status",
+    running: foregroundRunning,
+    pendingPrompt: Boolean(meta.pendingPrompt),
+    backgroundJobs: meta.backgroundJobs ?? 0,
+    cancelRequested: Boolean(meta.cancelRequested),
+    cancellable: foregroundRunning,
+  };
+}
 
 // ---- reducer helpers (unchanged logic) ----
 
@@ -362,14 +414,22 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
     }
     if (m.role === "user") {
       if (m.content.trim() === "") continue;
-      items.push({ kind: "user", id: `${idPrefix}${seq}`, text: m.content, submitText: m.submitText, createdAt: m.createdAt });
+      items.push({ kind: "user", id: `${idPrefix}${seq}`, text: m.content, submitText: m.submitText, createdAt: m.createdAt, checkpointTurn: m.checkpointTurn });
       seq++;
       continue;
     }
     if (m.role === "assistant") {
       const hasText = m.content.trim() !== "" || (m.reasoning ?? "").trim() !== "";
       if (hasText) {
-        items.push({ kind: "assistant", id: `${idPrefix}${seq}`, text: m.content, reasoning: m.reasoning ?? "", streaming: false });
+        const memoryCitations = asArray<MemoryCitation>(m.memoryCitations);
+        items.push({
+          kind: "assistant",
+          id: `${idPrefix}${seq}`,
+          text: m.content,
+          reasoning: m.reasoning ?? "",
+          streaming: false,
+          memoryCitations: memoryCitations.length > 0 ? memoryCitations : undefined,
+        });
         seq++;
       }
       const toolCalls = m.toolCalls ?? [];
@@ -422,6 +482,26 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
     }
   }
   return { items, seq };
+}
+
+function mergeHistoryCheckpointTurns(items: Item[], turns: number[], startTurn = 0): Item[] {
+  if (!turns.some((turn) => turn >= 0)) return items;
+  const offset = Math.max(0, Math.floor(startTurn));
+  let userIndex = 0;
+  let changed = false;
+  const next = items.map((item) => {
+    if (item.kind !== "user") return item;
+    const turn = turns[offset + userIndex];
+    userIndex += 1;
+    if (turn == null || turn < 0 || item.checkpointTurn === turn) return item;
+    changed = true;
+    return { ...item, checkpointTurn: turn };
+  });
+  return changed ? next : items;
+}
+
+function historyPageItems(page: HistoryPage): { items: Item[]; seq: number } {
+  return historyMessagesToItems(asArray(page.messages), `h${page.startTurn}-`, 0);
 }
 
 function positionalToolResults(messages: HistoryMessage[]): Map<string, { message: HistoryMessage; index: number }> {
@@ -498,6 +578,10 @@ function applyEvent(s: State, e: WireEvent): State {
     if (e.kind === "turn_done") return { ...s, discardTurn: false, running: false, turnActive: false, pendingPrompt: false, cancelRequested: false, cancellable: false, currentAssistant: undefined, live: undefined };
     return s;
   }
+  if (e.kind === "memory_compiler_stats" || e.kind === "mcp_surface_ready") {
+    // Background-only events must not confirm an optimistic user bubble.
+    return s;
+  }
   if (s.pendingUser !== undefined && e.kind !== "turn_done") {
     s = flushPendingUser(s);
   }
@@ -528,10 +612,32 @@ function applyEvent(s: State, e: WireEvent): State {
       return { ...s, items, live, currentAssistant: id, seq };
     }
     case "message": {
+      const existingAssistant =
+        s.currentAssistant === undefined
+          ? undefined
+          : s.items.find((it): it is Extract<Item, { kind: "assistant" }> => it.kind === "assistant" && it.id === s.currentAssistant);
+      const text = e.text ?? s.live?.text ?? existingAssistant?.text ?? "";
+      const reasoning = e.reasoning ?? s.live?.reasoning ?? existingAssistant?.reasoning ?? "";
+      if (text.trim() === "" && reasoning.trim() === "") {
+        const items =
+          existingAssistant && existingAssistant.text.trim() === "" && existingAssistant.reasoning.trim() === "" && !existingAssistant.memoryCitations?.length
+            ? s.items.filter((it) => !(it.kind === "assistant" && it.id === existingAssistant.id))
+            : s.items;
+        return { ...s, items, live: undefined, currentAssistant: undefined };
+      }
       const { items, id, seq } = ensureAssistant(s);
       const next = items.map((it) =>
         it.kind === "assistant" && it.id === id
-          ? { ...it, text: e.text ?? s.live?.text ?? it.text, reasoning: e.reasoning ?? s.live?.reasoning ?? it.reasoning, streaming: false }
+          ? (() => {
+              const memoryCitations = asArray<MemoryCitation>(e.memoryCitations ?? it.memoryCitations);
+              return {
+                ...it,
+                text,
+                reasoning,
+                streaming: false,
+                memoryCitations: memoryCitations.length > 0 ? memoryCitations : undefined,
+              };
+            })()
           : it,
       );
       return { ...s, items: next, live: undefined, currentAssistant: undefined, seq };
@@ -615,7 +721,7 @@ function applyEvent(s: State, e: WireEvent): State {
       const turnCost = s.turnCost + usageCost;
       const sessionCost = s.sessionCost + usageCost;
       const sessionCurrency = e.usage?.currency || s.sessionCurrency || "¥";
-      const usage = updateContextGauge ? e.usage : s.usage ?? e.usage;
+      const usage = updateContextGauge ? e.usage : s.usage;
       return { ...s, usage, context: { ...s.context, used, sessionTokens }, turnTokens, turnTotalTokens, turnCost, sessionTokens, sessionCost, sessionCurrency };
     }
     case "notice":
@@ -645,6 +751,11 @@ function applyEvent(s: State, e: WireEvent): State {
     case "ask_request": {
       if (s.cancelRequested) return s;
       return { ...s, ask: e.ask, pendingPrompt: true, running: true, turnActive: true, cancellable: true };
+    }
+    case "guardian_assessment": {
+      if (!e.guardian) return s;
+      const level = e.guardian.outcome === "deny" ? "warn" : "info";
+      return { ...s, seq: s.seq + 1, items: [...s.items, { kind: "notice", id: `g${s.seq}`, level, text: formatGuardianAssessmentNotice(e.guardian) }] };
     }
     case "turn_done": {
       if (s.pendingUser !== undefined) s = flushPendingUser(s);
@@ -743,33 +854,68 @@ export function reducer(s: State, a: Action): State {
       });
       return { ...s, items: finalized, running: false, turnActive: false, pendingPrompt, backgroundJobs, cancelRequested, cancellable, live: undefined, currentAssistant: undefined, approval: undefined, ask: undefined };
     }
-    case "meta": return sameMeta(s.meta, a.meta) ? s : { ...s, meta: a.meta };
+    case "meta": {
+      const meta = a.meta.sessionPath === undefined && s.meta?.sessionPath !== undefined ? { ...a.meta, sessionPath: s.meta.sessionPath } : a.meta;
+      return sameMeta(s.meta, meta) ? s : { ...s, meta };
+    }
     case "optimistic_meta": return sameMeta(s.meta, a.meta) ? s : { ...s, meta: a.meta, hydrateError: undefined };
     case "context": {
       const sessionTokens = typeof a.context.sessionTokens === "number"
         ? Math.max(0, a.context.sessionTokens)
         : s.sessionTokens;
-      return { ...s, context: a.context, sessionTokens };
+      const sessionCost = typeof a.context.sessionCost === "number" && a.context.sessionCost > 0
+        ? a.context.sessionCost
+        : s.sessionCost;
+      const sessionCurrency = a.context.sessionCurrency || s.sessionCurrency;
+      return { ...s, context: a.context, sessionTokens, sessionCost, sessionCurrency };
     }
     case "balance": return { ...s, balance: a.balance };
     case "effort": return { ...s, effort: a.effort };
     case "jobs": return { ...s, jobs: a.jobs };
     case "checkpoints": return { ...s, checkpoints: a.checkpoints };
-    case "hydrate_start": return { ...s, hydrating: true, hydrateReason: a.reason, hydrateError: undefined };
-    case "hydrate_done": return s.hydrating || s.hydrateReason || s.hydrateError ? { ...s, hydrating: false, hydrateReason: undefined, hydrateError: undefined } : s;
-    case "hydrate_error": return { ...s, hydrating: false, hydrateReason: a.reason, hydrateError: a.error };
+    case "hydrate_start": return {
+      ...s,
+      hydrating: true,
+      hydrateReason: a.reason,
+      hydrateError: undefined,
+      hydrateHistoryLoaded: false,
+      hydratePlaceholderItems: a.placeholderItems?.length ? a.placeholderItems : undefined,
+    };
+    case "hydrate_done": return s.hydrating || s.hydrateReason || s.hydrateError || s.hydrateHistoryLoaded || s.hydratePlaceholderItems
+      ? { ...s, hydrating: false, hydrateReason: undefined, hydrateError: undefined, hydrateHistoryLoaded: undefined, hydratePlaceholderItems: undefined }
+      : s;
+    case "hydrate_error": return { ...s, hydrating: false, hydrateReason: a.reason, hydrateError: a.error, hydrateHistoryLoaded: undefined, hydratePlaceholderItems: undefined };
     case "backend_activation_start": return s.backendActivationPending ? s : { ...s, backendActivationPending: true };
     case "backend_activation_done": return s.backendActivationPending ? { ...s, backendActivationPending: false } : s;
     case "message_action_start": return { ...s, messageAction: a.action };
     case "message_action_done": return { ...s, messageAction: undefined };
     case "history": {
       const { items, seq } = historyMessagesToItems(a.messages, "h", s.seq);
-      return { ...s, items: compactArchivedToolItems(items), seq };
+      return { ...s, items: compactArchivedToolItems(items), seq, hydrateHistoryLoaded: true, hydratePlaceholderItems: undefined, historyStartTurn: 0, historyTotalTurns: 0, historyHasOlder: false, historyOlderLoading: false };
     }
+    case "history_page": {
+      const { items, seq } = historyPageItems(a.page);
+      const nextItems = a.mode === "prepend" ? [...items, ...s.items] : items;
+      return {
+        ...s,
+        items: compactArchivedToolItems(nextItems),
+        seq: Math.max(s.seq, seq),
+        hydrateHistoryLoaded: true,
+        hydratePlaceholderItems: undefined,
+        historyStartTurn: a.page.startTurn,
+        historyTotalTurns: a.page.totalTurns,
+        historyHasOlder: a.page.hasOlder,
+        historyOlderLoading: false,
+      };
+    }
+    case "history_older_start": return s.historyOlderLoading ? s : { ...s, historyOlderLoading: true };
+    case "history_older_error": return s.historyOlderLoading ? { ...s, historyOlderLoading: false } : s;
+    case "history_checkpoint_turns":
+      return { ...s, items: mergeHistoryCheckpointTurns(s.items, a.turns, s.historyStartTurn) };
     case "local_notice": return { ...s, running: false, turnActive: false, seq: s.seq + 1, items: [...s.items, { kind: "notice", id: `n${s.seq}`, level: a.level, text: a.text }] };
     case "clearApproval": return { ...s, approval: undefined, pendingPrompt: false };
     case "clearAsk": return { ...s, ask: undefined, pendingPrompt: false };
-    case "reset": return { ...initialState, meta: s.meta, context: { ...s.context, used: 0, sessionTokens: 0 }, balance: s.balance, effort: s.effort, jobs: s.jobs, hydrating: s.hydrating, hydrateReason: s.hydrateReason, hydrateError: s.hydrateError, backendActivationPending: s.backendActivationPending, sessionGen: s.sessionGen + 1 };
+    case "reset": return { ...initialState, meta: s.meta, context: { used: 0, window: s.context.window, sessionTokens: 0, compactRatio: s.context.compactRatio }, balance: s.balance, effort: s.effort, jobs: s.jobs, hydrating: s.hydrating, hydrateReason: s.hydrateReason, hydrateError: s.hydrateError, hydrateHistoryLoaded: s.hydrateHistoryLoaded, hydratePlaceholderItems: s.hydratePlaceholderItems, backendActivationPending: s.backendActivationPending, sessionGen: s.sessionGen + 1 };
     case "event": return applyEvent(s, a.e);
     default: return s;
   }
@@ -825,6 +971,7 @@ export function replayPendingPromptsForActiveTab(activeTabId: string | undefined
 export function useController() {
   const statesRef = useRef<TabStates>(new Map());
   const lastTurnActivityAtByTab = useRef(new Map<string, number>());
+  const cancelReconcileTimers = useRef(new Map<string, number>());
   const [activeTabId, setActiveTabId] = useState<string | undefined>();
   const activeTabIdRef = useRef<string | undefined>(undefined);
   // A render-triggering counter so that mutations to a non-active tab's state still
@@ -877,6 +1024,7 @@ export function useController() {
 
   const checkpointRefreshSeq = useRef(new Map<string, number>());
   const sessionLoadSeq = useRef(new Map<string, number>());
+  const sessionLoadInFlight = useRef(new Map<string, { sessionPath: string; promise: Promise<void> }>());
   const bumpSessionLoadSeq = useCallback((tabId: string): number => {
     const seq = (sessionLoadSeq.current.get(tabId) ?? 0) + 1;
     sessionLoadSeq.current.set(tabId, seq);
@@ -901,120 +1049,164 @@ export function useController() {
     tabId: string,
     reset = false,
     reason: HydrateReason = "startup",
-    options: { skipHistory?: boolean } = {},
+    options: { skipHistory?: boolean; placeholderItems?: Item[]; preserveCachedHistory?: boolean; sessionPath?: string } = {},
   ) => {
-    const seq = bumpSessionLoadSeq(tabId);
-    const hydrateStartedAt = Date.now();
-    addBreadcrumb("tab.hydrate", `start ${reason} ${tabId}`);
-    dispatchTo(tabId, { type: "hydrate_start", reason });
-    if (reset && sessionLoadCurrent(tabId, seq)) dispatchTo(tabId, { type: "reset" });
+    const sessionPath = (options.sessionPath ?? statesRef.current.get(tabId)?.meta?.sessionPath ?? "").trim();
+    const canJoinInFlight = !reset && !options.skipHistory;
+    const shouldTrackInFlight = !options.skipHistory;
+    if (canJoinInFlight) {
+      const existing = sessionLoadInFlight.current.get(tabId);
+      if (existing?.sessionPath === sessionPath) return existing.promise;
+    } else {
+      sessionLoadInFlight.current.delete(tabId);
+    }
 
-    const stillCurrent = () => sessionLoadCurrent(tabId, seq);
-    const noteFailure = (label: string, err: unknown) => {
-      addBreadcrumb("tab.hydrate", `${label} failed ${tabId}: ${errorMessage(err)}`);
-    };
+    const promise = (async () => {
+      const seq = bumpSessionLoadSeq(tabId);
+      const hydrateStartedAt = Date.now();
+      const skipHistory = Boolean(
+        options.skipHistory ||
+        (options.preserveCachedHistory && !reset && hasReusableCachedTranscript(statesRef.current.get(tabId), options.sessionPath)),
+      );
+      addBreadcrumb("tab.hydrate", `start ${reason} ${tabId}`);
+      dispatchTo(tabId, { type: "hydrate_start", reason, placeholderItems: options.placeholderItems });
+      if (reset && sessionLoadCurrent(tabId, seq)) dispatchTo(tabId, { type: "reset" });
 
-    const metaTask = app.MetaForTab(tabId)
-      .then((meta) => {
-        if (stillCurrent()) dispatchTo(tabId, { type: "meta", meta });
-      })
-      .catch((err) => noteFailure("meta", err));
-    const effortTask = app.EffortForTab(tabId)
-      .then((effort) => {
-        if (stillCurrent()) dispatchTo(tabId, { type: "effort", effort });
-      })
-      .catch((err) => noteFailure("effort", err));
-    const jobsTask = app.JobsForTab(tabId)
-      .then((jobs) => {
-        if (stillCurrent()) dispatchTo(tabId, { type: "jobs", jobs: asArray(jobs) });
-      })
-      .catch((err) => noteFailure("jobs", err));
+      const stillCurrent = () => sessionLoadCurrent(tabId, seq);
+      const noteFailure = (label: string, err: unknown) => {
+        addBreadcrumb("tab.hydrate", `${label} failed ${tabId}: ${errorMessage(err)}`);
+      };
 
-    const historyStartedAt = Date.now();
-    const historyTask = options.skipHistory
-      ? Promise.resolve().then(() => {
-        addBreadcrumb("tab.hydrate", `history skipped ${tabId} reason=cached-live-turn`);
+      const historyStartedAt = Date.now();
+
+      // Phase 1: dispatch fast metadata immediately so the transcript can render
+      // without waiting for slower ancillary calls (e.g. BalanceForTab network).
+      const [meta, historyPage] = await Promise.all([
+        app.MetaForTab(tabId).catch((err) => { noteFailure("meta", err); return undefined; }),
+        skipHistory
+          ? Promise.resolve(undefined)
+          : app.HistoryPageForTab(tabId, 0, HISTORY_PAGE_TURNS).catch((err) => { noteFailure("history", err); return undefined; }),
+      ]);
+
+      if (!stillCurrent()) return;
+      if (meta !== undefined) dispatchTo(tabId, { type: "meta", meta });
+      if (!skipHistory && historyPage !== undefined) {
+        const messages = asArray(historyPage.messages);
+        dispatchTo(tabId, { type: "history_page", page: historyPage, mode: "replace" });
+        addBreadcrumb(
+          "tab.hydrate",
+          `history page ${tabId} messages=${messages.length} turns=${historyPage.startTurn}-${historyPage.endTurn}/${historyPage.totalTurns} ms=${Date.now() - historyStartedAt}`,
+        );
+        if (reason === "switch-tab") {
+          addBreadcrumb(
+            "tab.switch",
+            `history-done ${tabId} messages=${messages.length} turns=${historyPage.startTurn}-${historyPage.endTurn}/${historyPage.totalTurns} ms=${Date.now() - historyStartedAt}`,
+          );
+        }
+      } else if (skipHistory) {
+        const skipReason = options.skipHistory ? "cached-live-turn" : "cached-transcript";
+        addBreadcrumb("tab.hydrate", `history skipped ${tabId} reason=${skipReason}`);
         if (reason === "switch-tab") {
           addBreadcrumb("tab.switch", `history-done ${tabId} skipped ms=${Date.now() - historyStartedAt}`);
         }
-      })
-      : app.HistoryForTab(tabId)
-        .then((history) => {
-          if (!stillCurrent()) return;
-          const messages = asArray(history);
-          const reduceStartedAt = Date.now();
-          if (messages.length) dispatchTo(tabId, { type: "history", messages });
-          addBreadcrumb(
-            "tab.hydrate",
-            `history done ${tabId} count=${messages.length} apiMs=${Date.now() - historyStartedAt} reduceMs=${Date.now() - reduceStartedAt}`,
-          );
-          if (reason === "switch-tab") {
-            addBreadcrumb(
-              "tab.switch",
-              `history-done ${tabId} count=${messages.length} ms=${Date.now() - historyStartedAt}`,
-            );
-          }
-        })
-        .catch((err) => noteFailure("history", err));
-    const checkpointsTask = app.CheckpointsForTab(tabId)
-      .then((checkpoints) => {
-        if (stillCurrent()) dispatchTo(tabId, { type: "checkpoints", checkpoints: asArray(checkpoints) });
-      })
-      .catch((err) => noteFailure("checkpoints", err));
-    const contextTask = app.ContextUsageForTab(tabId)
-      .then((context) => {
-        if (stillCurrent()) dispatchTo(tabId, { type: "context", context });
-      })
-      .catch((err) => noteFailure("context", err));
-    const balanceTask = app.BalanceForTab(tabId)
-      .then((balance) => {
-        if (stillCurrent()) dispatchTo(tabId, { type: "balance", balance });
-      })
-      .catch((err) => noteFailure("balance", err));
+      }
 
-    await Promise.all([metaTask, effortTask, jobsTask, historyTask, checkpointsTask, contextTask, balanceTask]);
-    if (!stillCurrent()) return;
-    dispatchTo(tabId, { type: "hydrate_done" });
-    addBreadcrumb("tab.hydrate", `done ${reason} ${tabId} ms=${Date.now() - hydrateStartedAt}`);
+      dispatchTo(tabId, { type: "hydrate_done" });
+      addBreadcrumb("tab.hydrate", `done ${reason} ${tabId} ms=${Date.now() - hydrateStartedAt}`);
+
+      // Phase 2: local ancillary data. It stays inside the same in-flight
+      // promise so duplicate ready/startup hydrations coalesce, but it runs
+      // after hydrate_done so slow Wails calls don't keep the visible transcript
+      // in a loading state.
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+      if (!stillCurrent()) return;
+      if (activeTabIdRef.current !== tabId && (reason === "startup" || reason === "switch-tab" || reason === "open-topic")) {
+        addBreadcrumb("tab.hydrate", `ancillary skipped inactive ${reason} ${tabId}`);
+        return;
+      }
+      const ancillaryStartedAt = Date.now();
+      const loadAncillary = async <T,>(label: string, load: () => Promise<T>): Promise<T | undefined> => {
+        const startedAt = Date.now();
+        try {
+          const value = await load();
+          addBreadcrumb("tab.hydrate", `ancillary ${label} ${reason} ${tabId} ms=${Date.now() - startedAt}`);
+          return value;
+        } catch (err) {
+          noteFailure(label, err);
+          return undefined;
+        }
+      };
+      const [effort, jobs, context] = await Promise.all([
+        loadAncillary("effort", () => app.EffortForTab(tabId)),
+        loadAncillary("jobs", () => app.JobsForTab(tabId)),
+        loadAncillary("context", () => app.ContextUsageForTab(tabId)),
+      ]);
+      if (!stillCurrent()) return;
+      if (effort !== undefined) dispatchTo(tabId, { type: "effort", effort });
+      if (jobs !== undefined) dispatchTo(tabId, { type: "jobs", jobs: asArray(jobs) });
+      if (context !== undefined) dispatchTo(tabId, { type: "context", context });
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+      if (!stillCurrent()) return;
+      if (activeTabIdRef.current !== tabId && (reason === "startup" || reason === "switch-tab" || reason === "open-topic")) {
+        addBreadcrumb("tab.hydrate", `checkpoints skipped inactive ${reason} ${tabId}`);
+        return;
+      }
+      const checkpoints = await loadAncillary("checkpoints", () => app.CheckpointsForTab(tabId));
+      if (!stillCurrent()) return;
+      if (checkpoints !== undefined) dispatchTo(tabId, { type: "checkpoints", checkpoints: asArray(checkpoints) });
+      addBreadcrumb("tab.hydrate", `ancillary ${reason} ${tabId} ms=${Date.now() - ancillaryStartedAt}`);
+      app.BalanceForTab(tabId)
+        .then((balance) => {
+          if (sessionLoadCurrent(tabId, seq)) dispatchTo(tabId, { type: "balance", balance });
+        })
+        .catch((err) => { noteFailure("balance", err); });
+    })();
+    if (shouldTrackInFlight) {
+      sessionLoadInFlight.current.set(tabId, { sessionPath, promise });
+    }
+    try {
+      await promise;
+    } finally {
+      if (sessionLoadInFlight.current.get(tabId)?.promise === promise) {
+        sessionLoadInFlight.current.delete(tabId);
+      }
+    }
   }, [bumpSessionLoadSeq, dispatchTo, sessionLoadCurrent]);
+
+  const loadOlderHistory = useCallback(async (tabId?: string): Promise<void> => {
+    const targetTabId = tabId || activeTabIdRef.current;
+    if (!targetTabId) return;
+    const state = statesRef.current.get(targetTabId);
+    if (!state?.historyHasOlder || state.historyOlderLoading || state.running) return;
+    const beforeTurn = state.historyStartTurn;
+    const sessionPath = state.meta?.sessionPath ?? "";
+    dispatchTo(targetTabId, { type: "history_older_start" });
+    const startedAt = Date.now();
+    try {
+      const page = await app.HistoryPageForTab(targetTabId, beforeTurn, HISTORY_PAGE_TURNS);
+      const current = statesRef.current.get(targetTabId);
+      if (!current || current.historyStartTurn !== beforeTurn || (current.meta?.sessionPath ?? "") !== sessionPath) {
+        dispatchTo(targetTabId, { type: "history_older_error" });
+        return;
+      }
+      dispatchTo(targetTabId, { type: "history_page", page, mode: "prepend" });
+      addBreadcrumb(
+        "tab.hydrate",
+        `history older ${targetTabId} messages=${asArray(page.messages).length} turns=${page.startTurn}-${page.endTurn}/${page.totalTurns} ms=${Date.now() - startedAt}`,
+      );
+    } catch (err) {
+      dispatchTo(targetTabId, { type: "history_older_error" });
+      addBreadcrumb("tab.hydrate", `history older failed ${targetTabId}: ${errorMessage(err)}`);
+    }
+  }, [dispatchTo]);
 
   const activeTabFromBackend = useCallback(async (): Promise<TabMeta | undefined> => {
     const tabs = asArray(await app.ListTabs().catch(() => [] as TabMeta[]));
     return tabs.find((tab) => tab.active) ?? tabs[0];
   }, []);
 
-  const waitForTabReady = useCallback(async (tabId: string): Promise<void> => {
-    for (let attempt = 0; attempt < 60; attempt += 1) {
-      const tabs = asArray(await app.ListTabs().catch(() => [] as TabMeta[]));
-      const tab = tabs.find((candidate) => candidate.id === tabId);
-      if (!tab || tab.ready || tab.startupErr) return;
-      await new Promise((resolve) => window.setTimeout(resolve, 100));
-    }
-  }, []);
-
-  const syncActiveTabFromBackend = useCallback(async (reset = false): Promise<string | undefined> => {
-    const active = await activeTabFromBackend();
-    if (!active) return undefined;
-    setActiveTabId(active.id);
-    activeTabIdRef.current = active.id;
-    confirmBackendActiveTab(active.id);
-    dispatchTo(active.id, { type: "optimistic_meta", meta: metaFromTab(active, statesRef.current.get(active.id)?.meta) });
-    await loadSessionDataForTab(active.id, reset, "startup");
-    return active.id;
-  }, [activeTabFromBackend, confirmBackendActiveTab, dispatchTo, loadSessionDataForTab]);
-
-  const reconcileTabRuntime = useCallback(async (
-    tabId: string,
-    options: { hydrateSessionData?: boolean } = {},
-  ): Promise<TabMeta[] | undefined> => {
-    const hydrateSessionData = options.hydrateSessionData ?? true;
-    const tabs = asArray(await app.ListTabs().catch(() => [] as TabMeta[]));
-    const tab = tabs.find((candidate) => candidate.id === tabId);
-    if (!tab) return undefined;
-    const local = statesRef.current.get(tabId);
-    const needsInitialLoad = !local?.meta;
+  const dispatchRuntimeStatusForTab = useCallback((tabId: string, tab: RuntimeMetaSnapshot) => {
     const foregroundRunning = foregroundRunningFromRuntimeMeta(tab);
-    const missedTurnDone = Boolean(local?.running && !foregroundRunning);
     dispatchTo(tabId, {
       type: "backend_status",
       running: foregroundRunning,
@@ -1026,6 +1218,54 @@ export function useController() {
     // backend_status reconciliation can clear a live prompt from frontend state.
     // If the backend is still blocked, ask it to replay the approval/ask event.
     if (tab.pendingPrompt) replayPendingPromptsForActiveTab(tabId);
+    return foregroundRunning;
+  }, [dispatchTo]);
+
+  const waitForTabReady = useCallback(async (tabId: string): Promise<void> => {
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      const tabs = asArray(await app.ListTabs().catch(() => [] as TabMeta[]));
+      const tab = tabs.find((candidate) => candidate.id === tabId);
+      if (!tab || tab.ready || tab.startupErr) return;
+      await new Promise((resolve) => window.setTimeout(resolve, 100));
+    }
+  }, []);
+
+  const syncActiveTabFromBackend = useCallback(async (reset = false, guard = false, options: SyncActiveTabOptions = {}): Promise<string | undefined> => {
+    const active = await activeTabFromBackend();
+    if (!active) return undefined;
+    // When guard is true, skip if the frontend already settled on a
+    // different tab while we were fetching — this prevents fire-and-forget
+    // calls from mount/onReady from overwriting a user-initiated tab switch
+    // (e.g. handleNewTab → ensureBlankSurface / switchTab).
+    if (guard && activeTabIdRef.current && activeTabIdRef.current !== active.id) {
+      return active.id;
+    }
+    setActiveTabId(active.id);
+    activeTabIdRef.current = active.id;
+    confirmBackendActiveTab(active.id);
+    dispatchTo(active.id, { type: "optimistic_meta", meta: metaFromTab(active, statesRef.current.get(active.id)?.meta) });
+    const preserveCachedHistory = options.preserveCachedHistory ?? !reset;
+    if (!reset) dispatchRuntimeStatusForTab(active.id, active);
+    await loadSessionDataForTab(active.id, reset, "startup", {
+      preserveCachedHistory,
+      sessionPath: active.sessionPath,
+    });
+    if (reset) dispatchRuntimeStatusForTab(active.id, active);
+    return active.id;
+  }, [activeTabFromBackend, confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, loadSessionDataForTab]);
+
+  const reconcileTabRuntime = useCallback(async (
+    tabId: string,
+    options: { hydrateSessionData?: boolean } = {},
+  ): Promise<TabMeta[] | undefined> => {
+    const hydrateSessionData = options.hydrateSessionData ?? true;
+    const tabs = asArray(await app.ListTabs().catch(() => [] as TabMeta[]));
+    const tab = tabs.find((candidate) => candidate.id === tabId);
+    if (!tab) return undefined;
+    const local = statesRef.current.get(tabId);
+    const needsInitialLoad = !local?.meta;
+    const foregroundRunning = dispatchRuntimeStatusForTab(tabId, tab);
+    const missedTurnDone = Boolean(local?.running && !foregroundRunning);
     if (hydrateSessionData && (needsInitialLoad || missedTurnDone)) {
       await loadSessionDataForTab(tabId, missedTurnDone, "startup");
       return tabs;
@@ -1039,7 +1279,31 @@ export function useController() {
     if (effort) dispatchTo(tabId, { type: "effort", effort });
     if (balance) dispatchTo(tabId, { type: "balance", balance });
     return tabs;
-  }, [dispatchTo, loadSessionDataForTab]);
+  }, [dispatchRuntimeStatusForTab, loadSessionDataForTab]);
+
+  const clearCancelReconcileTimer = useCallback((tabId: string) => {
+    const timer = cancelReconcileTimers.current.get(tabId);
+    if (timer === undefined) return;
+    window.clearTimeout(timer);
+    cancelReconcileTimers.current.delete(tabId);
+  }, []);
+
+  const scheduleCancelReconcile = useCallback((tabId: string, attempt = 0) => {
+    clearCancelReconcileTimer(tabId);
+    const delay = CANCEL_RECONCILE_DELAYS_MS[Math.min(attempt, CANCEL_RECONCILE_DELAYS_MS.length - 1)];
+    const timer = window.setTimeout(() => {
+      cancelReconcileTimers.current.delete(tabId);
+      void reconcileTabRuntime(tabId, { hydrateSessionData: false }).then((tabs) => {
+        const tab = tabs?.find((candidate) => candidate.id === tabId);
+        if (!tab) return;
+        const stillReconciling = foregroundRunningFromRuntimeMeta(tab) || Boolean(tab.cancelRequested);
+        if (stillReconciling && attempt + 1 < CANCEL_RECONCILE_DELAYS_MS.length) {
+          scheduleCancelReconcile(tabId, attempt + 1);
+        }
+      }).catch(() => {});
+    }, delay);
+    cancelReconcileTimers.current.set(tabId, timer);
+  }, [clearCancelReconcileTimer, reconcileTabRuntime]);
 
   useEffect(() => {
     const textBatch = createRafBatch<{ tabId: string; e: WireEvent }>((batch) => {
@@ -1066,7 +1330,11 @@ export function useController() {
         dispatchTo(targetTabId, { type: "event", e });
       }
       if (e.kind === "turn_done") {
-        void refreshMetaForTab(targetTabId, dispatchTo);
+        if (!e.err) {
+          app.HistoryCheckpointTurnsForTab(targetTabId)
+            .then((turns) => dispatchTo(targetTabId, { type: "history_checkpoint_turns", turns: asArray(turns) }))
+            .catch(() => {});
+        }
         app
           .ContextUsageForTab(targetTabId)
           .then((context) => dispatchTo(targetTabId, { type: "context", context }))
@@ -1074,29 +1342,42 @@ export function useController() {
         app.BalanceForTab(targetTabId).then((balance) => dispatchTo(targetTabId, { type: "balance", balance })).catch(() => {});
         app.EffortForTab(targetTabId).then((effort) => dispatchTo(targetTabId, { type: "effort", effort })).catch(() => {});
         void refreshCheckpoints(targetTabId);
+        void refreshMetaForTab(targetTabId, dispatchTo);
       }
       if (e.kind === "turn_done" || e.kind === "notice") {
         app.JobsForTab(targetTabId).then((jobs) => dispatchTo(targetTabId, { type: "jobs", jobs: asArray(jobs) })).catch(() => {});
       }
     });
 
-    const offReady = onReady(() => {
-      const readyTabId = activeTabIdRef.current;
-      if (readyTabId) {
-        void loadSessionDataForTab(readyTabId, false, "startup");
+    const offReady = onReady((readyTabId) => {
+      const activeId = activeTabIdRef.current;
+      if (readyTabId && activeId && readyTabId !== activeId) {
+        addBreadcrumb("tab.hydrate", `ready ignored ${readyTabId}`);
         return;
       }
-      void syncActiveTabFromBackend();
+      if (activeId) {
+        void loadSessionDataForTab(activeId, false, "startup", { preserveCachedHistory: true });
+        return;
+      }
+      void syncActiveTabFromBackend(false, true);
     });
 
-    void syncActiveTabFromBackend();
+    void syncActiveTabFromBackend(false, true);
     // The event subscription is live now, so ask the backend to re-emit any
     // approval/ask prompt that was already blocking a tab before this load —
     // otherwise a session left mid-confirmation shows "waiting" with no modal
     // and no way to stop (#3844).
     void app.ReplayPendingPrompts().catch(() => {});
 
-    return () => { textBatch.drain(); off(); offReady(); };
+    return () => {
+      textBatch.drain();
+      for (const timer of cancelReconcileTimers.current.values()) {
+        window.clearTimeout(timer);
+      }
+      cancelReconcileTimers.current.clear();
+      off();
+      offReady();
+    };
   }, [dispatchTo, loadSessionDataForTab, refreshCheckpoints, syncActiveTabFromBackend]);
 
   // Stale-turn watchdog: if the frontend thinks the agent is running but the
@@ -1130,51 +1411,78 @@ export function useController() {
     replayPendingPromptsForActiveTab(activeTabId);
   }, [activeTabId]);
 
-  const sendToTab = useCallback((tabId: string, displayText: string, submitText = displayText) => {
-    if (!tabId) return;
+  const sendToTab = useCallback(async (tabId: string, displayText: string, submitText = displayText, originalText?: string) => {
+    if (!tabId) throw new Error("workspace is still starting");
     const seq = getOrCreateState(statesRef.current, tabId).seq;
     const display = displayText.trim();
     const submit = submitText.trim();
+    const original = originalText?.trim() ?? "";
     dispatchTo(tabId, { type: "user", text: displayText, submitText: display !== submit ? submit : undefined, seq });
     invalidateCache();
-    (display !== submit ? app.SubmitDisplayToTab(tabId, display, submit) : app.SubmitToTab(tabId, submit)).catch((error) => {
+    try {
+      const submitPromise = original
+        ? app.SubmitEditedDisplayToTab(tabId, display, submit, original)
+        : display !== submit ? app.SubmitDisplayToTab(tabId, display, submit) : app.SubmitToTab(tabId, submit);
+      void submitPromise.catch((error) => {
+        dispatchTo(tabId, { type: "send_failed", error: `Send failed: ${error instanceof Error ? error.message : String(error)}` });
+      });
+    } catch (error) {
       dispatchTo(tabId, { type: "send_failed", error: `Send failed: ${error instanceof Error ? error.message : String(error)}` });
-    });
+      throw error;
+    }
   }, [dispatchTo]);
 
   const send = useCallback((displayText: string, submitText = displayText) => {
     const tabId = activeTabIdRef.current ?? activeTabId;
     if (tabId) {
-      sendToTab(tabId, displayText, submitText);
-      return;
+      return sendToTab(tabId, displayText, submitText);
     }
-    void activeTabFromBackend().then((active) => {
-      if (!active?.id) return;
+    return activeTabFromBackend().then((active) => {
+      if (!active?.id) throw new Error("workspace is still starting");
       setActiveTabId(active.id);
       activeTabIdRef.current = active.id;
       confirmBackendActiveTab(active.id);
-      sendToTab(active.id, displayText, submitText);
+      dispatchRuntimeStatusForTab(active.id, active);
+      return sendToTab(active.id, displayText, submitText);
     });
-  }, [activeTabFromBackend, activeTabId, confirmBackendActiveTab, sendToTab]);
+  }, [activeTabFromBackend, activeTabId, confirmBackendActiveTab, dispatchRuntimeStatusForTab, sendToTab]);
 
-  const runShell = useCallback((command: string) => {
-    if (!activeTabId) return;
+  const runShell = useCallback(async (command: string) => {
+    if (!activeTabId) throw new Error("workspace is still starting");
     dispatchTo(activeTabId, { type: "user", text: `!${command}`, seq: getOrCreateState(statesRef.current, activeTabId).seq });
-    app.RunShellForTab(activeTabId, command).catch(() => {});
+    try {
+      await app.RunShellForTab(activeTabId, command);
+    } catch (error) {
+      dispatchTo(activeTabId, { type: "send_failed", error: `Command failed: ${error instanceof Error ? error.message : String(error)}` });
+      throw error;
+    }
   }, [activeTabId, dispatchTo]);
 
-  const steer = useCallback((text: string) => {
-    if (!activeTabId) return;
+  const steer = useCallback(async (text: string) => {
+    if (!activeTabId) throw new Error("workspace is still starting");
     // No optimistic user bubble: rewind/fork map turns by counting user items,
     // and a steer is not a backend turn — the Steer event's ↪ notice is the
     // visible confirmation (#3660).
-    app.SteerForTab(activeTabId, text).catch(() => {});
-  }, [activeTabId]);
+    try {
+      await app.SteerForTab(activeTabId, text);
+    } catch (error) {
+      dispatchTo(activeTabId, { type: "local_notice", level: "warn", text: `Steer failed: ${error instanceof Error ? error.message : String(error)}` });
+      throw error;
+    }
+  }, [activeTabId, dispatchTo]);
 
   const notice = useCallback((text: string, level: "info" | "warn" = "info") => {
     if (!activeTabId) return;
     dispatchTo(activeTabId, { type: "local_notice", level, text });
   }, [activeTabId, dispatchTo]);
+
+  const cancelTab = useCallback((tabId: string) => {
+    app.CancelTab(tabId)
+      .then(() => scheduleCancelReconcile(tabId))
+      .catch((error) => {
+        dispatchTo(tabId, { type: "local_notice", level: "warn", text: `Cancel failed: ${errorMessage(error)}` });
+      });
+  }, [dispatchTo, scheduleCancelReconcile]);
 
   const cancel = useCallback((): string | undefined => {
     const cur = stateRef.current;
@@ -1183,16 +1491,16 @@ export function useController() {
       const text = cur.pendingUser;
       if (tabId) {
         dispatchTo(tabId, { type: "unsend" });
-        app.CancelTab(tabId).catch(() => {});
+        cancelTab(tabId);
       }
       return text;
     }
     if (tabId) {
       dispatchTo(tabId, { type: "cancel_requested" });
-      app.CancelTab(tabId).catch(() => {});
+      cancelTab(tabId);
     }
     return undefined;
-  }, [activeTabId, dispatchTo]);
+  }, [activeTabId, cancelTab, dispatchTo]);
 
   const approve = useCallback((id: string, allow: boolean, session: boolean, persist: boolean) => {
     if (!activeTabId) return;
@@ -1263,6 +1571,7 @@ export function useController() {
     }
     invalidateCache();
     if (tabId) {
+      dispatchTo(tabId, { type: "history", messages: [] });
       dispatchTo(tabId, { type: "hydrate_done" });
       void refreshMetaForTab(tabId, dispatchTo);
       app.ContextUsageForTab(tabId).then((context) => dispatchTo(tabId, { type: "context", context })).catch(() => {});
@@ -1287,7 +1596,11 @@ export function useController() {
     }
     if (tabId) bumpSessionLoadSeq(tabId);
     invalidateCache();
-    if (tabId) dispatchTo(tabId, { type: "reset" });
+    if (tabId) {
+      dispatchTo(tabId, { type: "reset" });
+      // Clear placeholder items since no history action follows.
+      dispatchTo(tabId, { type: "history", messages: [] });
+    }
   }, [activeTabId, bumpCheckpointRefreshSeq, bumpSessionLoadSeq, dispatchTo, loadSessionDataForTab, waitForBackendActiveTab]);
 
   const listSessions = useCallback(async (): Promise<SessionMeta[]> => asArray<SessionMeta>(await app.ListSessions().catch(() => [])), []);
@@ -1299,9 +1612,11 @@ export function useController() {
     else if (!(await waitForBackendActiveTab(targetTabId))) return;
     const seq = bumpSessionLoadSeq(targetTabId);
     dispatchTo(targetTabId, { type: "hydrate_start", reason: "resume-session" });
-    let messages: HistoryMessage[];
+    let page: HistoryPage;
     try {
-      messages = asArray(await (tabId ? app.ResumeSessionForTab(tabId, path) : app.ResumeSession(path)));
+      page = tabId
+        ? await app.ResumeSessionPageForTab(tabId, path, HISTORY_PAGE_TURNS)
+        : await app.ResumeSessionPage(path, HISTORY_PAGE_TURNS);
     } catch (err) {
       if (sessionLoadCurrent(targetTabId, seq)) {
         dispatchTo(targetTabId, { type: "hydrate_error", reason: "resume-session", error: errorMessage(err) });
@@ -1311,7 +1626,7 @@ export function useController() {
     }
     if (!sessionLoadCurrent(targetTabId, seq)) return;
     dispatchTo(targetTabId, { type: "reset" });
-    if (messages.length) dispatchTo(targetTabId, { type: "history", messages });
+    dispatchTo(targetTabId, { type: "history_page", page, mode: "replace" });
     dispatchTo(targetTabId, { type: "hydrate_done" });
     app.ContextUsageForTab(targetTabId).then((context) => dispatchTo(targetTabId, { type: "context", context })).catch(() => {});
     void refreshCheckpoints(targetTabId);
@@ -1322,9 +1637,9 @@ export function useController() {
     await waitForTabReady(tabId);
     const seq = bumpSessionLoadSeq(tabId);
     dispatchTo(tabId, { type: "hydrate_start", reason: "resume-session" });
-    let messages: HistoryMessage[];
+    let page: HistoryPage;
     try {
-      messages = asArray(await app.OpenChannelSessionForTab(tabId, path));
+      page = await app.OpenChannelSessionPageForTab(tabId, path, HISTORY_PAGE_TURNS);
     } catch (err) {
       if (sessionLoadCurrent(tabId, seq)) {
         dispatchTo(tabId, { type: "hydrate_error", reason: "resume-session", error: errorMessage(err) });
@@ -1334,7 +1649,7 @@ export function useController() {
     }
     if (!sessionLoadCurrent(tabId, seq)) return;
     dispatchTo(tabId, { type: "reset" });
-    if (messages.length) dispatchTo(tabId, { type: "history", messages });
+    dispatchTo(tabId, { type: "history_page", page, mode: "replace" });
     dispatchTo(tabId, { type: "hydrate_done" });
     app.ContextUsageForTab(tabId).then((context) => dispatchTo(tabId, { type: "context", context })).catch(() => {});
     void refreshCheckpoints(tabId);
@@ -1437,11 +1752,13 @@ export function useController() {
           setActiveTabId(tab.id);
           activeTabIdRef.current = tab.id;
           confirmBackendActiveTab(tab.id);
+          dispatchRuntimeStatusForTab(tab.id, tab);
           // The fork's controller builds in a background goroutine: an immediate
           // load reads empty history, and the ready-event fallback can still
           // target the source tab, leaving the fork blank (#3742).
           await waitForTabReady(tab.id);
           await loadSessionDataForTab(tab.id, true);
+          await reconcileTabRuntime(tab.id, { hydrateSessionData: false });
         } else {
           await syncActiveTabFromBackend(true);
         }
@@ -1454,7 +1771,7 @@ export function useController() {
 
       const messages = asArray(await app.HistoryForTab(sourceTabId).catch(() => [] as HistoryMessage[]));
       dispatchTo(sourceTabId, { type: "reset" });
-      if (messages.length) dispatchTo(sourceTabId, { type: "history", messages });
+      dispatchTo(sourceTabId, { type: "history", messages });
       dispatchTo(sourceTabId, { type: "context", context: await app.ContextUsageForTab(sourceTabId) });
       dispatchTo(sourceTabId, { type: "checkpoints", checkpoints: asArray(await app.CheckpointsForTab(sourceTabId)) });
       return true;
@@ -1464,22 +1781,39 @@ export function useController() {
     } finally {
       dispatchTo(sourceTabId, { type: "message_action_done" });
     }
-  }, [activeTabId, confirmBackendActiveTab, dispatchTo, loadSessionDataForTab, syncActiveTabFromBackend, waitForBackendActiveTab, waitForTabReady]);
+  }, [activeTabId, confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, loadSessionDataForTab, reconcileTabRuntime, syncActiveTabFromBackend, waitForBackendActiveTab, waitForTabReady]);
 
   // Tab management: switch preserves per-tab state; open creates it.
   const switchTab = useCallback(async (tabId: string, optimisticTab?: TabMeta): Promise<TabMeta[] | undefined> => {
     const startedAt = Date.now();
+    const previousTabId = activeTabIdRef.current;
+    const targetSessionPath = optimisticTab?.sessionPath ?? statesRef.current.get(tabId)?.meta?.sessionPath;
+    const preserveCachedHistory = hasReusableCachedTranscript(statesRef.current.get(tabId), targetSessionPath);
     addBreadcrumb("tab.switch", `click ${tabId}`);
     setActiveTabId(tabId);
     activeTabIdRef.current = tabId;
     dispatchTo(tabId, { type: "backend_activation_start" });
     if (optimisticTab) {
       dispatchTo(tabId, { type: "optimistic_meta", meta: metaFromTab(optimisticTab, statesRef.current.get(tabId)?.meta) });
+      const optimisticStatus = backendStatusFromRuntimeMeta(optimisticTab);
+      if (optimisticStatus.running) dispatchTo(tabId, optimisticStatus);
     }
     dispatchTo(tabId, { type: "hydrate_start", reason: "switch-tab" });
     addBreadcrumb("tab.switch", `active-rendered ${tabId} ms=${Date.now() - startedAt}`);
     const backendActivation = app.SetActiveTab(tabId)
-      .then(() => {
+      .then(async () => {
+        if (activeTabIdRef.current !== tabId) {
+          const currentTabId = activeTabIdRef.current;
+          if (currentTabId) {
+            await app.SetActiveTab(currentTabId).then(() => {
+              if (activeTabIdRef.current === currentTabId) confirmBackendActiveTab(currentTabId);
+            }).catch((err) => {
+              addBreadcrumb("tab.switch", `set-active-stale-reassert-failed ${currentTabId}: ${errorMessage(err)}`);
+            });
+          }
+          addBreadcrumb("tab.switch", `set-active-stale ${tabId} current=${currentTabId ?? ""} ms=${Date.now() - startedAt}`);
+          return false;
+        }
         confirmBackendActiveTab(tabId);
         addBreadcrumb("tab.switch", `set-active-done ${tabId} ms=${Date.now() - startedAt}`);
         return true;
@@ -1487,6 +1821,11 @@ export function useController() {
       .catch((err) => {
         dispatchTo(tabId, { type: "backend_activation_done" });
         dispatchTo(tabId, { type: "hydrate_error", reason: "switch-tab", error: errorMessage(err) });
+        if (previousTabId && activeTabIdRef.current === tabId) {
+          setActiveTabId(previousTabId);
+          activeTabIdRef.current = previousTabId;
+          addBreadcrumb("tab.switch", `set-active-failed-reverted ${tabId} -> ${previousTabId} ms=${Date.now() - startedAt}`);
+        }
         return false;
       });
     trackBackendActivation(tabId, backendActivation);
@@ -1496,6 +1835,8 @@ export function useController() {
         const tabs = await reconcileTabRuntime(tabId, { hydrateSessionData: false });
         void loadSessionDataForTab(tabId, false, "switch-tab", {
           skipHistory: hasCachedLiveTurn(statesRef.current.get(tabId)),
+          preserveCachedHistory,
+          sessionPath: targetSessionPath,
         });
         return tabs;
       })
@@ -1508,36 +1849,72 @@ export function useController() {
 
   const openProjectTab = useCallback(async (workspaceRoot: string, topicId: string): Promise<TabMeta> => {
     const meta = await app.OpenProjectTab(workspaceRoot, topicId);
+    const prevItems = activeTabIdRef.current ? statesRef.current.get(activeTabIdRef.current)?.items : undefined;
+    const prevState = statesRef.current.get(meta.id);
+    const isNewTab = !prevState;
+    const preserveCachedHistory = hasReusableCachedTranscript(prevState, meta.sessionPath);
     setActiveTabId(meta.id);
     activeTabIdRef.current = meta.id;
     confirmBackendActiveTab(meta.id);
     dispatchTo(meta.id, { type: "optimistic_meta", meta: metaFromTab(meta, statesRef.current.get(meta.id)?.meta) });
-    void loadSessionDataForTab(meta.id, !statesRef.current.has(meta.id), "open-topic");
+    dispatchRuntimeStatusForTab(meta.id, meta);
+    const load = loadSessionDataForTab(meta.id, isNewTab, "open-topic", {
+      placeholderItems: isNewTab ? prevItems : undefined,
+      preserveCachedHistory,
+      sessionPath: meta.sessionPath,
+    });
+    if (isNewTab) void load.then(() => reconcileTabRuntime(meta.id, { hydrateSessionData: false })).catch(() => {});
+    else void load;
     return meta;
-  }, [confirmBackendActiveTab, dispatchTo, loadSessionDataForTab]);
+  }, [confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, loadSessionDataForTab, reconcileTabRuntime]);
 
   const openGlobalTab = useCallback(async (topicId: string): Promise<TabMeta> => {
     const meta = await app.OpenGlobalTab(topicId);
+    const prevItems = activeTabIdRef.current ? statesRef.current.get(activeTabIdRef.current)?.items : undefined;
+    const prevState = statesRef.current.get(meta.id);
+    const isNewTab = !prevState;
+    const preserveCachedHistory = hasReusableCachedTranscript(prevState, meta.sessionPath);
     setActiveTabId(meta.id);
     activeTabIdRef.current = meta.id;
     confirmBackendActiveTab(meta.id);
     dispatchTo(meta.id, { type: "optimistic_meta", meta: metaFromTab(meta, statesRef.current.get(meta.id)?.meta) });
-    void loadSessionDataForTab(meta.id, !statesRef.current.has(meta.id), "open-topic");
+    dispatchRuntimeStatusForTab(meta.id, meta);
+    const load = loadSessionDataForTab(meta.id, isNewTab, "open-topic", {
+      placeholderItems: isNewTab ? prevItems : undefined,
+      preserveCachedHistory,
+      sessionPath: meta.sessionPath,
+    });
+    if (isNewTab) void load.then(() => reconcileTabRuntime(meta.id, { hydrateSessionData: false })).catch(() => {});
+    else void load;
     return meta;
-  }, [confirmBackendActiveTab, dispatchTo, loadSessionDataForTab]);
+  }, [confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, loadSessionDataForTab, reconcileTabRuntime]);
 
   const openTopicSession = useCallback(async (scope: string, workspaceRoot: string, topicId: string, sessionPath: string): Promise<TabMeta> => {
     const meta = await app.OpenTopicSession(scope, workspaceRoot, topicId, sessionPath);
+    const prevItems = activeTabIdRef.current ? statesRef.current.get(activeTabIdRef.current)?.items : undefined;
+    const prevState = statesRef.current.get(meta.id);
+    const isNewTab = !prevState;
+    const preserveCachedHistory = hasReusableCachedTranscript(prevState, meta.sessionPath);
     setActiveTabId(meta.id);
     activeTabIdRef.current = meta.id;
     confirmBackendActiveTab(meta.id);
     dispatchTo(meta.id, { type: "optimistic_meta", meta: metaFromTab(meta, statesRef.current.get(meta.id)?.meta) });
-    void loadSessionDataForTab(meta.id, !statesRef.current.has(meta.id), "open-topic");
+    dispatchRuntimeStatusForTab(meta.id, meta);
+    const load = loadSessionDataForTab(meta.id, isNewTab, "open-topic", {
+      placeholderItems: isNewTab ? prevItems : undefined,
+      preserveCachedHistory,
+      sessionPath: meta.sessionPath,
+    });
+    if (isNewTab) void load.then(() => reconcileTabRuntime(meta.id, { hydrateSessionData: false })).catch(() => {});
+    else void load;
     return meta;
-  }, [confirmBackendActiveTab, dispatchTo, loadSessionDataForTab]);
+  }, [confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, loadSessionDataForTab, reconcileTabRuntime]);
 
   const activateTopic = useCallback(async (scope: string, workspaceRoot: string, topicId: string, sessionPath = ""): Promise<TabMeta> => {
     const meta = await app.ActivateTopic(scope, workspaceRoot, topicId, sessionPath);
+    // Save previous tab's items so the new tab can use them as a placeholder
+    // during loading, avoiding a blank/Welcome flash before history arrives.
+    const prevItems = activeTabIdRef.current ? statesRef.current.get(activeTabIdRef.current)?.items : undefined;
     for (const id of Array.from(statesRef.current.keys())) {
       if (id !== meta.id) statesRef.current.delete(id);
     }
@@ -1545,21 +1922,28 @@ export function useController() {
     activeTabIdRef.current = meta.id;
     confirmBackendActiveTab(meta.id);
     dispatchTo(meta.id, { type: "optimistic_meta", meta: metaFromTab(meta, statesRef.current.get(meta.id)?.meta) });
-    void loadSessionDataForTab(meta.id, true, "open-topic");
+    dispatchRuntimeStatusForTab(meta.id, meta);
+    void loadSessionDataForTab(meta.id, true, "open-topic", { placeholderItems: prevItems })
+      .then(() => reconcileTabRuntime(meta.id, { hydrateSessionData: false }))
+      .catch(() => {});
     return meta;
-  }, [confirmBackendActiveTab, dispatchTo, loadSessionDataForTab]);
+  }, [confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, loadSessionDataForTab, reconcileTabRuntime]);
 
   // Ensure a blank tab exists for the given scope — reuses an existing one
   // or creates a new tab, then loads its session data.
   const ensureBlankTab = useCallback(async (scope: string, workspaceRoot: string): Promise<TabMeta> => {
     const meta = await app.EnsureBlankTab(scope, workspaceRoot);
+    const isNewTab = !statesRef.current.has(meta.id);
     setActiveTabId(meta.id);
     activeTabIdRef.current = meta.id;
     confirmBackendActiveTab(meta.id);
     dispatchTo(meta.id, { type: "optimistic_meta", meta: metaFromTab(meta, statesRef.current.get(meta.id)?.meta) });
-    void loadSessionDataForTab(meta.id, !statesRef.current.has(meta.id), "open-topic");
+    dispatchRuntimeStatusForTab(meta.id, meta);
+    const load = loadSessionDataForTab(meta.id, isNewTab, "open-topic");
+    if (isNewTab) void load.then(() => reconcileTabRuntime(meta.id, { hydrateSessionData: false })).catch(() => {});
+    else void load;
     return meta;
-  }, [confirmBackendActiveTab, dispatchTo, loadSessionDataForTab]);
+  }, [confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, loadSessionDataForTab, reconcileTabRuntime]);
 
   const ensureBlankSurface = useCallback(async (scope: string, workspaceRoot: string): Promise<TabMeta> => {
     const meta = await app.EnsureBlankSurface(scope, workspaceRoot);
@@ -1570,16 +1954,19 @@ export function useController() {
     activeTabIdRef.current = meta.id;
     confirmBackendActiveTab(meta.id);
     dispatchTo(meta.id, { type: "optimistic_meta", meta: metaFromTab(meta, statesRef.current.get(meta.id)?.meta) });
-    void loadSessionDataForTab(meta.id, true, "open-topic");
+    dispatchRuntimeStatusForTab(meta.id, meta);
+    void loadSessionDataForTab(meta.id, true, "open-topic")
+      .then(() => reconcileTabRuntime(meta.id, { hydrateSessionData: false }))
+      .catch(() => {});
     return meta;
-  }, [confirmBackendActiveTab, dispatchTo, loadSessionDataForTab]);
+  }, [confirmBackendActiveTab, dispatchRuntimeStatusForTab, dispatchTo, loadSessionDataForTab, reconcileTabRuntime]);
 
   const closeTab = useCallback(async (tabId: string) => {
     try {
       await app.CloseTab(tabId);
       statesRef.current.delete(tabId);
       bump();
-      if (tabId === activeTabId) await syncActiveTabFromBackend(true);
+      if (tabId === activeTabId) await syncActiveTabFromBackend(false);
     } catch { /* ignore */ }
   }, [activeTabId, bump, syncActiveTabFromBackend]);
 
@@ -1594,6 +1981,7 @@ export function useController() {
     activeTabId,
     send, sendToTab, runShell, steer, notice, cancel, approve, answerQuestion, setControllerMode, setCollaborationMode, setToolApprovalMode, setGoal, clearGoal,
     newSession, clearSession, listSessions, listTrashedSessions, resumeSession, openChannelSession, previewSession, deleteSession, restoreSession, purgeTrashedSession, renameSession,
+    loadOlderHistory,
     refreshMeta, pickWorkspace, switchWorkspace, compact, rewind, setModel, setEffort, setTokenMode,
     fetchMemory, remember, forget, saveDoc,
     switchTab, openProjectTab, openGlobalTab, openTopicSession, ensureBlankTab, activateTopic, ensureBlankSurface, closeTab, reorderTabs,

@@ -34,16 +34,17 @@ type TodoStepMatch struct {
 // Receipt is the host-runtime record of one tool call. It stays in memory for
 // the current agent turn and is not serialized into prompts or session state.
 type Receipt struct {
-	ToolName string          `json:"tool_name"`
-	Args     json.RawMessage `json:"args,omitempty"`
-	Success  bool            `json:"success"`
-	Command  string          `json:"command,omitempty"`
-	Step     string          `json:"step,omitempty"`
-	TodoStep *TodoStepMatch  `json:"todo_step,omitempty"`
-	Paths    []string        `json:"paths,omitempty"`
-	Read     bool            `json:"read,omitempty"`
-	Write    bool            `json:"write,omitempty"`
-	Todos    []TodoItem      `json:"todos,omitempty"`
+	ToolName  string          `json:"tool_name"`
+	Args      json.RawMessage `json:"args,omitempty"`
+	Success   bool            `json:"success"`
+	Command   string          `json:"command,omitempty"`
+	Step      string          `json:"step,omitempty"`
+	StepProof bool            `json:"step_proof,omitempty"`
+	TodoStep  *TodoStepMatch  `json:"todo_step,omitempty"`
+	Paths     []string        `json:"paths,omitempty"`
+	Read      bool            `json:"read,omitempty"`
+	Write     bool            `json:"write,omitempty"`
+	Todos     []TodoItem      `json:"todos,omitempty"`
 }
 
 // Ledger stores the receipts available to complete_step for the current turn.
@@ -82,7 +83,7 @@ func (l *Ledger) Record(r Receipt) {
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if r.Success && r.ToolName == "complete_step" && r.Step != "" && r.TodoStep == nil {
+	if r.ToolName == "complete_step" && r.Step != "" && r.TodoStep == nil {
 		if match := latestTodoStep(r.Step, l.receipts); match.Found {
 			r.TodoStep = &match
 		}
@@ -358,6 +359,53 @@ func (l *Ledger) LatestSuccessfulWriteIndex(paths []string) (int, bool) {
 	return latest, latest >= 0
 }
 
+// HasSuccessfulAnchorRefreshReadAfter reports whether read_file refreshed a
+// wanted path after the given receipt index. Windowed reads and grep/ls receipts
+// are deliberately not enough for same-turn anchor edits: they may have observed
+// a different region than the next old_string/delete_range anchor.
+func (l *Ledger) HasSuccessfulAnchorRefreshReadAfter(paths []string, after int) bool {
+	wanted := pathSet(normalizePaths(paths))
+	if l == nil || len(wanted) == 0 {
+		return false
+	}
+	start := after + 1
+	if start < 0 {
+		start = 0
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for i := start; i < len(l.receipts); i++ {
+		r := l.receipts[i]
+		if !r.Success || !anchorRefreshRead(r) {
+			continue
+		}
+		for _, p := range r.Paths {
+			if wanted[p] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func anchorRefreshRead(r Receipt) bool {
+	if r.ToolName != "read_file" || !r.Read {
+		return false
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(r.Args, &fields); err != nil {
+		return false
+	}
+	if limit, ok := intField(fields, "limit"); ok && limit > 0 {
+		return false
+	}
+	if offset, ok := intField(fields, "offset"); ok && offset > 0 {
+		return false
+	}
+	return true
+}
+
 func (l *Ledger) LatestSuccessfulWriterIndex() (int, bool) {
 	if l == nil {
 		return 0, false
@@ -423,12 +471,14 @@ func (l *Ledger) UnverifiedCompletedTodos(current []TodoItem) (missing []TodoSte
 	l.mu.Unlock()
 
 	var previous []TodoItem
+	baseline := -1
 	for i := len(receipts) - 1; i >= 0; i-- {
 		r := receipts[i]
 		if !r.Success || r.ToolName != "todo_write" {
 			continue
 		}
 		previous = r.Todos
+		baseline = i
 		hasBaseline = true
 		break
 	}
@@ -447,6 +497,9 @@ func (l *Ledger) UnverifiedCompletedTodos(current []TodoItem) (missing []TodoSte
 		if hasSuccessfulCompleteStepForTodo(receipts, index, current) {
 			continue
 		}
+		if hasFailedCompleteStepRecoveryForTodo(receipts, baseline, index, current) {
+			continue
+		}
 		missing = append(missing, TodoStepMatch{
 			Found:      true,
 			Index:      index,
@@ -456,6 +509,51 @@ func (l *Ledger) UnverifiedCompletedTodos(current []TodoItem) (missing []TodoSte
 		})
 	}
 	return missing, true
+}
+
+func hasFailedCompleteStepRecoveryForTodo(receipts []Receipt, baseline int, index int, current []TodoItem) bool {
+	for i := baseline + 1; i < len(receipts); i++ {
+		r := receipts[i]
+		if r.Success || r.ToolName != "complete_step" || strings.TrimSpace(r.Step) == "" || !r.StepProof {
+			continue
+		}
+		if !hasSuccessfulProgressBeforeReceipt(receipts, baseline, i) {
+			continue
+		}
+		if r.TodoStep != nil && r.TodoStep.Found {
+			if index < 1 || index > len(current) {
+				continue
+			}
+			if sameTodoMatch(current[index-1], *r.TodoStep) {
+				return true
+			}
+			if !todoContentRelates(current[index-1], *r.TodoStep) {
+				continue
+			}
+		}
+		match := matchTodoStep(r.Step, current)
+		if match.Found && match.Index == index {
+			return true
+		}
+	}
+	return false
+}
+
+// Recovery only trusts progress that happened before the failed sign-off.
+// Later unrelated work must not retroactively authorize an earlier completion.
+func hasSuccessfulProgressBeforeReceipt(receipts []Receipt, baseline int, before int) bool {
+	start := baseline + 1
+	if start < 0 {
+		start = 0
+	}
+	for i := start; i < before && i < len(receipts); i++ {
+		r := receipts[i]
+		if !r.Success || r.ToolName == "todo_write" || r.ToolName == "complete_step" || r.Read {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func (l *Ledger) hasSuccessfulPaths(paths []string, accept func(Receipt) bool) bool {
@@ -569,7 +667,8 @@ func ReceiptFromToolCall(toolName string, args json.RawMessage, success bool, re
 			r.Command = stringField(fields, "command")
 		}
 		if toolName == "complete_step" {
-			r.Step = stringField(fields, "step")
+			r.Step = completeStepIdentity(fields)
+			r.StepProof = completeStepHasProof(fields)
 		}
 		if toolName == "todo_write" {
 			r.Todos = todoItemsField(fields, "todos")
@@ -637,6 +736,25 @@ func stringField(fields map[string]json.RawMessage, key string) string {
 	return strings.TrimSpace(s)
 }
 
+func completeStepIdentity(fields map[string]json.RawMessage) string {
+	if n, ok := intField(fields, "step_index"); ok && n > 0 {
+		return strconv.Itoa(n)
+	}
+	return stringField(fields, "step")
+}
+
+func intField(fields map[string]json.RawMessage, key string) (int, bool) {
+	raw, ok := fields[key]
+	if !ok {
+		return 0, false
+	}
+	var n int
+	if err := json.Unmarshal(raw, &n); err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
 func stringSliceField(fields map[string]json.RawMessage, key string) []string {
 	raw, ok := fields[key]
 	if !ok {
@@ -659,6 +777,48 @@ func todoItemsField(fields map[string]json.RawMessage, key string) []TodoItem {
 		return nil
 	}
 	return normalizeTodos(todos)
+}
+
+// A failed complete_step can unlock todo recovery only when the payload had the
+// same structural proof shape Execute expects before host verification runs.
+func completeStepHasProof(fields map[string]json.RawMessage) bool {
+	if strings.TrimSpace(stringField(fields, "result")) == "" {
+		return false
+	}
+	raw, ok := fields["evidence"]
+	if !ok {
+		return false
+	}
+	var items []struct {
+		Kind    string   `json:"kind"`
+		Summary string   `json:"summary"`
+		Command string   `json:"command"`
+		Paths   []string `json:"paths"`
+	}
+	if err := json.Unmarshal(raw, &items); err != nil || len(items) == 0 {
+		return false
+	}
+	for _, item := range items {
+		kind := strings.TrimSpace(item.Kind)
+		if kind == "" || strings.TrimSpace(item.Summary) == "" {
+			return false
+		}
+		switch kind {
+		case "verification":
+			if strings.TrimSpace(item.Command) == "" {
+				return false
+			}
+		case "diff", "files":
+			if len(normalizePaths(item.Paths)) == 0 {
+				return false
+			}
+		case "manual":
+			// Summary is enough for manual evidence.
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeTodos(todos []TodoItem) []TodoItem {
@@ -711,8 +871,6 @@ func hasSuccessfulCompleteStepForTodo(receipts []Receipt, index int, current []T
 			if sameTodoMatch(current[index-1], *r.TodoStep) {
 				return true
 			}
-			// Content changed: allow the index/text fallback only when old and
-			// new overlap, so a replaced todo can't reuse an old receipt.
 			if !todoContentRelates(current[index-1], *r.TodoStep) {
 				continue
 			}

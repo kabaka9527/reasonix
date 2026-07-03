@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ClipboardEvent, DragEvent, KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
-import { ArrowUp, Check, Eye, FileText, Folder, Gauge, List, MessageSquare, MoreHorizontal, Search, Shield, ShieldAlert, ShieldCheck, SlidersHorizontal, Square, Target, Trash2, X } from "lucide-react";
+import { ArrowUp, Check, ChevronDown, ChevronUp, ChevronsUpDown, CornerDownRight, Eye, FileText, Folder, Gauge, List, MessageSquare, Search, Shield, ShieldAlert, ShieldCheck, SlidersHorizontal, Square, Target, Trash2, X } from "lucide-react";
 import { asArray } from "../lib/array";
 import { filterAtMatches } from "../lib/atMatches";
 import { DedupIndex, sha256 } from "../lib/attachDedup";
@@ -10,6 +10,7 @@ import { cacheGeneration, loadOlder } from "../lib/composerHistory";
 import { SPINNER_WORDS, useI18n } from "../lib/i18n";
 import { detectShortcutPlatform, matchesShortcut } from "../lib/keyboardShortcuts";
 import { clearLayoutSize, loadOptionalLayoutSize, saveLayoutSize } from "../lib/layoutPreferences";
+import { createRafResizeUpdater } from "../lib/resizeDrag";
 import { useToast } from "../lib/toast";
 import { type CollaborationMode, type CommandInfo, type ComposerInsertRequest, type DirEntry, type EffortInfo, type HistoryMessage, type Mode, type PromptHistoryEntry, type SessionMeta, type SessionReference, type SlashArgItem, type SlashArgsResult, type TokenMode, type ToolApprovalMode } from "../lib/types";
 import {
@@ -20,12 +21,13 @@ import {
 } from "../lib/workspaceDrag";
 import { SlashMenu } from "./SlashMenu";
 import { ArgMenu } from "./ArgMenu";
-import { VirtualMenu } from "./VirtualMenu";
 import { ANCHORED_POPOVER_CLOSE_MS, AnchoredPopover } from "./AnchoredPopover";
 import { EffortSwitcher } from "./EffortSwitcher";
 import { ModelSwitcher } from "./ModelSwitcher";
 import { Tooltip } from "./Tooltip";
 import { ComposerContextCard } from "./ComposerContextCard";
+import { VirtualMenu } from "./VirtualMenu";
+import { dirEntryMenuLabel, dirEntrySubmitPath } from "./FileReferenceMenu";
 
 interface Attachment {
   path: string;
@@ -38,9 +40,10 @@ interface AttachmentDedupKey {
   source: string;
 }
 
-interface WorkspaceReference {
+export interface WorkspaceReference {
   path: string;
   isDir?: boolean;
+  displayPath?: string;
 }
 
 const LONG_PASTE_MIN_CHARS = 2000;
@@ -60,9 +63,30 @@ type PastedBlock = {
   text: string;
 };
 
+type PendingGuidance = {
+  id: number;
+  text: string;
+  submitText: string;
+};
+
+type ComposerDraft = {
+  text: string;
+  attachments: Attachment[];
+  workspaceRefs: WorkspaceReference[];
+  pastedBlocks: PastedBlock[];
+  openPastedLabels: string[];
+  sessionRefs: SessionReference[];
+  attachmentDedupKeys: Record<string, AttachmentDedupKey>;
+  nextPasteId: number;
+  historyIndex: number;
+  savedText: string;
+};
+
 type WebkitFileEntry = {
   isDirectory?: boolean;
 };
+
+const DEFAULT_COMPOSER_DRAFT_KEY = "__default_composer_draft__";
 
 function lineCount(s: string): number {
   if (s === "") return 0;
@@ -91,6 +115,10 @@ function attachmentExt(name: string): string {
   return dot >= 0 ? name.slice(dot + 1).toUpperCase() : "";
 }
 
+function hasImageAttachments(items: Attachment[]): boolean {
+  return items.some((attachment) => Boolean(attachment.previewUrl));
+}
+
 function displayRefName(name: string): string {
   return name.replace(/[\[\]\(\)\r\n]+/g, " ").replace(/\s+/g, " ").trim() || "attachment";
 }
@@ -109,6 +137,70 @@ function sortComposerAttachments(items: Attachment[]): Attachment[] {
 
 function workspaceReferenceKey(ref: WorkspaceReference): string {
   return `${ref.isDir ? "dir" : "file"}:${ref.path}`;
+}
+
+export function composerPickFileEntry(
+  text: string,
+  atRaw: string | null,
+  atDir: string,
+  entry: DirEntry,
+): { text: string; workspaceRef?: WorkspaceReference } {
+  const atPos = text.length - (atRaw?.length ?? 0) - 1; // index of '@'
+  const prefix = text.slice(0, Math.max(0, atPos));
+  const refPath = dirEntrySubmitPath(entry, atDir);
+  if (entry.path || entry.displayPath) {
+    return { text: prefix, workspaceRef: { path: refPath, isDir: entry.isDir, displayPath: entry.displayPath } };
+  }
+  return { text: prefix + "@" + refPath + (entry.isDir ? "/" : " ") };
+}
+
+function emptyComposerDraft(): ComposerDraft {
+  return {
+    text: "",
+    attachments: [],
+    workspaceRefs: [],
+    pastedBlocks: [],
+    openPastedLabels: [],
+    sessionRefs: [],
+    attachmentDedupKeys: {},
+    nextPasteId: 1,
+    historyIndex: -1,
+    savedText: "",
+  };
+}
+
+function guidanceTextMatches(queued: string, consumed: string): boolean {
+  const left = queued.trim();
+  const right = consumed.trim();
+  if (!left || !right) return false;
+  return left === right || left.includes(right) || right.includes(left);
+}
+
+function cloneComposerDraft(draft: ComposerDraft): ComposerDraft {
+  return {
+    text: draft.text,
+    attachments: [...draft.attachments],
+    workspaceRefs: [...draft.workspaceRefs],
+    pastedBlocks: [...draft.pastedBlocks],
+    openPastedLabels: [...draft.openPastedLabels],
+    sessionRefs: [...draft.sessionRefs],
+    attachmentDedupKeys: { ...draft.attachmentDedupKeys },
+    nextPasteId: draft.nextPasteId,
+    historyIndex: draft.historyIndex,
+    savedText: draft.savedText,
+  };
+}
+
+function attachmentDedupFromKeys(keys: Record<string, AttachmentDedupKey>): DedupIndex {
+  const index = new DedupIndex();
+  for (const key of Object.values(keys)) {
+    index.add(key.hash, key.source);
+  }
+  return index;
+}
+
+function draftHasAttachmentDedupKey(draft: ComposerDraft, key: AttachmentDedupKey): boolean {
+  return Object.values(draft.attachmentDedupKeys).some((existing) => existing.hash === key.hash && existing.source === key.source);
 }
 
 function fileKey(file: File): string {
@@ -327,6 +419,7 @@ export function Composer({
   goal,
   cwd,
   modelLabel,
+  imageInputEnabled = true,
   tabId,
   effort,
   onSend,
@@ -350,6 +443,10 @@ export function Composer({
   turnTokens,
   retry,
   transientDismissSignal,
+  sessionKey,
+  guidanceConsumedKey,
+  guidanceConsumedText,
+  guidanceQueuePreviewItems,
 }: {
   running: boolean;
   collaborationMode: CollaborationMode;
@@ -358,9 +455,10 @@ export function Composer({
   goal?: string;
   cwd?: string;
   modelLabel: string;
+  imageInputEnabled?: boolean;
   tabId?: string;
   effort?: EffortInfo;
-  onSend: (displayText: string, submitText?: string) => void;
+  onSend: (displayText: string, submitText?: string) => void | Promise<void>;
   // Returns the un-sent text when cancelling before the server replied (so it can
   // be restored to the input); undefined for a normal cancel.
   onCancel: () => string | undefined;
@@ -387,6 +485,10 @@ export function Composer({
   turnTokens?: number;
   retry?: { attempt: number; max: number };
   transientDismissSignal?: number;
+  sessionKey?: string;
+  guidanceConsumedKey?: string;
+  guidanceConsumedText?: string;
+  guidanceQueuePreviewItems?: readonly string[];
 }) {
   const { t, locale } = useI18n();
   const { showToast } = useToast();
@@ -415,6 +517,10 @@ export function Composer({
   const [pastChats, setPastChats] = useState<SessionMeta[]>([]);
   const [pastChatQuery, setPastChatQuery] = useState("");
   const [sessionRefs, setSessionRefs] = useState<SessionReference[]>([]);
+  const [pendingGuidance, setPendingGuidance] = useState<PendingGuidance[]>([]);
+  const [guidanceExpanded, setGuidanceExpanded] = useState(false);
+  const [guidanceSendingId, setGuidanceSendingId] = useState<number | null>(null);
+  const nextGuidanceId = useRef(1);
   const [loadingPastChats, setLoadingPastChats] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [composerPrompt, setComposerPrompt] = useState<string | null>(null);
@@ -441,6 +547,8 @@ export function Composer({
   const lastSelectionRef = useRef({ start: 0, end: 0 });
   const consumedInsertIdRef = useRef(0);
   const lastTransientDismissSignal = useRef(transientDismissSignal);
+  const lastGuidanceConsumedKey = useRef(guidanceConsumedKey);
+  const selfDispatchedGuidanceRef = useRef<string[]>([]);
   const submittingRef = useRef(false);
   const nativeClipboardPasteTimerRef = useRef<number | null>(null);
   // Snapshot of the current cwd so async callbacks (openPastChats) can detect
@@ -449,6 +557,74 @@ export function Composer({
   cwdRef.current = cwd;
   const attachmentDedupRef = useRef(new DedupIndex());
   const attachmentDedupKeysRef = useRef<Record<string, AttachmentDedupKey>>({});
+  const draftKey = sessionKey || tabId || DEFAULT_COMPOSER_DRAFT_KEY;
+  const guidanceQueuePreviewKey = (guidanceQueuePreviewItems ?? []).map((item) => item.trim()).filter(Boolean).join("\n");
+  const draftsBySessionRef = useRef<Record<string, ComposerDraft>>({});
+  const activeDraftKeyRef = useRef(draftKey);
+  const textRef = useRef(text);
+  const attachmentsRef = useRef(attachments);
+  const workspaceRefsRef = useRef(workspaceRefs);
+  const openPastedLabelsRef = useRef(openPastedLabels);
+  const sessionRefsRef = useRef(sessionRefs);
+  textRef.current = text;
+  attachmentsRef.current = attachments;
+  workspaceRefsRef.current = workspaceRefs;
+  pastedBlocksRef.current = pastedBlocks;
+  openPastedLabelsRef.current = openPastedLabels;
+  sessionRefsRef.current = sessionRefs;
+
+  const snapshotComposerDraft = (): ComposerDraft => ({
+    text: textRef.current,
+    attachments: [...attachmentsRef.current],
+    workspaceRefs: [...workspaceRefsRef.current],
+    pastedBlocks: [...pastedBlocksRef.current],
+    openPastedLabels: [...openPastedLabelsRef.current],
+    sessionRefs: [...sessionRefsRef.current],
+    attachmentDedupKeys: { ...attachmentDedupKeysRef.current },
+    nextPasteId: nextPasteId.current,
+    historyIndex: historyIndexRef.current,
+    savedText: savedTextRef.current,
+  });
+
+  const restoreComposerDraft = (draft: ComposerDraft) => {
+    const next = cloneComposerDraft(draft);
+    setText(next.text);
+    setAttachments(next.attachments);
+    setWorkspaceRefs(next.workspaceRefs);
+    pastedBlocksRef.current = next.pastedBlocks;
+    setPastedBlocks(next.pastedBlocks);
+    setOpenPastedLabels(next.openPastedLabels);
+    setSessionRefs(next.sessionRefs);
+    attachmentDedupKeysRef.current = next.attachmentDedupKeys;
+    attachmentDedupRef.current = attachmentDedupFromKeys(next.attachmentDedupKeys);
+    nextPasteId.current = next.nextPasteId;
+    historyIndexRef.current = next.historyIndex;
+    savedTextRef.current = next.savedText;
+    setHistoryIndex(next.historyIndex);
+    lastSelectionRef.current = { start: next.text.length, end: next.text.length };
+    setComposerPrompt(null);
+    setShowPastChats(false);
+    setPastChatQuery("");
+    setActive(0);
+    setIntentMenuOpen(false);
+    setIntentMenuClosing(false);
+    setMoreMenuOpen(false);
+    setMoreMenuClosing(false);
+  };
+
+  useLayoutEffect(() => {
+    const previousKey = activeDraftKeyRef.current;
+    if (previousKey === draftKey) return;
+    draftsBySessionRef.current[previousKey] = snapshotComposerDraft();
+    activeDraftKeyRef.current = draftKey;
+    restoreComposerDraft(draftsBySessionRef.current[draftKey] ?? emptyComposerDraft());
+  }, [draftKey]);
+
+  useEffect(() => {
+    return () => {
+      draftsBySessionRef.current[activeDraftKeyRef.current] = snapshotComposerDraft();
+    };
+  }, []);
 
   const clearNativeClipboardPasteTimer = () => {
     if (nativeClipboardPasteTimerRef.current === null) return;
@@ -459,13 +635,36 @@ export function Composer({
   useEffect(() => () => clearNativeClipboardPasteTimer(), []);
 
   useEffect(() => {
-    if (wasRunning.current && !running && text.trim() === "") {
-      pastedBlocksRef.current = [];
-      setPastedBlocks([]);
-      setOpenPastedLabels([]);
+    if (wasRunning.current && !running) {
+      setPendingGuidance([]);
+      setGuidanceExpanded(false);
+      if (text.trim() === "") {
+        pastedBlocksRef.current = [];
+        setPastedBlocks([]);
+        setOpenPastedLabels([]);
+      }
     }
     wasRunning.current = running;
   }, [running, text]);
+
+  useEffect(() => {
+    setPendingGuidance([]);
+    setGuidanceExpanded(false);
+  }, [draftKey]);
+
+  useEffect(() => {
+    if (!running || !guidanceQueuePreviewKey) return;
+    setGuidanceExpanded(false);
+    setPendingGuidance(
+      guidanceQueuePreviewKey
+        .split("\n")
+        .map((text) => ({ id: nextGuidanceId.current++, text, submitText: text })),
+    );
+  }, [guidanceQueuePreviewKey, running]);
+
+  useEffect(() => {
+    if (guidanceExpanded && pendingGuidance.length <= 2) setGuidanceExpanded(false);
+  }, [guidanceExpanded, pendingGuidance.length]);
 
   // --- slash commands (whole-input "/token") ---
   const [commands, setCommands] = useState<CommandInfo[]>([]);
@@ -667,6 +866,28 @@ export function Composer({
     setDismissed(true);
   }, [transientDismissSignal]);
 
+  const takeSelfDispatchedGuidance = useCallback((text: string): boolean => {
+    const idx = selfDispatchedGuidanceRef.current.findIndex((queued) => guidanceTextMatches(queued, text));
+    if (idx < 0) return false;
+    selfDispatchedGuidanceRef.current.splice(idx, 1);
+    return true;
+  }, []);
+
+  useEffect(() => {
+    if (!guidanceConsumedKey || guidanceConsumedKey === lastGuidanceConsumedKey.current) return;
+    lastGuidanceConsumedKey.current = guidanceConsumedKey;
+    const consumed = (guidanceConsumedText ?? "").trim();
+    if (consumed && takeSelfDispatchedGuidance(consumed)) return;
+    setPendingGuidance((items) => {
+      if (items.length === 0) return items;
+      const idx = consumed
+        ? items.findIndex((item) => guidanceTextMatches(item.submitText, consumed) || guidanceTextMatches(item.text, consumed))
+        : -1;
+      const removeAt = idx >= 0 ? idx : 0;
+      return items.filter((_, index) => index !== removeAt);
+    });
+  }, [guidanceConsumedKey, guidanceConsumedText, takeSelfDispatchedGuidance]);
+
   // When the @ trigger disappears (user deleted the @), close the past:chats
   // sub-menu and reset related state. Without this, showPastChats can outlive
   // the @ token and leave the session list visible with no way to dismiss it.
@@ -771,7 +992,9 @@ export function Composer({
     setWorkspaceRefs((prev) => {
       const key = workspaceReferenceKey(ref);
       if (prev.some((item) => workspaceReferenceKey(item) === key)) return prev;
-      return [...prev, ref];
+      const next = [...prev, ref];
+      workspaceRefsRef.current = next;
+      return next;
     });
     requestAnimationFrame(() => taRef.current?.focus());
   };
@@ -815,6 +1038,7 @@ export function Composer({
   };
 
   const clearAttachments = () => {
+    attachmentsRef.current = [];
     setAttachments([]);
     attachmentDedupRef.current.clear();
     attachmentDedupKeysRef.current = {};
@@ -822,8 +1046,74 @@ export function Composer({
 
   const removeAttachment = (path: string) => {
     forgetAttachment(path);
-    setAttachments((prev) => prev.filter((x) => x.path !== path));
+    setAttachments(attachmentsRef.current.filter((x) => x.path !== path));
     requestAnimationFrame(() => taRef.current?.focus());
+  };
+
+  const attachmentSeenInDraft = (targetDraftKey: string, key: AttachmentDedupKey): boolean => {
+    if (targetDraftKey === activeDraftKeyRef.current) return attachmentDedupRef.current.seen(key.hash, key.source);
+    const draft = draftsBySessionRef.current[targetDraftKey];
+    return draft ? draftHasAttachmentDedupKey(draft, key) : false;
+  };
+
+  const addAttachmentToDraft = (targetDraftKey: string, attachment: Attachment, key: AttachmentDedupKey): boolean => {
+    if (targetDraftKey === activeDraftKeyRef.current) {
+      if (attachmentDedupRef.current.seen(key.hash, key.source)) return false;
+      rememberAttachment(attachment.path, key);
+      const next = [...attachmentsRef.current, attachment];
+      attachmentsRef.current = next;
+      setAttachments(next);
+      return true;
+    }
+    const draft = cloneComposerDraft(draftsBySessionRef.current[targetDraftKey] ?? emptyComposerDraft());
+    if (draftHasAttachmentDedupKey(draft, key)) return false;
+    draft.attachmentDedupKeys[attachment.path] = key;
+    draft.attachments = [...draft.attachments, attachment];
+    draftsBySessionRef.current[targetDraftKey] = draft;
+    return true;
+  };
+
+  const addWorkspaceReferenceToDraft = (targetDraftKey: string, ref: WorkspaceReference) => {
+    if (targetDraftKey === activeDraftKeyRef.current) {
+      addWorkspaceReference(ref);
+      return;
+    }
+    const draft = cloneComposerDraft(draftsBySessionRef.current[targetDraftKey] ?? emptyComposerDraft());
+    const key = workspaceReferenceKey(ref);
+    if (draft.workspaceRefs.some((item) => workspaceReferenceKey(item) === key)) return;
+    draft.workspaceRefs = [...draft.workspaceRefs, ref];
+    draftsBySessionRef.current[targetDraftKey] = draft;
+  };
+
+  const clearSubmittedDraft = (targetDraftKey: string) => {
+    if (targetDraftKey === activeDraftKeyRef.current) {
+      textRef.current = "";
+      setText("");
+      historyIndexRef.current = -1;
+      setHistoryIndex(-1);
+      clearAttachments();
+      workspaceRefsRef.current = [];
+      setWorkspaceRefs([]);
+      sessionRefsRef.current = [];
+      setSessionRefs([]);
+      pastedBlocksRef.current = [];
+      setPastedBlocks([]);
+      openPastedLabelsRef.current = [];
+      setOpenPastedLabels([]);
+      savedTextRef.current = "";
+      return;
+    }
+    const draft = cloneComposerDraft(draftsBySessionRef.current[targetDraftKey] ?? emptyComposerDraft());
+    draft.text = "";
+    draft.attachments = [];
+    draft.workspaceRefs = [];
+    draft.pastedBlocks = [];
+    draft.openPastedLabels = [];
+    draft.sessionRefs = [];
+    draft.attachmentDedupKeys = {};
+    draft.historyIndex = -1;
+    draft.savedText = "";
+    draftsBySessionRef.current[targetDraftKey] = draft;
   };
 
   const clearIntentCloseTimer = useCallback(() => {
@@ -887,12 +1177,22 @@ export function Composer({
   const activeGoal = (goal ?? "").trim();
   const goalModeOn = collaborationMode === "goal";
   const tokenModeOn = tokenMode === "economy";
+  const warnImageInputFallback = useCallback((message = t("composer.imageInputUnsupported")) => {
+    showToast(message, "warn");
+  }, [showToast, t]);
 
   const submit = async () => {
-    if (disabled || submitDisabled || readOnly || submittingRef.current) return;
-    const trimmedText = text.trim();
+    if (disabled || (!running && submitDisabled) || readOnly || submittingRef.current) return;
+    const submitDraftKey = activeDraftKeyRef.current;
+    const currentText = textRef.current;
+    const trimmedText = currentText.trim();
     if (pendingPaste > 0) return;
-    if (!trimmedText && attachments.length === 0 && workspaceRefs.length === 0) {
+    if (!imageInputEnabled && hasImageAttachments(attachmentsRef.current)) {
+      warnImageInputFallback();
+    }
+    const currentAttachments = attachmentsRef.current;
+    const currentWorkspaceRefs = workspaceRefsRef.current;
+    if (!trimmedText && currentAttachments.length === 0 && currentWorkspaceRefs.length === 0) {
       if (goalModeOn && !activeGoal) {
         setComposerPrompt(t("composer.goalInputRequired"));
         requestAnimationFrame(() => taRef.current?.focus());
@@ -903,33 +1203,62 @@ export function Composer({
     submittingRef.current = true;
     setSubmitting(true);
     try {
-    const orderedAttachments = sortComposerAttachments(attachments);
-    const refs = [
-      ...workspaceRefs.map((ref) => formatWorkspaceReference(ref.path, ref.isDir)),
-      ...orderedAttachments.map((a) => `@${a.path}`),
-    ].join(" ");
-    const displayRefs = [
-      ...workspaceRefs.map((ref) => formatWorkspaceReference(ref.path, ref.isDir)),
-      ...orderedAttachments.map(formatAttachmentDisplayReference),
-    ].join(" ");
-    const displayText = [trimmedText, displayRefs].filter(Boolean).join(trimmedText && displayRefs ? " " : "");
-    // PR-B: when past:chats refs are attached, prepend their formatted transcript
-    // to submitText only (displayText stays unchanged so the user still sees their
-    // original prompt in the input preview). With no refs we keep the original
-    // submitText verbatim — no header, no rewording, byte-identical to pre-PR-B.
-    const sessionContext = sessionRefs.length === 0 ? "" : await buildSessionContext(sessionRefs);
-    const baseSubmitText = [expandPastedBlocks(trimmedText), refs].filter(Boolean).join(trimmedText && refs ? " " : "");
-    const submitText = sessionContext ? `${sessionContext}${baseSubmitText}` : baseSubmitText;
-    onSend(displayText, submitText);
-    setText("");
-    historyIndexRef.current = -1;
-    setHistoryIndex(-1);
-    clearAttachments();
-    setWorkspaceRefs([]);
-    setSessionRefs([]);
+      const orderedAttachments = sortComposerAttachments(currentAttachments);
+      const refs = [
+        ...currentWorkspaceRefs.map((ref) => formatWorkspaceReference(ref.path, ref.isDir)),
+        ...orderedAttachments.map((a) => `@${a.path}`),
+      ].join(" ");
+      const displayRefs = [
+        ...currentWorkspaceRefs.map((ref) => formatWorkspaceReference(ref.displayPath || ref.path, ref.isDir)),
+        ...orderedAttachments.map(formatAttachmentDisplayReference),
+      ].join(" ");
+      const displayText = [trimmedText, displayRefs].filter(Boolean).join(trimmedText && displayRefs ? " " : "");
+      // PR-B: when past:chats refs are attached, prepend their formatted transcript
+      // to submitText only (displayText stays unchanged so the user still sees their
+      // original prompt in the input preview). With no refs we keep the original
+      // submitText verbatim — no header, no rewording, byte-identical to pre-PR-B.
+      const currentSessionRefs = sessionRefsRef.current;
+      const sessionContext = currentSessionRefs.length === 0 ? "" : await buildSessionContext(currentSessionRefs);
+      const baseSubmitText = [expandPastedBlocks(trimmedText), refs].filter(Boolean).join(trimmedText && refs ? " " : "");
+      const submitText = sessionContext ? `${sessionContext}${baseSubmitText}` : baseSubmitText;
+      if (running) {
+        const guidanceText = displayText.trim();
+        const guidanceSubmitText = submitText.trim();
+        if (guidanceText) {
+          const id = nextGuidanceId.current++;
+          setPendingGuidance((items) => [...items, { id, text: guidanceText, submitText: guidanceSubmitText || guidanceText }]);
+        }
+        clearSubmittedDraft(submitDraftKey);
+        return;
+      }
+      await onSend(displayText, submitText);
+      clearSubmittedDraft(submitDraftKey);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : String(error), "warn");
     } finally {
       submittingRef.current = false;
       setSubmitting(false);
+    }
+  };
+
+  const sendQueuedGuidance = async (item: PendingGuidance) => {
+    if (disabled || readOnly || guidanceSendingId !== null) return;
+    const displayText = item.text.trim();
+    const submitText = item.submitText.trim() || displayText;
+    if (!displayText || !submitText) return;
+    selfDispatchedGuidanceRef.current.push(submitText);
+    setGuidanceSendingId(item.id);
+    try {
+      await onSend(displayText, submitText);
+      setPendingGuidance((items) => items.filter((queued) => queued.id !== item.id));
+      window.setTimeout(() => {
+        takeSelfDispatchedGuidance(submitText);
+      }, 5000);
+    } catch (error) {
+      takeSelfDispatchedGuidance(submitText);
+      showToast(error instanceof Error ? error.message : String(error), "warn");
+    } finally {
+      setGuidanceSendingId((current) => (current === item.id ? null : current));
     }
   };
 
@@ -941,19 +1270,18 @@ export function Composer({
       reader.readAsDataURL(file);
     });
 
-  const attachImageFiles = async (files: File[]) => {
+  const attachImageFiles = async (files: File[], sourceDraftKey: string) => {
     const images = files.filter((f) => f.type.startsWith("image/"));
     if (images.length === 0) return;
     for (const file of images) {
       setPendingPaste((n) => n + 1);
       try {
         const key = await fileDedupKey(file);
-        if (attachmentDedupRef.current.seen(key.hash, key.source)) continue;
+        if (attachmentSeenInDraft(sourceDraftKey, key)) continue;
         const dataUrl = await readFileAsDataURL(file);
         const path = await app.SavePastedImage(dataUrl);
         const previewUrl = await app.AttachmentDataURL(path);
-        rememberAttachment(path, key);
-        setAttachments((prev) => [...prev, { path, previewUrl, displayName: file.name }]);
+        addAttachmentToDraft(sourceDraftKey, { path, previewUrl, displayName: file.name }, key);
       } catch (error) {
         console.warn("[composer] failed to attach pasted image", error);
         showToast(t("composer.attachImageFailed"), "warn");
@@ -966,19 +1294,20 @@ export function Composer({
 
   // Non-image pastes (PDFs, docs): the clipboard hands us bytes, not a path, so
   // the kernel stores them and we reference the saved path — attached, not ignored.
-  const attachOtherFiles = async (files: File[]) => {
+  const attachOtherFiles = async (files: File[], sourceDraftKey: string) => {
     const others = files.filter((f) => !f.type.startsWith("image/"));
     if (others.length === 0) return;
     for (const file of others) {
       setPendingPaste((n) => n + 1);
       try {
         const key = await fileDedupKey(file);
-        if (attachmentDedupRef.current.seen(key.hash, key.source)) continue;
+        if (attachmentSeenInDraft(sourceDraftKey, key)) continue;
         const dataUrl = await readFileAsDataURL(file);
         const path = await app.SavePastedFile(file.name, dataUrl);
-        rememberAttachment(path, key);
-        setAttachments((prev) => [...prev, { path, displayName: file.name }]);
+        addAttachmentToDraft(sourceDraftKey, { path, displayName: file.name }, key);
       } catch {
+        console.warn("[composer] failed to attach pasted file");
+        showToast(t("composer.attachFileFailed"), "warn");
         // non-fatal: a failed attach must not block normal text input
       } finally {
         setPendingPaste((n) => Math.max(0, n - 1));
@@ -987,19 +1316,19 @@ export function Composer({
   };
 
   const attachFiles = (files: File[]) => {
-    void attachImageFiles(files);
-    void attachOtherFiles(files);
+    const sourceDraftKey = activeDraftKeyRef.current;
+    void attachImageFiles(files, sourceDraftKey);
+    void attachOtherFiles(files, sourceDraftKey);
   };
 
-  const attachNativeClipboardImage = async (notifyOnError: boolean) => {
+  const attachNativeClipboardImage = async (notifyOnError: boolean, sourceDraftKey: string) => {
     setPendingPaste((n) => n + 1);
     try {
       const path = await app.SaveClipboardImage();
       const previewUrl = await app.AttachmentDataURL(path);
       const key = { hash: await dataURLHash(previewUrl), source: `native-clipboard:${path}` };
-      if (attachmentDedupRef.current.seen(key.hash, key.source)) return;
-      rememberAttachment(path, key);
-      setAttachments((prev) => [...prev, { path, previewUrl }]);
+      if (attachmentSeenInDraft(sourceDraftKey, key)) return;
+      addAttachmentToDraft(sourceDraftKey, { path, previewUrl }, key);
     } catch (error) {
       console.warn("[composer] failed to read native clipboard image", error);
       if (notifyOnError) showToast(t("composer.pasteImageFailed"), "warn");
@@ -1011,21 +1340,22 @@ export function Composer({
   // OS file drops arrive as absolute paths through the native bridge (the webview
   // withholds them from the HTML drop event); the kernel resolves each into a
   // workspace @reference or a stored attachment.
-  const attachDroppedPaths = async (paths: string[]) => {
+  const attachDroppedPaths = async (paths: string[], sourceDraftKey = activeDraftKeyRef.current) => {
     setDragOver(false);
     for (const path of paths) {
       setPendingPaste((n) => n + 1);
       try {
         const key = { hash: "", source: `path:${path}` };
-        if (attachmentDedupRef.current.seen(key.hash, key.source)) continue;
+        if (attachmentSeenInDraft(sourceDraftKey, key)) continue;
         const item = await app.AttachDropped(path);
         if (item.kind === "workspace") {
-          addWorkspaceReference({ path: item.path, isDir: item.isDir });
+          addWorkspaceReferenceToDraft(sourceDraftKey, { path: item.path, isDir: item.isDir, displayPath: item.displayPath });
         } else {
-          rememberAttachment(item.path, key);
-          setAttachments((prev) => [...prev, { path: item.path, previewUrl: item.previewUrl, displayName: baseName(path) }]);
+          addAttachmentToDraft(sourceDraftKey, { path: item.path, previewUrl: item.previewUrl, displayName: baseName(path) }, key);
         }
       } catch {
+        console.warn("[composer] failed to attach dropped file");
+        showToast(t("composer.attachDropFailed"), "warn");
         // non-fatal: a failed drop attach must not block normal text input
       } finally {
         setPendingPaste((n) => Math.max(0, n - 1));
@@ -1034,7 +1364,7 @@ export function Composer({
   };
 
   useEffect(() => {
-    return onFilesDropped((paths) => void attachDroppedPaths(paths));
+    return onFilesDropped((paths) => void attachDroppedPaths(paths, activeDraftKeyRef.current));
   }, []);
 
   const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
@@ -1050,31 +1380,53 @@ export function Composer({
     const hasImageHint = clipboardHasImageHint(e.clipboardData);
     if (hasImageHint || pasted === "") {
       e.preventDefault();
-      void attachNativeClipboardImage(hasImageHint);
+      void attachNativeClipboardImage(hasImageHint, activeDraftKeyRef.current);
       return;
     }
-    if (!shouldFoldPaste(pasted)) return;
 
+    // Always prevent the browser default paste so React's controlled-input
+    // reconciliation cannot race with the native DOM update and lose the
+    // pasted content (WebView2 / Windows). We insert the text manually below.
     e.preventDefault();
     const ta = e.currentTarget;
     const start = ta.selectionStart ?? text.length;
     const end = ta.selectionEnd ?? text.length;
-    const id = nextPasteId.current++;
-    const lines = lineCount(pasted);
-    const label = t("composer.pastedLabel", { id, lines });
-    const block: PastedBlock = { label, text: pasted };
-    const next = text.slice(0, start) + label + text.slice(end);
 
-    pastedBlocksRef.current = [...pastedBlocksRef.current, block];
-    setPastedBlocks((prev) => [...prev, block]);
-    setText(next);
-    requestAnimationFrame(() => {
-      const node = taRef.current;
-      if (!node) return;
-      const pos = start + label.length;
-      node.focus();
-      node.selectionStart = node.selectionEnd = pos;
-    });
+    // Normalize CRLF from Windows clipboard so caret offsets match the
+    // textarea's normalized value. The raw text (with CRLF) is preserved
+    // in the PastedBlock for long pastes so block content is lossless.
+    const normalizedPasted = pasted.replace(/\r\n/g, "\n");
+
+    if (shouldFoldPaste(pasted)) {
+      // Long paste: fold into a collapsible block so the composer stays compact.
+      const id = nextPasteId.current++;
+      const lines = lineCount(pasted);
+      const label = t("composer.pastedLabel", { id, lines });
+      const block: PastedBlock = { label, text: pasted }; // keep raw text (CRLF preserved)
+      const next = text.slice(0, start) + label + text.slice(end);
+      pastedBlocksRef.current = [...pastedBlocksRef.current, block];
+      setPastedBlocks((prev) => [...prev, block]);
+      setText(next);
+      requestAnimationFrame(() => {
+        const node = taRef.current;
+        if (!node) return;
+        const pos = start + label.length;
+        node.focus();
+        node.selectionStart = node.selectionEnd = pos;
+      });
+    } else {
+      // Short paste: insert the raw text directly into state.
+      resetPromptHistoryNavigation();
+      const next = text.slice(0, start) + normalizedPasted + text.slice(end);
+      setText(next);
+      requestAnimationFrame(() => {
+        const node = taRef.current;
+        if (!node) return;
+        const pos = start + normalizedPasted.length;
+        node.focus();
+        node.selectionStart = node.selectionEnd = pos;
+      });
+    }
   };
 
   const hasWorkspaceReferenceDrag = (dataTransfer: DataTransfer): boolean =>
@@ -1109,7 +1461,9 @@ export function Composer({
   };
 
   const onFileDropCapture = (e: DragEvent<HTMLDivElement>) => {
-    if (hasWorkspaceReferenceDrag(e.dataTransfer) || !hasFileDrag(e.dataTransfer) || !hasPathlessFileDrop(e.dataTransfer)) return;
+    if (hasWorkspaceReferenceDrag(e.dataTransfer) || !hasFileDrag(e.dataTransfer)) return;
+    e.preventDefault();
+    if (!hasPathlessFileDrop(e.dataTransfer)) return;
     const files = Array.from(e.dataTransfer.files);
     if (files.length === 0) return;
     stopNativeFileDrop(e);
@@ -1127,8 +1481,11 @@ export function Composer({
     }
 
     // OS file drops deliver no usable bytes/paths here; the native bridge
-    // (onFilesDropped → AttachDropped) handles them. Just clear the hover state.
-    if (hasFileDrag(e.dataTransfer)) setDragOver(false);
+    // (onFilesDropped -> AttachDropped) handles them. Prevent webview navigation.
+    if (hasFileDrag(e.dataTransfer)) {
+      e.preventDefault();
+      setDragOver(false);
+    }
   };
 
   const onDragOver = (e: DragEvent<HTMLDivElement>) => {
@@ -1144,6 +1501,7 @@ export function Composer({
   // replied, the just-sent text is handed back so we drop it back into the input.
   const handleCancel = () => {
     const restored = onCancel();
+    if (goalModeOn && activeGoal) onClearGoal();
     if (typeof restored === "string") setTextCaretEnd(restored);
   };
 
@@ -1248,18 +1606,29 @@ export function Composer({
     const startHeight = composerHeight ?? card.getBoundingClientRect().height;
     let nextHeight = clampComposerHeight(startHeight);
     let moved = false;
+    card.style.setProperty("--composer-height", `${nextHeight}px`);
+    e.currentTarget.setAttribute("aria-valuenow", String(nextHeight));
+    const liveResize = createRafResizeUpdater({
+      target: card,
+      separator: e.currentTarget,
+      cssVar: "--composer-height",
+    });
     setComposerResizing(true);
     document.body.classList.add("composer-resizing");
 
     const onMove = (event: PointerEvent) => {
       moved = true;
       nextHeight = clampComposerHeight(startHeight + startY - event.clientY);
-      setComposerHeight(nextHeight);
+      liveResize.schedule(nextHeight);
     };
     const onUp = () => {
+      liveResize.flush();
       setComposerResizing(false);
       document.body.classList.remove("composer-resizing");
-      if (moved) saveComposerHeight(nextHeight);
+      if (moved) {
+        setComposerHeight(nextHeight);
+        saveComposerHeight(nextHeight);
+      }
       document.removeEventListener("pointermove", onMove);
       document.removeEventListener("pointerup", onUp);
       document.removeEventListener("pointercancel", onUp);
@@ -1287,10 +1656,14 @@ export function Composer({
   };
 
   const pickEntry = (e: DirEntry) => {
-    const atPos = text.length - (atRaw?.length ?? 0) - 1; // index of '@'
-    const prefix = text.slice(0, atPos);
+    const picked = composerPickFileEntry(text, atRaw, atDir, e);
+    if (picked.workspaceRef) {
+      setTextCaretEnd(picked.text);
+      addWorkspaceReference(picked.workspaceRef);
+      return;
+    }
     // A directory keeps the menu open (trailing "/"); a file completes it (space).
-    setTextCaretEnd(prefix + "@" + atDir + e.name + (e.isDir ? "/" : " "));
+    setTextCaretEnd(picked.text);
   };
 
   // --- past:chats session reference ---
@@ -1449,9 +1822,10 @@ export function Composer({
 
     if (isPasteShortcut(e) && !composing) {
       clearNativeClipboardPasteTimer();
+      const sourceDraftKey = activeDraftKeyRef.current;
       nativeClipboardPasteTimerRef.current = window.setTimeout(() => {
         nativeClipboardPasteTimerRef.current = null;
-        void attachNativeClipboardImage(false);
+        void attachNativeClipboardImage(false, sourceDraftKey);
       }, 160);
     }
 
@@ -1603,6 +1977,7 @@ export function Composer({
     ? ({ height: `${textareaAutoHeight}px`, overflowY: textareaAutoOverflow ? "auto" : "hidden" } as CSSProperties)
     : undefined;
   const composerAutoExpanded = composerHeight === null && textareaAutoHeight !== null && textareaAutoHeight > 40;
+  const composerResizeValue = composerHeight ?? clampComposerHeight((textareaAutoHeight ?? 0) + COMPOSER_AUTO_RESERVED_HEIGHT);
   void onSetMode;
   const chooseApprovalMode = (nextMode: ToolApprovalMode) => {
     onSetToolApprovalMode(nextMode);
@@ -1635,6 +2010,9 @@ export function Composer({
   };
   const effortLevels = asArray(effort?.levels);
   const currentEffort = effort?.current || "auto";
+  const compactEffortTitle = currentEffort === "auto"
+    ? t("status.effortAutoTitle", { def: effort?.default || "auto" })
+    : `${t("status.effortTitle")}: ${currentEffort}`;
   const hasEffort = Boolean(effort?.supported && effortLevels.length > 0);
   const chooseEffortLevel = (level: string) => {
     closeMoreMenu(() => {
@@ -1653,6 +2031,21 @@ export function Composer({
           return `${word}… ${fmtElapsed(elapsedMs)}${tok}`;
         })()
       : null;
+  const submitEmpty = !text.trim() && attachments.length === 0 && workspaceRefs.length === 0;
+  const submitBlocked = submitting || pendingPaste > 0 || (submitEmpty && !(goalModeOn && !activeGoal)) || disabled || (!running && submitDisabled) || readOnly;
+  const submitTooltip = running ? t("composer.queueGuidance") : t("composer.send");
+  const composerPlaceholder = readOnly
+    ? t("composer.readOnlyChannel")
+    : disabled
+      ? t("common.loading")
+      : running
+        ? t("composer.steerPlaceholder")
+        : goalModeOn && !activeGoal
+          ? t("composer.goalInputPlaceholder")
+          : t("composer.placeholder");
+  const hiddenGuidanceCount = Math.max(0, pendingGuidance.length - 2);
+  const visibleGuidance = guidanceExpanded ? pendingGuidance : pendingGuidance.slice(0, 2);
+  const showGuidanceExpander = pendingGuidance.length > 2;
   const composerMetaClass = [
     "composer-meta",
     hasEffort ? "composer-meta--has-effort" : "composer-meta--no-effort",
@@ -1855,7 +2248,7 @@ export function Composer({
           <VirtualMenu
             items={atMenuItems}
             activeIndex={active}
-            itemKey={(it) => (it.kind === "pastChats" ? "past:chats" : (it.entry.isDir ? "d:" : "f:") + it.entry.name)}
+            itemKey={(it) => (it.kind === "pastChats" ? "past:chats" : (it.entry.isDir ? "d:" : "f:") + (it.entry.path || it.entry.name))}
             renderItem={(it, i) =>
               it.kind === "pastChats" ? (
                 <button
@@ -1886,7 +2279,7 @@ export function Composer({
                     <FileText size={13} className="filemenu__icon" />
                   )}
                   <span className="slashmenu__name slashmenu__name--file">
-                    {it.entry.name}
+                    {dirEntryMenuLabel(it.entry)}
                     {it.entry.isDir ? "/" : ""}
                   </span>
                 </button>
@@ -1906,6 +2299,58 @@ export function Composer({
                 <span>{t("composer.stopShort")}</span>
               </button>
             </Tooltip>
+          </div>
+        </div>
+      )}
+      {pendingGuidance.length > 0 && (
+        <div className="composer-guidance-shelf" aria-label={t("composer.guidanceQueue")}>
+          <div className="composer-guidance-head">
+            <span className="composer-guidance-head__label">
+              <CornerDownRight size={14} />
+              <span>{t("composer.guidanceCount", { n: pendingGuidance.length })}</span>
+            </span>
+          </div>
+          <div className="composer-guidance-list">
+            {visibleGuidance.map((item) => (
+              <div className="composer-guidance-item" key={item.id}>
+                <CornerDownRight size={14} className="composer-guidance-item__icon" />
+                <span className="composer-guidance-item__text">{item.text}</span>
+                <Tooltip label={t("composer.guidanceSend")}>
+                  <button
+                    className="composer-guidance-item__guide"
+                    type="button"
+                    aria-label={t("composer.guidanceSend")}
+                    disabled={!running || disabled || readOnly || guidanceSendingId !== null}
+                    onClick={() => void sendQueuedGuidance(item)}
+                  >
+                    <CornerDownRight size={13} />
+                    <span>{t("composer.guidanceMode")}</span>
+                  </button>
+                </Tooltip>
+                <Tooltip label={t("composer.guidanceDismiss")}>
+                  <button
+                    className="composer-guidance-item__action"
+                    type="button"
+                    aria-label={t("composer.guidanceDismiss")}
+                    disabled={guidanceSendingId === item.id}
+                    onClick={() => setPendingGuidance((items) => items.filter((queued) => queued.id !== item.id))}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </Tooltip>
+              </div>
+            ))}
+            {showGuidanceExpander && (
+              <button
+                className="composer-guidance-more"
+                type="button"
+                aria-expanded={guidanceExpanded}
+                onClick={() => setGuidanceExpanded((value) => !value)}
+              >
+                {guidanceExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                <span>{guidanceExpanded ? t("composer.guidanceCollapse") : t("composer.guidanceRemaining", { n: hiddenGuidanceCount })}</span>
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -1931,11 +2376,11 @@ export function Composer({
             <ComposerContextCard
               key={workspaceReferenceKey(ref)}
               variant="workspace"
-              tooltipLabel={formatWorkspaceReference(ref.path, ref.isDir)}
+              tooltipLabel={ref.displayPath ? formatWorkspaceReference(ref.displayPath, ref.isDir) : formatWorkspaceReference(ref.path, ref.isDir)}
               removeLabel={t("composer.removeReference")}
               onRemove={() => removeWorkspaceReference(ref)}
               folder={Boolean(ref.isDir)}
-              label={ref.isDir ? `${baseName(ref.path)}/` : baseName(ref.path)}
+              label={ref.isDir ? `${baseName(ref.displayPath || ref.path)}/` : baseName(ref.displayPath || ref.path)}
             />
           ))}
           {sessionRefs.map((ref) => (
@@ -1998,14 +2443,19 @@ export function Composer({
         </div>
       )}
       <div
-        className={`composer-card${composerHeight !== null ? " composer-card--resized" : ""}${composerAutoExpanded ? " composer-card--autosized" : ""}${composerResizing ? " composer-card--resizing" : ""}${running ? " composer-card--running" : ""}`}
+        className={`composer-card${composerHeight !== null || composerResizing ? " composer-card--resized" : ""}${composerAutoExpanded ? " composer-card--autosized" : ""}${composerResizing ? " composer-card--resizing" : ""}${running ? " composer-card--running" : ""}`}
         ref={composerCardRef}
         style={composerCardStyle}
       >
         <button
           className="composer-resize-handle"
           type="button"
+          role="separator"
+          aria-orientation="horizontal"
           aria-label={t("composer.resize")}
+          aria-valuemin={COMPOSER_MIN_HEIGHT}
+          aria-valuemax={composerMaxHeight()}
+          aria-valuenow={composerResizeValue}
           title={t("composer.resize")}
           onPointerDown={onComposerResizeStart}
           onKeyDown={onComposerResizeKeyDown}
@@ -2043,7 +2493,7 @@ export function Composer({
               lastCompositionEndAt.current = Date.now();
             }}
             style={textareaStyle}
-            placeholder={readOnly ? t("composer.readOnlyChannel") : disabled ? t("common.loading") : goalModeOn && !activeGoal ? t("composer.goalInputPlaceholder") : t("composer.placeholder")}
+            placeholder={composerPlaceholder}
             rows={1}
             disabled={disabled || readOnly}
           />
@@ -2052,17 +2502,16 @@ export function Composer({
               {composerPrompt}
             </span>
           )}
-          {!running && (
-            <Tooltip label={t("composer.send")}>
-              <button
-                className="composer__btn composer__btn--send"
-                onClick={submit}
-                disabled={submitting || pendingPaste > 0 || ((!text.trim() && attachments.length === 0 && workspaceRefs.length === 0) && !(goalModeOn && !activeGoal)) || disabled || submitDisabled || readOnly}
-              >
-                <ArrowUp size={16} />
-              </button>
-            </Tooltip>
-          )}
+          <Tooltip label={submitTooltip}>
+            <button
+              className={`composer__btn composer__btn--send${running ? " composer__btn--steer" : ""}`}
+              onClick={submit}
+              disabled={submitBlocked}
+              aria-label={submitTooltip}
+            >
+              <ArrowUp size={16} />
+            </button>
+          </Tooltip>
         </div>
         <div className={composerMetaClass}>
           <div className="composer-meta__params">
@@ -2191,20 +2640,21 @@ export function Composer({
             )}
             {hasEffort && (
               <div className="composer-meta__control composer-meta__control--more">
-                <Tooltip label={t("composer.moreControls")} disabled={moreMenuOpen || moreMenuClosing}>
+                <Tooltip label={compactEffortTitle} disabled={moreMenuOpen || moreMenuClosing}>
                   <button
                     ref={moreMenuAnchorRef}
                     type="button"
-                    className={`composer-more-trigger${moreMenuOpen || moreMenuClosing ? " composer-more-trigger--open" : ""}`}
+                    className={`composer-more-trigger composer-more-trigger--effort${currentEffort !== "auto" ? " composer-more-trigger--explicit" : ""}${moreMenuOpen || moreMenuClosing ? " composer-more-trigger--open" : ""}`}
                     onClick={() => (moreMenuOpen || moreMenuClosing ? closeMoreMenu() : openMoreMenu())}
                     disabled={disabled || running}
                     aria-haspopup="menu"
                     aria-expanded={moreMenuOpen && !moreMenuClosing}
-                    aria-label={t("composer.moreControls")}
-                    title={moreMenuOpen || moreMenuClosing ? undefined : t("composer.moreControls")}
+                    aria-label={compactEffortTitle}
+                    title={moreMenuOpen || moreMenuClosing ? undefined : compactEffortTitle}
                   >
-                    <MoreHorizontal size={16} />
-                    <span>{t("topicBar.more")}</span>
+                    <Gauge size={14} />
+                    <span>{currentEffort}</span>
+                    <ChevronsUpDown size={11} />
                   </button>
                 </Tooltip>
               </div>

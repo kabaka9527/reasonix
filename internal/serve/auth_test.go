@@ -215,7 +215,7 @@ func TestTokenModeLoopbackCookieAllowsLocalHTTP(t *testing.T) {
 	}
 }
 
-func TestTokenModeNonLoopbackCookieIsSecure(t *testing.T) {
+func TestTokenModeNonLoopbackCookieAllowsPlainHTTP(t *testing.T) {
 	ag := newAuthGate(config.ServeConfig{AuthMode: "token", Token: "secret"})
 	ts := httptest.NewServer(ag.middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -239,8 +239,8 @@ func TestTokenModeNonLoopbackCookieIsSecure(t *testing.T) {
 	if c == nil {
 		t.Fatal("token cookie missing")
 	}
-	if !c.Secure {
-		t.Fatal("non-loopback token cookie must be Secure")
+	if c.Secure {
+		t.Fatal("plain HTTP token cookie should stay usable without Secure")
 	}
 }
 
@@ -388,6 +388,49 @@ func TestPasswordModeValidLogin(t *testing.T) {
 	}
 }
 
+func TestPasswordModeNonLoopbackHTTPLoginCookieIsUsable(t *testing.T) {
+	ag := newAuthGate(config.ServeConfig{AuthMode: "password", PasswordHash: mustHash("correct")})
+	ts := httptest.NewServer(ag.middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})))
+	defer ts.Close()
+
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	form := url.Values{"password": {"correct"}}
+	req, _ := http.NewRequest("POST", ts.URL+"/login", strings.NewReader(form.Encode()))
+	req.Host = "192.0.2.10:8787"
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	sessionCookie := findCookie(resp.Cookies(), cookieSession)
+	if sessionCookie == nil {
+		t.Fatal("session cookie missing")
+	}
+	if sessionCookie.Secure {
+		t.Fatal("plain HTTP password session cookie should stay usable without Secure")
+	}
+
+	req, _ = http.NewRequest("GET", ts.URL+"/status", nil)
+	req.Host = "192.0.2.10:8787"
+	req.AddCookie(sessionCookie)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("authenticated non-loopback status = %d, want 200", resp.StatusCode)
+	}
+}
+
 func TestPasswordModeSanitizesRedirectCookie(t *testing.T) {
 	ag := newAuthGate(config.ServeConfig{AuthMode: "password", PasswordHash: mustHash("correct")})
 	ts := httptest.NewServer(ag.middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -509,9 +552,14 @@ func TestSessionWrongSignature(t *testing.T) {
 
 	tok := ag.signSession()
 	dot := strings.LastIndexByte(tok, '.')
-	// Flip a hex character in the signature.
+	// Flip a hex character in the signature, ensuring it actually changes
+	// (the first nibble might already be 0 → "0" + sig[1:] would be a no-op).
 	sig := tok[dot+1:]
-	flipped := tok[:dot+1] + "0" + sig[1:]
+	target := byte('0')
+	if sig[0] == target {
+		target = 'f' // guaranteed different
+	}
+	flipped := tok[:dot+1] + string(target) + sig[1:]
 	if ag.verifySession(flipped) {
 		t.Error("wrong-signature session should not verify")
 	}
@@ -670,8 +718,8 @@ func TestAuthCookieSecurePolicy(t *testing.T) {
 	}
 
 	req, _ := http.NewRequest("GET", "http://192.0.2.10:8787/", nil)
-	if !ag.authCookieSecure(req) {
-		t.Fatal("non-loopback HTTP cookies should be marked Secure")
+	if ag.authCookieSecure(req) {
+		t.Fatal("plain HTTP cookies should stay usable without Secure")
 	}
 
 	proxy := newAuthGate(config.ServeConfig{AuthMode: "token", Token: "x", BehindProxy: true})
@@ -679,6 +727,21 @@ func TestAuthCookieSecurePolicy(t *testing.T) {
 	req.Header.Set("X-Forwarded-Proto", "https")
 	if !proxy.authCookieSecure(req) {
 		t.Fatal("trusted forwarded HTTPS should mark cookies Secure")
+	}
+}
+
+func TestPlainHTTPAuthWarning(t *testing.T) {
+	if got := PlainHTTPAuthWarning(config.ServeConfig{AuthMode: "none"}, "0.0.0.0:8787"); got != "" {
+		t.Fatalf("none auth warning = %q, want empty", got)
+	}
+	if got := PlainHTTPAuthWarning(config.ServeConfig{AuthMode: "password"}, "127.0.0.1:8787"); got != "" {
+		t.Fatalf("loopback warning = %q, want empty", got)
+	}
+	if got := PlainHTTPAuthWarning(config.ServeConfig{AuthMode: "token"}, "0.0.0.0:8787"); !strings.Contains(got, "non-loopback HTTP") {
+		t.Fatalf("non-loopback warning = %q, want HTTP exposure warning", got)
+	}
+	if got := PlainHTTPAuthWarning(config.ServeConfig{AuthMode: "password"}, ":8787"); !strings.Contains(got, "non-loopback HTTP") {
+		t.Fatalf("wildcard warning = %q, want HTTP exposure warning", got)
 	}
 }
 
