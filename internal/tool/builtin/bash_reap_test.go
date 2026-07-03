@@ -19,14 +19,14 @@ import (
 
 // TestReapTreeKillsGroupStragglers covers #3702: a foreground command that
 // backgrounds a child (here a long sleep, standing in for `bazel run`'s server)
-// leaves it in the process group after Wait reaps the shell leader. reapTree must
+// leaves it in the process group after Wait reaps the shell leader. KillTree must
 // kill it so such processes don't accumulate into an OOM. The child redirects its
 // fds and the pid is passed via a file so the inherited stdout can't block Wait.
 func TestReapTreeKillsGroupStragglers(t *testing.T) {
 	pidFile := filepath.Join(t.TempDir(), "pid")
 	cmd := exec.CommandContext(context.Background(), "sh", "-c",
 		"sleep 60 >/dev/null 2>&1 & echo $! > "+pidFile)
-	setKillTree(cmd) // Setpgid — the shell leads its own group
+	proc.SetCancelKillsTree(cmd) // new session — the shell leads its own group
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -43,7 +43,7 @@ func TestReapTreeKillsGroupStragglers(t *testing.T) {
 		t.Skipf("backgrounded child %d not alive after shell exit (%v)", pid, err)
 	}
 
-	reapTree(cmd)
+	proc.KillTree(cmd)
 
 	dead := false
 	for i := 0; i < 50; i++ {

@@ -208,6 +208,10 @@ export interface TabMeta {
   goal?: string;
   goalStatus?: GoalStatus;
   autoResearch?: AutoResearchCompactView;
+  recovered?: boolean;
+  recoveryReason?: string;
+  recoveryDigest?: string;
+  recoveryParentId?: string;
   startupErr?: string;
   active: boolean;
   cwd: string;
@@ -228,6 +232,10 @@ export interface ProjectNode {
   running?: boolean;
   status?: ProjectTopicStatus;
   pinned?: boolean;
+  recovered?: boolean;
+  recoveryReason?: string;
+  recoveryDigest?: string;
+  recoveryParentId?: string;
   children?: ProjectNode[];
 }
 
@@ -237,6 +245,23 @@ export interface TopicMeta {
   id: string;
   title: string;
   createdAt: number;
+}
+
+export interface SessionRecoveryEvent {
+  originalPath?: string;
+  recoveryPath: string;
+  scope?: string;
+  workspaceRoot?: string;
+  topicId?: string;
+  topicTitle?: string;
+  recoveryReason?: string;
+  recoveryDigest?: string;
+  recoveryParentId?: string;
+  existing?: boolean;
+}
+
+export interface SessionRecoveryFailedEvent {
+  reason?: "lease_held" | "lease_unavailable" | string;
 }
 
 export interface ContextPanelInfo {

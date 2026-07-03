@@ -2665,6 +2665,27 @@ a[href] {
   color: var(--ok);
   border-bottom: 1px solid var(--border-soft);
 }
+.banner--recovery {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: color-mix(in srgb, var(--warn) 9%, var(--bg-elev));
+  color: color-mix(in srgb, var(--warn) 72%, var(--fg));
+  border-bottom: 1px solid color-mix(in srgb, var(--warn) 22%, var(--border-soft));
+}
+.banner__badge {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--warn) 13%, transparent);
+  color: color-mix(in srgb, var(--warn) 84%, var(--fg));
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1;
+}
 .banner--update {
   display: flex;
   align-items: center;
@@ -19116,6 +19137,26 @@ body > .mermaid-diagram--fullscreen {
   color: color-mix(in srgb, var(--err) 84%, var(--fg));
 }
 
+.project-tree__topic--recovered {
+  color: color-mix(in srgb, var(--warn) 18%, var(--fg-dim));
+}
+
+.project-tree__topic-recovery {
+  flex: 0 0 auto;
+  height: 17px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  color: color-mix(in srgb, var(--warn) 82%, var(--fg));
+  font-size: 10.5px;
+  font-weight: 650;
+  line-height: 1;
+  white-space: nowrap;
+}
+
 .project-tree__topic-meta {
   max-width: 100%;
   min-width: 0;
@@ -24784,6 +24825,26 @@ body > .mermaid-diagram--fullscreen {
 }
 .toast__text {
   line-height: 1.4;
+}
+.toast__action {
+  --wails-draggable: no-drag;
+  flex: 0 0 auto;
+  height: 26px;
+  border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  color: inherit;
+  padding: 0 9px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1;
+  cursor: pointer;
+}
+.toast__action:hover,
+.toast__action:focus-visible {
+  background: color-mix(in srgb, currentColor 13%, transparent);
+  outline: none;
 }
 @keyframes toast-in {
   from { opacity: 0; transform: translateY(-8px); }

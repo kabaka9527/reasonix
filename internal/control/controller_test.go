@@ -3,7 +3,6 @@ package control
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -610,7 +609,7 @@ func TestSnapshotDoesNotRefreshSessionActivity(t *testing.T) {
 	}
 }
 
-func TestSnapshotRejectsStaleControllerOverwrite(t *testing.T) {
+func TestSnapshotAdoptsNewerDiskForPureStalePrefix(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")
 
@@ -631,8 +630,8 @@ func TestSnapshotRejectsStaleControllerOverwrite(t *testing.T) {
 		t.Fatalf("SnapshotActivity current: %v", err)
 	}
 
-	if err := stale.Snapshot(); !errors.Is(err, agent.ErrSessionSnapshotConflict) {
-		t.Fatalf("Snapshot stale err = %v, want ErrSessionSnapshotConflict", err)
+	if err := stale.Snapshot(); err != nil {
+		t.Fatalf("Snapshot stale prefix: %v", err)
 	}
 
 	loaded, err := agent.LoadSession(path)
@@ -645,9 +644,56 @@ func TestSnapshotRejectsStaleControllerOverwrite(t *testing.T) {
 	if got := loaded.Messages[4].Content; got != "two" {
 		t.Fatalf("last message after stale snapshot = %q, want %q", got, "two")
 	}
+	if got := len(stale.executor.Session().Snapshot()); got != 5 {
+		t.Fatalf("stale controller adopted message count = %d, want 5", got)
+	}
 }
 
-func TestSnapshotRewriteRejectsStaleControllerOverwrite(t *testing.T) {
+func TestSnapshotRecoversDivergedControllerTranscript(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+
+	staleSess := agent.NewSession("sys")
+	staleSess.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	staleSess.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	staleSess.Add(provider.Message{Role: provider.RoleUser, Content: "local second"})
+	staleExec := agent.New(nil, nil, staleSess, agent.Options{}, event.Discard)
+	stale := New(Options{Executor: staleExec, SessionDir: dir, SessionPath: path, Label: "test"})
+
+	currentSess := agent.NewSession("sys")
+	currentSess.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	currentSess.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	currentSess.Add(provider.Message{Role: provider.RoleUser, Content: "disk second"})
+	currentExec := agent.New(nil, nil, currentSess, agent.Options{}, event.Discard)
+	current := New(Options{Executor: currentExec, SessionDir: dir, SessionPath: path, Label: "test"})
+	if err := current.SnapshotActivity(); err != nil {
+		t.Fatalf("SnapshotActivity current: %v", err)
+	}
+
+	if err := stale.Snapshot(); err != nil {
+		t.Fatalf("Snapshot stale diverged: %v", err)
+	}
+	recoveryPath := stale.SessionPath()
+	if recoveryPath == path || recoveryPath == "" {
+		t.Fatalf("stale session path after recovery = %q, want recovery path", recoveryPath)
+	}
+	recovered, err := agent.LoadSession(recoveryPath)
+	if err != nil {
+		t.Fatalf("LoadSession recovery: %v", err)
+	}
+	if got := recovered.Messages[len(recovered.Messages)-1].Content; got != "local second" {
+		t.Fatalf("recovery tail = %q, want local second", got)
+	}
+	loaded, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession original: %v", err)
+	}
+	if got := loaded.Messages[len(loaded.Messages)-1].Content; got != "disk second" {
+		t.Fatalf("original tail = %q, want disk second", got)
+	}
+}
+
+func TestSnapshotRewriteRecoversStaleControllerTranscript(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")
 
@@ -672,8 +718,8 @@ func TestSnapshotRewriteRejectsStaleControllerOverwrite(t *testing.T) {
 		{Role: provider.RoleSystem, Content: "sys"},
 		{Role: provider.RoleUser, Content: "summarized first"},
 	})
-	if err := stale.SnapshotRewrite(); !errors.Is(err, agent.ErrSessionSnapshotConflict) {
-		t.Fatalf("SnapshotRewrite stale err = %v, want ErrSessionSnapshotConflict", err)
+	if err := stale.SnapshotRewrite(); err != nil {
+		t.Fatalf("SnapshotRewrite stale: %v", err)
 	}
 
 	loaded, err := agent.LoadSession(path)
@@ -685,6 +731,24 @@ func TestSnapshotRewriteRejectsStaleControllerOverwrite(t *testing.T) {
 	}
 	if got := loaded.Messages[4].Content; got != "two" {
 		t.Fatalf("last message after stale rewrite = %q, want %q", got, "two")
+	}
+	recoveryPath := stale.SessionPath()
+	if recoveryPath == path || recoveryPath == "" {
+		t.Fatalf("stale session path after rewrite recovery = %q, want recovery path", recoveryPath)
+	}
+	recovered, err := agent.LoadSession(recoveryPath)
+	if err != nil {
+		t.Fatalf("LoadSession recovery: %v", err)
+	}
+	if got := recovered.Messages[1].Content; got != "summarized first" {
+		t.Fatalf("recovery content = %q, want summarized first", got)
+	}
+	meta, ok, err := agent.LoadBranchMeta(recoveryPath)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta recovery ok=%v err=%v", ok, err)
+	}
+	if !meta.Recovered || meta.ParentID != agent.BranchID(path) {
+		t.Fatalf("recovery meta = %+v, want recovered parent", meta)
 	}
 }
 

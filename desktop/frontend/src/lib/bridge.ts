@@ -57,6 +57,8 @@ import type {
   QuestionAnswer,
   ServerView,
   SessionMeta,
+  SessionRecoveryFailedEvent,
+  SessionRecoveryEvent,
   SettingsView,
   SkillsSettingsView,
   SkillRootView,
@@ -578,6 +580,20 @@ export function onReady(cb: (tabId?: string) => void): () => void {
 export function onProjectTreeChanged(cb: () => void): () => void {
   if (realApp() && typeof window !== "undefined" && window.runtime) {
     return window.runtime.EventsOn("project-tree:changed", () => cb());
+  }
+  return () => {};
+}
+
+export function onSessionRecovered(cb: (payload: SessionRecoveryEvent) => void): () => void {
+  if (realApp() && typeof window !== "undefined" && window.runtime) {
+    return window.runtime.EventsOn("session:recovered", (payload?: unknown) => cb((payload ?? {}) as SessionRecoveryEvent));
+  }
+  return () => {};
+}
+
+export function onSessionRecoveryFailed(cb: (payload: SessionRecoveryFailedEvent) => void): () => void {
+  if (realApp() && typeof window !== "undefined" && window.runtime) {
+    return window.runtime.EventsOn("session:recovery-failed", (payload?: unknown) => cb((payload ?? {}) as SessionRecoveryFailedEvent));
   }
   return () => {};
 }
@@ -3044,7 +3060,7 @@ function makeMockApp(): AppBindings {
     },
     async OpenDownloadPage() {
       if (typeof window !== "undefined") {
-        window.open("https://github.com/esengine/reasonix/releases/latest", "_blank", "noopener");
+        window.open("https://reasonix.io/#start", "_blank", "noopener");
       }
     },
     // Dev seam: drives the overlay flow in the browser until ConnectKey sets the

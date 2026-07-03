@@ -101,7 +101,9 @@ Desktop releases ride their own tag namespace, `desktop-v<semver>` (plain `v*`
 tags are the CLI release). Pushing one triggers `.github/workflows/release-desktop.yml`,
 which builds on a native runner per platform (Wails can't cross-compile a
 CGO/WebKit binary), packages each artifact, signs it with minisign, generates a
-`latest.json` manifest, publishes a GitHub release, and mirrors everything to R2.
+`latest.json` manifest, publishes a GitHub release, mirrors everything to R2,
+and attaches the current desktop manifest to the matching CLI release for old
+clients that still ask GitHub's repository-wide `latest` release for it.
 The Linux artifact links against WebKitGTK 4.1 (`-tags webkit2_41`), so it needs
 `libwebkit2gtk-4.1-0` at runtime — present by default on Ubuntu 22.04+, Fedora 40+.
 
@@ -109,9 +111,12 @@ The Linux artifact links against WebKitGTK 4.1 (`-tags webkit2_41`), so it needs
 git tag desktop-v1.1.0 && git push origin desktop-v1.1.0
 ```
 
-The app checks `latest.json` on startup (R2 first, GitHub as fallback) and shows
-an update banner when a newer version is published; **Settings → Software update**
-has a manual check. Self-update behavior by platform:
+The app checks `latest.json` on startup (R2 first, then the
+`crash.reasonix.io` desktop release gateway) and shows an update banner when a
+newer version is published; **Settings → Software update** has a manual check.
+The gateway resolves only the desktop `desktop-v*` release line and never uses
+GitHub's repository-wide `/releases/latest` shortcut, because plain `v*` tags are
+the CLI release line. Self-update behavior by platform:
 
 - **Linux / Windows** — download, verify the minisign signature, then update in
   place: Linux replaces the binary and relaunches; Windows runs the per-user NSIS

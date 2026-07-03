@@ -571,6 +571,18 @@ export const zhTW: Record<DictKey, string> = {
   "history.historySessionActions": "歷史會話操作",
   "history.trashActions": "回收站操作",
 
+  // 會話恢復
+  "recovery.branch": "恢復分支",
+  "recovery.badge": "恢復",
+  "recovery.open": "開啟恢復分支",
+  "recovery.toast": "未儲存的本機內容已儲存為 {title}。",
+  "recovery.failedLease": "恢復分支被另一個執行階段占用，未切換過去。",
+  "recovery.failedUnavailable": "無法開啟恢復分支，目前標籤仍停留在原會話。",
+  "recovery.banner": "目前會話來自儲存衝突恢復。繼續前建議與原會話對比。",
+  "recovery.reason": "原因：{reason}",
+  "recovery.digest": "摘要：{digest}",
+  "recovery.parent": "父會話：{parent}",
+
   // 專案樹
   "projectTree.workspaceTitle": "專案",
   "projectTree.pinnedTitle": "置頂",
@@ -1819,7 +1831,7 @@ export const zhTW: Record<DictKey, string> = {
   "settings.telemetryLabel": "匿名啟動統計",
   "settings.telemetryHint": "啟動時傳送隨機安裝 ID、版本號和作業系統用於統計活躍安裝量；若上次執行發生崩潰，則在本次啟動補發該崩潰報告。絕不包含對話、金鑰或檔案內容。",
   "settings.metricsLabel": "共享聚合品質指標",
-  "settings.metricsHint": "預設開啟。傳送匿名的輪次結束統計、設定偏好快照，以及 Memory v5 聚合桶，例如是否注入、大小桶、IR 數量桶和記憶圖規模桶。包含用於 DAU 去重的隨機安裝 ID。Bucket 可能包含正規化後的自訂 Provider 名和模型名——絕不包含對話、提示詞、金鑰、路徑、base URL、記憶正文、工具輸出或檔案內容。",
+  "settings.metricsHint": "預設開啟。傳送匿名的輪次結束統計、更新器錯誤類別、設定偏好快照，以及 Memory v5 聚合桶，例如是否注入、大小桶、IR 數量桶和記憶圖規模桶。包含用於 DAU 去重的隨機安裝 ID。Bucket 可能包含正規化後的自訂 Provider 名和模型名——絕不包含對話、提示詞、金鑰、路徑、base URL、記憶正文、工具輸出或檔案內容。",
   "context.windowTitle": "上下文視窗",
   "context.windowStatusHealthy": "上下文充足",
   "context.windowStatusWatch": "即將壓縮",

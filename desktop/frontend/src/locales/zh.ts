@@ -729,6 +729,18 @@ export const zh: Record<DictKey, string> = {
   "history.historySessionActions": "历史会话操作",
   "history.trashActions": "回收站操作",
 
+  // 会话恢复
+  "recovery.branch": "恢复分支",
+  "recovery.badge": "恢复",
+  "recovery.open": "打开恢复分支",
+  "recovery.toast": "未保存的本地内容已保存为 {title}。",
+  "recovery.failedLease": "恢复分支被另一个运行时占用，未切换过去。",
+  "recovery.failedUnavailable": "无法打开恢复分支，当前标签仍停留在原会话。",
+  "recovery.banner": "当前会话来自保存冲突恢复。继续前建议与原会话对比。",
+  "recovery.reason": "原因：{reason}",
+  "recovery.digest": "摘要：{digest}",
+  "recovery.parent": "父会话：{parent}",
+
   // 项目树
   "projectTree.workspaceTitle": "项目",
   "projectTree.pinnedTitle": "置顶",
@@ -1700,7 +1712,7 @@ export const zh: Record<DictKey, string> = {
   "settings.telemetryLabel": "匿名启动统计",
   "settings.telemetryHint": "启动时发送随机安装 ID、版本号和操作系统用于统计活跃安装量；若上次运行发生崩溃，则在本次启动补发该崩溃报告。绝不包含对话、密钥或文件内容。",
   "settings.metricsLabel": "共享聚合质量指标",
-  "settings.metricsHint": "默认开启。发送匿名的轮次结束统计、设置偏好快照，以及 Memory v5 聚合桶，例如是否注入、大小桶、IR 数量桶和记忆图规模桶。包含用于 DAU 去重的随机安装 ID。Bucket 可能包含归一化后的自定义 Provider 名和模型名——绝不包含对话、提示词、密钥、路径、base URL、记忆正文、工具输出或文件内容。",
+  "settings.metricsHint": "默认开启。发送匿名的轮次结束统计、更新器错误类别、设置偏好快照，以及 Memory v5 聚合桶，例如是否注入、大小桶、IR 数量桶和记忆图规模桶。包含用于 DAU 去重的随机安装 ID。Bucket 可能包含归一化后的自定义 Provider 名和模型名——绝不包含对话、提示词、密钥、路径、base URL、记忆正文、工具输出或文件内容。",
   "updater.currentVersion": "当前版本：{v}",
   "updater.channelLabel": "更新渠道：{channel}",
   "updater.checkButton": "检查更新",
