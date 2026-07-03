@@ -1005,6 +1005,7 @@ export const zhTW: Record<DictKey, string> = {
   "settings.addProvider.preset.ollamaCloudDesc": "Ollama Cloud 託管端點，支援 none 到 max 的 reasoning effort。",
   "settings.addProvider.addedBadge": "已新增",
   "settings.addProvider.confirm": "新增供應商",
+  "settings.addProvider.alreadyAddedAction": "已新增",
   "settings.customProviderName": "自訂供應商名稱",
   "settings.customProviderNamePlaceholder": "",
   "settings.providerNamePlaceholder": "供應商名稱（如 deepseek-proxy）",

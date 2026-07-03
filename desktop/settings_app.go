@@ -489,7 +489,7 @@ func providerPresetViewsForRootWithResolver(added map[string]bool, root string, 
 		models := make([]string, 0)
 		modelSeen := map[string]bool{}
 		requiresKey := false
-		addedAll := len(preset.Entries) > 0
+		addedAny := false
 		for _, entry := range preset.Entries {
 			if keyEnv == "" {
 				keyEnv = strings.TrimSpace(entry.APIKeyEnv)
@@ -500,7 +500,7 @@ func providerPresetViewsForRootWithResolver(added map[string]bool, root string, 
 			name := strings.TrimSpace(entry.Name)
 			if name != "" {
 				names = append(names, name)
-				addedAll = addedAll && added[name]
+				addedAny = addedAny || added[name]
 			}
 			for _, model := range chatProviderModels(entry.ChatModelList()) {
 				if modelSeen[model] {
@@ -521,13 +521,27 @@ func providerPresetViewsForRootWithResolver(added map[string]bool, root string, 
 			KeyEnv:        keyEnv,
 			ProviderNames: nonNil(names),
 			Models:        nonNil(models),
-			Added:         addedAll,
+			Added:         addedAny,
 			KeySet:        key.Set,
 			RequiresKey:   requiresKey,
 			Configured:    !requiresKey || key.Set,
 			KeySource:     key.Source.Label,
 			KeySourcePath: key.Source.Path,
 		})
+	}
+	return out
+}
+
+func configuredProviderSet(cfg *config.Config) map[string]bool {
+	out := map[string]bool{}
+	if cfg == nil {
+		return out
+	}
+	for i := range cfg.Providers {
+		name := strings.TrimSpace(cfg.Providers[i].Name)
+		if name != "" {
+			out[name] = true
+		}
 	}
 	return out
 }
@@ -693,7 +707,7 @@ func (a *App) Settings() SettingsView {
 	added := providerAccessSet(cfg.Desktop.ProviderAccess)
 	resolver := config.NewCredentialResolverForRoot(root)
 	v.OfficialProviders = officialProviderViewsForRootWithResolver(officialProviderAddedSet(cfg), cfg.DeepSeekOfficialPricingLanguage(), root, resolver)
-	v.ProviderPresets = providerPresetViewsForRootWithResolver(added, root, resolver)
+	v.ProviderPresets = providerPresetViewsForRootWithResolver(configuredProviderSet(cfg), root, resolver)
 	for i := range cfg.Providers {
 		p := &cfg.Providers[i]
 		v.Providers = append(v.Providers, providerViewFromEntryForRootWithResolver(*p, isOfficialBuiltInProvider(*p), added[p.Name], root, resolver))
@@ -1527,6 +1541,13 @@ func (a *App) AddProviderPresetAccess(id, key string) (string, error) {
 	if err := a.ensureActiveTabRebuildAllowed("provider access"); err != nil {
 		return "", err
 	}
+	cfg, _, err := a.loadDesktopUserConfigForEdit()
+	if err != nil {
+		return "", err
+	}
+	if existing := existingProviderNames(cfg, preset.Entries); len(existing) > 0 {
+		return "", providerPresetAlreadyAddedError(preset.ID, existing)
+	}
 	keyEnv := strings.TrimSpace(preset.KeyEnv)
 	if keyEnv == "" {
 		for _, e := range preset.Entries {
@@ -1544,6 +1565,9 @@ func (a *App) AddProviderPresetAccess(id, key string) (string, error) {
 		}
 	}
 	if err := a.applyConfigChange(func(c *config.Config) error {
+		if existing := existingProviderNames(c, preset.Entries); len(existing) > 0 {
+			return providerPresetAlreadyAddedError(preset.ID, existing)
+		}
 		names := make([]string, 0, len(preset.Entries))
 		for _, e := range preset.Entries {
 			if err := c.UpsertProvider(e); err != nil {
@@ -1557,6 +1581,27 @@ func (a *App) AddProviderPresetAccess(id, key string) (string, error) {
 		return "", err
 	}
 	return keyWarning, nil
+}
+
+func existingProviderNames(c *config.Config, entries []config.ProviderEntry) []string {
+	if c == nil || len(entries) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		name := strings.TrimSpace(entry.Name)
+		if name == "" {
+			continue
+		}
+		if _, ok := c.Provider(name); ok {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func providerPresetAlreadyAddedError(id string, names []string) error {
+	return fmt.Errorf("provider preset %q is already added as %s; edit or remove the existing provider before adding it again", id, strings.Join(names, ", "))
 }
 
 // FetchProviderModels probes the provider's OpenAI-compatible model-list

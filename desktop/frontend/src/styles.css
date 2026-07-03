@@ -13459,6 +13459,13 @@ body > .mermaid-diagram--fullscreen {
 .provider-template-card:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
 }
+.provider-template-card:disabled {
+  cursor: default;
+  opacity: 0.68;
+}
+.provider-template-card--added {
+  background: color-mix(in srgb, var(--bg-elev-1) 82%, var(--bg) 18%);
+}
 .provider-template-card--active {
   border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
   background: var(--bg-elev-2);

@@ -4109,12 +4109,14 @@ function AddProviderPanel({
   ], [providerPresets, t]);
   const [templateID, setTemplateID] = useState("official:deepseek");
   const [key, setKey] = useState("");
-  const selected = templateChoices.find((choice) => choice.id === templateID) ?? templateChoices[0];
+  const firstAvailableTemplateID = templateChoices.find((choice) => !choice.added)?.id ?? templateChoices[0]?.id ?? "";
+  const selected = templateChoices.find((choice) => choice.id === templateID) ?? templateChoices.find((choice) => choice.id === firstAvailableTemplateID) ?? templateChoices[0];
   useEffect(() => {
-    if (templateChoices.length > 0 && !templateChoices.some((choice) => choice.id === templateID)) {
-      setTemplateID(templateChoices[0].id);
+    const current = templateChoices.find((choice) => choice.id === templateID);
+    if (firstAvailableTemplateID && (!current || (current.added && firstAvailableTemplateID !== templateID))) {
+      setTemplateID(firstAvailableTemplateID);
     }
-  }, [templateChoices, templateID]);
+  }, [firstAvailableTemplateID, templateChoices, templateID]);
 
   const header = (
     <div className="provider-add-panel__head">
@@ -4163,8 +4165,8 @@ function AddProviderPanel({
             <button
               key={choice.id}
               type="button"
-              className={`provider-template-card${selected?.id === choice.id ? " provider-template-card--active" : ""}`}
-              disabled={busy}
+              className={`provider-template-card${selected?.id === choice.id ? " provider-template-card--active" : ""}${choice.added ? " provider-template-card--added" : ""}`}
+              disabled={busy || choice.added}
               onClick={() => setTemplateID(choice.id)}
             >
               <strong>
@@ -4181,7 +4183,7 @@ function AddProviderPanel({
           type="password"
           placeholder={selected ? t("settings.setKey", { env: selected.keyEnv }) : ""}
           value={key}
-          disabled={busy}
+          disabled={busy || Boolean(selected?.added)}
           onChange={(e) => setKey(e.target.value)}
         />
         <div className="prov-card__actions">
@@ -4191,14 +4193,14 @@ function AddProviderPanel({
           <button
             type="button"
             className="btn btn--primary btn--small"
-            disabled={busy || !selected}
+            disabled={busy || !selected || selected.added}
             onClick={() => {
-              if (!selected) return;
+              if (!selected || selected.added) return;
               if (selected.source === "official") void onAddOfficial(selected.kind, key.trim());
               else void onAddPreset(selected.presetID, key.trim());
             }}
           >
-            {t("settings.addProvider.confirm")}
+            {selected?.added ? t("settings.addProvider.alreadyAddedAction") : t("settings.addProvider.confirm")}
           </button>
         </div>
       </div>

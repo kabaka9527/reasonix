@@ -1500,6 +1500,7 @@ export const en = {
   "settings.addProvider.preset.ollamaCloudDesc": "Hosted Ollama Cloud endpoint with none-to-max reasoning effort.",
   "settings.addProvider.addedBadge": "Added",
   "settings.addProvider.confirm": "Add provider",
+  "settings.addProvider.alreadyAddedAction": "Already added",
   "settings.customProviderName": "Custom provider name",
   "settings.customProviderNamePlaceholder": "",
   "settings.providerNamePlaceholder": "Provider name (e.g. deepseek-proxy)",

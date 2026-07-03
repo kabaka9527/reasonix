@@ -1254,6 +1254,53 @@ func TestSettingsSurfacesCuratedProviderPresets(t *testing.T) {
 	}
 }
 
+func TestSettingsMarksPresetAddedWhenSameNameProviderExistsWithoutAccess(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	if err := os.MkdirAll(filepath.Dir(config.UserConfigPath()), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := os.WriteFile(config.UserConfigPath(), []byte(`
+[desktop]
+provider_access = []
+
+[[providers]]
+name = "mimo-api"
+kind = "openai"
+base_url = "https://custom.example/v1"
+models = ["custom-model"]
+default = "custom-model"
+api_key_env = "MIMO_API_KEY"
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	view := NewApp().Settings()
+	var presetView *ProviderPresetView
+	for i := range view.ProviderPresets {
+		if view.ProviderPresets[i].ID == "mimo-api" {
+			presetView = &view.ProviderPresets[i]
+			break
+		}
+	}
+	if presetView == nil || !presetView.Added {
+		t.Fatalf("mimo-api preset view = %+v, want added because a same-name provider exists", presetView)
+	}
+
+	var providerView *ProviderView
+	for i := range view.Providers {
+		if view.Providers[i].Name == "mimo-api" {
+			providerView = &view.Providers[i]
+			break
+		}
+	}
+	if providerView == nil {
+		t.Fatal("mimo-api provider view missing")
+	}
+	if providerView.Added {
+		t.Fatalf("mimo-api provider Added = true, want false until provider_access explicitly enables it")
+	}
+}
+
 func TestAddProviderPresetAccessSavesEditableProviderAndKey(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	t.Setenv("MIMO_API_KEY", "")
@@ -1311,6 +1358,55 @@ func TestAddProviderPresetAccessSavesEditableProviderAndKey(t *testing.T) {
 	}
 	if providerView == nil || providerView.BuiltIn || !providerView.Added || !providerView.KeySet {
 		t.Fatalf("mimo provider view = %+v, want editable added custom provider with key", providerView)
+	}
+}
+
+func TestAddProviderPresetAccessDoesNotOverwriteExistingProvider(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	t.Setenv("MIMO_API_KEY", "")
+	os.Unsetenv("MIMO_API_KEY")
+	setDesktopTestCredential(t, "MIMO_API_KEY", "sk-original")
+
+	cfg := config.Default()
+	custom := config.ProviderEntry{
+		Name:      "mimo-api",
+		Kind:      "openai",
+		BaseURL:   "https://custom.example/v1",
+		Models:    []string{"custom-model"},
+		Default:   "custom-model",
+		APIKeyEnv: "MIMO_API_KEY",
+		Headers:   map[string]string{"X-Custom": "keep-me"},
+	}
+	if err := cfg.UpsertProvider(custom); err != nil {
+		t.Fatalf("upsert custom provider: %v", err)
+	}
+	cfg.Desktop.ProviderAccess = []string{"mimo-api"}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	if warning, err := NewApp().AddProviderPresetAccess("mimo-api", "sk-new"); err == nil {
+		t.Fatal("AddProviderPresetAccess unexpectedly overwrote an existing provider")
+	} else if !strings.Contains(err.Error(), "already added") {
+		t.Fatalf("AddProviderPresetAccess error = %v, want already-added guard", err)
+	} else if warning != "" {
+		t.Fatalf("AddProviderPresetAccess warning = %q, want none on rejected add", warning)
+	}
+
+	cfg = config.LoadForEdit(config.UserConfigPath())
+	got, ok := cfg.Provider("mimo-api")
+	if !ok {
+		t.Fatal("mimo-api provider missing after rejected add")
+	}
+	if got.BaseURL != custom.BaseURL || got.DefaultModel() != custom.DefaultModel() || !reflect.DeepEqual(got.ModelList(), custom.ModelList()) || !reflect.DeepEqual(got.Headers, custom.Headers) {
+		t.Fatalf("mimo-api provider was overwritten: %+v, want custom %+v", got, custom)
+	}
+	data, err := os.ReadFile(config.UserCredentialsPath())
+	if err != nil {
+		t.Fatalf("read saved credentials: %v", err)
+	}
+	if strings.Contains(string(data), "sk-new") || !strings.Contains(string(data), "MIMO_API_KEY=sk-original") {
+		t.Fatalf("credentials changed after rejected add:\n%s", data)
 	}
 }
 
