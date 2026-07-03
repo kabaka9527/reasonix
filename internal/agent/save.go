@@ -1,14 +1,18 @@
 package agent
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"reasonix/internal/fileutil"
@@ -18,18 +22,76 @@ import (
 
 const cleanupPendingExt = ".cleanup-pending.json"
 
+var (
+	sessionSaveLocks           sync.Map
+	ErrSessionSnapshotConflict = errors.New("session snapshot conflicts with newer transcript")
+)
+
+type sessionPersistState struct {
+	path    string
+	digest  [sha256.Size]byte
+	version uint64
+	ok      bool
+}
+
+type sessionSaveMode int
+
+const (
+	sessionSaveForce sessionSaveMode = iota
+	sessionSaveSnapshot
+	sessionSaveRewrite
+)
+
 // Save writes the session's messages to path in JSONL — one provider.Message
 // per line — so a user can resume the conversation later. The file is
 // rewritten in full on every save: chat sessions are small (kilobytes), and
 // append-only would have to be reconciled with the compaction pass that
 // mutates the middle of session.Messages.
 func (s *Session) Save(path string) error {
+	return s.save(path, sessionSaveForce)
+}
+
+// SaveSnapshot writes a normal autosave/snapshot only when doing so cannot hide
+// a newer transcript already on disk. Explicit history rewrites such as rewind,
+// compaction, and cancel recovery should call SaveRewrite instead.
+func (s *Session) SaveSnapshot(path string) error {
+	return s.save(path, sessionSaveSnapshot)
+}
+
+// SaveRewrite writes an intentional non-append history rewrite only while this
+// Session still owns the current on-disk transcript baseline. It prevents a
+// stale controller from force-rewinding a newer transcript written elsewhere.
+func (s *Session) SaveRewrite(path string) error {
+	return s.save(path, sessionSaveRewrite)
+}
+
+func (s *Session) save(path string, mode sessionSaveMode) error {
 	if path == "" {
 		return fmt.Errorf("empty session path")
 	}
+	msgs, version := s.snapshotWithVersion()
+	digest, err := digestSessionMessages(msgs)
+	if err != nil {
+		return err
+	}
+	unlock := lockSessionSavePath(path)
+	defer unlock()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create session dir: %w", err)
 	}
+	if mode != sessionSaveForce {
+		if err := s.checkSnapshotWrite(path, msgs, digest, version, mode == sessionSaveRewrite); err != nil {
+			return err
+		}
+	}
+	if err := writeSessionMessages(path, msgs); err != nil {
+		return err
+	}
+	s.markPersisted(path, digest, version)
+	return nil
+}
+
+func writeSessionMessages(path string, msgs []provider.Message) error {
 	// Write to a sibling tmp file then rename, so a crash mid-write can't
 	// leave a partial JSONL that won't reload.
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".session.*.tmp")
@@ -38,7 +100,7 @@ func (s *Session) Save(path string) error {
 	}
 	tmpPath := tmp.Name()
 	enc := json.NewEncoder(tmp)
-	for _, m := range s.Snapshot() { // copy under the lock — a turn may be appending
+	for _, m := range msgs {
 		if err := enc.Encode(m); err != nil {
 			tmp.Close()
 			os.Remove(tmpPath)
@@ -54,6 +116,134 @@ func (s *Session) Save(path string) error {
 		return err
 	}
 	return nil
+}
+
+func (s *Session) checkSnapshotWrite(path string, next []provider.Message, nextDigest [sha256.Size]byte, nextVersion uint64, allowOwnedRewrite bool) error {
+	current, err := LoadSession(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	existing := current.Snapshot()
+	existingDigest, err := digestSessionMessages(existing)
+	if err != nil {
+		return err
+	}
+	if bytes.Equal(existingDigest[:], nextDigest[:]) || messagesHavePrefix(next, existing) || messagesHavePrefixWithCompatibleSystem(next, existing) {
+		return nil
+	}
+	if allowOwnedRewrite && s.ownsPersistedState(path, existingDigest, nextVersion) {
+		return nil
+	}
+	if messagesHavePrefix(existing, next) || messagesHavePrefixWithCompatibleSystem(existing, next) {
+		return fmt.Errorf("%w: %s has %d messages; stale snapshot has %d",
+			ErrSessionSnapshotConflict, path, len(existing), len(next))
+	}
+	return fmt.Errorf("%w: %s diverged on disk (%d messages) from snapshot (%d messages)",
+		ErrSessionSnapshotConflict, path, len(existing), len(next))
+}
+
+func (s *Session) ownsPersistedState(path string, existingDigest [sha256.Size]byte, nextVersion uint64) bool {
+	state := s.persistState(path)
+	return state.ok && state.version <= nextVersion && bytes.Equal(existingDigest[:], state.digest[:])
+}
+
+func (s *Session) persistState(path string) sessionPersistState {
+	key := canonicalSessionSavePath(path)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.persisted.ok && s.persisted.path == key {
+		return s.persisted
+	}
+	return sessionPersistState{}
+}
+
+func (s *Session) markPersisted(path string, digest [sha256.Size]byte, version uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.persisted = sessionPersistState{
+		path:    canonicalSessionSavePath(path),
+		digest:  digest,
+		version: version,
+		ok:      true,
+	}
+}
+
+func digestSessionMessages(msgs []provider.Message) ([sha256.Size]byte, error) {
+	h := sha256.New()
+	for _, m := range msgs {
+		b, err := json.Marshal(m)
+		if err != nil {
+			return [sha256.Size]byte{}, err
+		}
+		if _, err := h.Write(b); err != nil {
+			return [sha256.Size]byte{}, err
+		}
+		if _, err := h.Write([]byte{'\n'}); err != nil {
+			return [sha256.Size]byte{}, err
+		}
+	}
+	var out [sha256.Size]byte
+	copy(out[:], h.Sum(nil))
+	return out, nil
+}
+
+func messagesHavePrefix(full, prefix []provider.Message) bool {
+	if len(prefix) > len(full) {
+		return false
+	}
+	for i := range prefix {
+		if !messagesEqualForStorage(full[i], prefix[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func messagesHavePrefixWithCompatibleSystem(full, prefix []provider.Message) bool {
+	full = messagesWithoutLeadingSystem(full)
+	prefix = messagesWithoutLeadingSystem(prefix)
+	return messagesHavePrefix(full, prefix)
+}
+
+func messagesWithoutLeadingSystem(msgs []provider.Message) []provider.Message {
+	if len(msgs) > 0 && msgs[0].Role == provider.RoleSystem {
+		return msgs[1:]
+	}
+	return msgs
+}
+
+func messagesEqualForStorage(a, b provider.Message) bool {
+	ab, err := json.Marshal(a)
+	if err != nil {
+		return false
+	}
+	bb, err := json.Marshal(b)
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(ab, bb)
+}
+
+func lockSessionSavePath(path string) func() {
+	key := canonicalSessionSavePath(path)
+	v, _ := sessionSaveLocks.LoadOrStore(key, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
+func canonicalSessionSavePath(path string) string {
+	key := filepath.Clean(strings.TrimSpace(path))
+	if abs, err := filepath.Abs(key); err == nil {
+		key = abs
+	}
+	if runtime.GOOS == "windows" {
+		key = strings.ToLower(key)
+	}
+	return key
 }
 
 // LoadSession reads a JSONL file written by Save into a fresh Session value.
@@ -96,6 +286,9 @@ func LoadSession(path string) (*Session, error) {
 		s.normalizedDirty = true
 	}
 	s.Messages = normalized
+	if digest, err := digestSessionMessages(s.Messages); err == nil {
+		s.markPersisted(path, digest, s.version)
+	}
 	return s, nil
 }
 

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -85,6 +86,202 @@ func TestSaveLoadLargeMessage(t *testing.T) {
 	}
 	if loaded.Messages[2].Content != big {
 		t.Errorf("large content not round-tripped (got %d bytes, want %d)", len(loaded.Messages[2].Content), len(big))
+	}
+}
+
+func TestSaveSnapshotRejectsStalePrefixOverwrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	current := NewSession("sys")
+	current.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	current.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	current.Add(provider.Message{Role: provider.RoleUser, Content: "second"})
+	current.Add(provider.Message{Role: provider.RoleAssistant, Content: "two"})
+	if err := current.Save(path); err != nil {
+		t.Fatalf("Save current: %v", err)
+	}
+
+	stale := NewSession("sys")
+	stale.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	stale.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	if err := stale.SaveSnapshot(path); !errors.Is(err, ErrSessionSnapshotConflict) {
+		t.Fatalf("SaveSnapshot stale prefix err = %v, want ErrSessionSnapshotConflict", err)
+	}
+
+	loaded, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if got := len(loaded.Messages); got != 5 {
+		t.Fatalf("message count after stale snapshot = %d, want 5", got)
+	}
+	if got := loaded.Messages[4].Content; got != "two" {
+		t.Fatalf("last message after stale snapshot = %q, want %q", got, "two")
+	}
+}
+
+func TestSaveSnapshotAllowsAppendFromDiskPrefix(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	base := NewSession("sys")
+	base.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	if err := base.Save(path); err != nil {
+		t.Fatalf("Save base: %v", err)
+	}
+
+	next := NewSession("sys")
+	next.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	next.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	if err := next.SaveSnapshot(path); err != nil {
+		t.Fatalf("SaveSnapshot append: %v", err)
+	}
+
+	loaded, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if got := len(loaded.Messages); got != 3 {
+		t.Fatalf("message count after append snapshot = %d, want 3", got)
+	}
+}
+
+func TestSaveSnapshotAllowsAppendAfterSystemPromptRefresh(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	base := NewSession("old sys")
+	base.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	if err := base.Save(path); err != nil {
+		t.Fatalf("Save base: %v", err)
+	}
+
+	next := NewSession("new sys")
+	next.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	next.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	if err := next.SaveSnapshot(path); err != nil {
+		t.Fatalf("SaveSnapshot after system refresh: %v", err)
+	}
+
+	loaded, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if got := len(loaded.Messages); got != 3 {
+		t.Fatalf("message count after system refresh append = %d, want 3", got)
+	}
+	if got := loaded.Messages[0].Content; got != "new sys" {
+		t.Fatalf("system prompt after refresh = %q, want %q", got, "new sys")
+	}
+}
+
+func TestSaveSnapshotRejectsStalePrefixAfterSystemPromptRefresh(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	current := NewSession("new sys")
+	current.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	current.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	current.Add(provider.Message{Role: provider.RoleUser, Content: "second"})
+	if err := current.Save(path); err != nil {
+		t.Fatalf("Save current: %v", err)
+	}
+
+	stale := NewSession("old sys")
+	stale.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	stale.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	if err := stale.SaveSnapshot(path); !errors.Is(err, ErrSessionSnapshotConflict) {
+		t.Fatalf("SaveSnapshot stale after system refresh err = %v, want ErrSessionSnapshotConflict", err)
+	}
+
+	loaded, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if got := len(loaded.Messages); got != 4 {
+		t.Fatalf("message count after stale system refresh snapshot = %d, want 4", got)
+	}
+	if got := loaded.Messages[3].Content; got != "second" {
+		t.Fatalf("last message after stale system refresh snapshot = %q, want %q", got, "second")
+	}
+}
+
+func TestSaveSnapshotRejectsOwnedNonPrefixRewrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	s := NewSession("sys")
+	s.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	s.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	if err := s.Save(path); err != nil {
+		t.Fatalf("Save base: %v", err)
+	}
+
+	s.Replace([]provider.Message{
+		{Role: provider.RoleSystem, Content: "sys"},
+		{Role: provider.RoleUser, Content: "summarized first"},
+	})
+	if err := s.SaveSnapshot(path); !errors.Is(err, ErrSessionSnapshotConflict) {
+		t.Fatalf("SaveSnapshot owned rewrite err = %v, want ErrSessionSnapshotConflict", err)
+	}
+
+	loaded, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if got := len(loaded.Messages); got != 3 {
+		t.Fatalf("message count after rejected snapshot rewrite = %d, want 3", got)
+	}
+	if got := loaded.Messages[2].Content; got != "one" {
+		t.Fatalf("last message after rejected snapshot rewrite = %q, want %q", got, "one")
+	}
+}
+
+func TestSaveRewriteAllowsOwnedNonPrefixRewrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	s := NewSession("sys")
+	s.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	s.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	if err := s.Save(path); err != nil {
+		t.Fatalf("Save base: %v", err)
+	}
+
+	s.Replace([]provider.Message{
+		{Role: provider.RoleSystem, Content: "sys"},
+		{Role: provider.RoleUser, Content: "summarized first"},
+	})
+	if err := s.SaveRewrite(path); err != nil {
+		t.Fatalf("SaveRewrite owned rewrite: %v", err)
+	}
+
+	loaded, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if got := len(loaded.Messages); got != 2 {
+		t.Fatalf("message count after rewrite = %d, want 2", got)
+	}
+	if got := loaded.Messages[1].Content; got != "summarized first" {
+		t.Fatalf("rewritten content = %q, want %q", got, "summarized first")
+	}
+}
+
+func TestSaveRewriteRejectsStalePrefixOverwrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	current := NewSession("sys")
+	current.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	current.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	current.Add(provider.Message{Role: provider.RoleUser, Content: "second"})
+	if err := current.Save(path); err != nil {
+		t.Fatalf("Save current: %v", err)
+	}
+
+	stale := NewSession("sys")
+	stale.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	if err := stale.SaveRewrite(path); !errors.Is(err, ErrSessionSnapshotConflict) {
+		t.Fatalf("SaveRewrite stale err = %v, want ErrSessionSnapshotConflict", err)
+	}
+
+	loaded, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if got := len(loaded.Messages); got != 4 {
+		t.Fatalf("message count after stale rewrite = %d, want 4", got)
+	}
+	if got := loaded.Messages[3].Content; got != "second" {
+		t.Fatalf("last message after stale rewrite = %q, want %q", got, "second")
 	}
 }
 

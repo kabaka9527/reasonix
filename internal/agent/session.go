@@ -16,7 +16,9 @@ import (
 type Session struct {
 	mu             sync.RWMutex
 	Messages       []provider.Message
+	version        uint64
 	rewriteVersion int // bumped each time the log is rewritten (compact/fold)
+	persisted      sessionPersistState
 	// normalizedDirty is set when LoadSession repaired the history on the way in
 	// (empty tool-call names, dangling calls, truncated args, …). The repair
 	// already lives in Messages, so the next Save persists it automatically as
@@ -39,6 +41,7 @@ func (s *Session) Add(m provider.Message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Messages = append(s.Messages, m)
+	s.version++
 }
 
 // Replace swaps the whole message log — used by compaction, which rewrites the
@@ -47,22 +50,37 @@ func (s *Session) Replace(msgs []provider.Message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Messages = msgs
+	s.version++
 }
 
 // Snapshot returns a copy of the messages, safe to read from another goroutine
 // while a turn appends. Frontends (History, Save) use it instead of touching the
 // live slice.
 func (s *Session) Snapshot() []provider.Message {
+	msgs, _ := s.snapshotWithVersion()
+	return msgs
+}
+
+func (s *Session) snapshotWithVersion() ([]provider.Message, uint64) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return append([]provider.Message(nil), s.Messages...)
+	return append([]provider.Message(nil), s.Messages...), s.version
 }
 
 // RewriteVersion returns the current rewrite version.
-func (s *Session) RewriteVersion() int { return s.rewriteVersion }
+func (s *Session) RewriteVersion() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.rewriteVersion
+}
 
 // IncrementRewrite bumps the rewrite version by 1.
-func (s *Session) IncrementRewrite() { s.rewriteVersion++ }
+func (s *Session) IncrementRewrite() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rewriteVersion++
+	s.version++
+}
 
 // HasContent returns true when the session carries at least one user,
 // assistant, or tool message — i.e. more than just a system prompt. An
