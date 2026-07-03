@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -186,6 +187,58 @@ func TestEnsureBlankTabCreatesOneBlankPerProject(t *testing.T) {
 	}
 	if tabs := app.ListTabs(); len(tabs) != 1 {
 		t.Fatalf("ListTabs length = %d, want 1: %+v", len(tabs), tabs)
+	}
+}
+
+func TestEnsureBlankTabStartsProjectRuntimeWithCurrentWorkspacePrompt(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	projectA := robustTempDir(t)
+	projectB := robustTempDir(t)
+	if err := addProject(projectA, "Project A"); err != nil {
+		t.Fatalf("add project A: %v", err)
+	}
+	if err := addProject(projectB, "Project B"); err != nil {
+		t.Fatalf("add project B: %v", err)
+	}
+
+	app := NewApp()
+	first, err := app.EnsureBlankTab("project", projectA)
+	if err != nil {
+		t.Fatalf("EnsureBlankTab(project A): %v", err)
+	}
+	tabA := waitForTabReady(t, app, first.ID)
+	if got := normalizeProjectRoot(tabA.Ctrl.WorkspaceRoot()); got != normalizeProjectRoot(projectA) {
+		t.Fatalf("project A controller workspace root = %q, want %q", got, normalizeProjectRoot(projectA))
+	}
+
+	second, err := app.EnsureBlankTab("project", projectB)
+	if err != nil {
+		t.Fatalf("EnsureBlankTab(project B): %v", err)
+	}
+	if second.ID == first.ID {
+		t.Fatalf("EnsureBlankTab reused project A tab %q for project B", second.ID)
+	}
+	tabB := waitForTabReady(t, app, second.ID)
+
+	if got := normalizeProjectRoot(tabB.WorkspaceRoot); got != normalizeProjectRoot(projectB) {
+		t.Fatalf("project B tab workspace root = %q, want %q", got, normalizeProjectRoot(projectB))
+	}
+	if got := normalizeProjectRoot(tabB.Ctrl.WorkspaceRoot()); got != normalizeProjectRoot(projectB) {
+		t.Fatalf("project B controller workspace root = %q, want %q", got, normalizeProjectRoot(projectB))
+	}
+	if !sameDesktopPath(tabB.Ctrl.SessionDir(), desktopSessionDir(projectB)) {
+		t.Fatalf("project B controller session dir = %q, want %q", tabB.Ctrl.SessionDir(), desktopSessionDir(projectB))
+	}
+	if !sameDesktopPath(filepath.Dir(tabB.Ctrl.SessionPath()), desktopSessionDir(projectB)) {
+		t.Fatalf("project B controller session path = %q, want under %q", tabB.Ctrl.SessionPath(), desktopSessionDir(projectB))
+	}
+	sys := systemPromptFrom(tabB.Ctrl.History())
+	if !strings.Contains(sys, "Current workspace: "+projectB) {
+		t.Fatalf("project B system prompt missing current workspace %q:\n%s", projectB, sys)
+	}
+	if strings.Contains(sys, "Current workspace: "+projectA) {
+		t.Fatalf("project B system prompt retained project A workspace %q:\n%s", projectA, sys)
 	}
 }
 
