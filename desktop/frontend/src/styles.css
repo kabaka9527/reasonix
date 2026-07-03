@@ -9230,6 +9230,8 @@ body > .mermaid-diagram--fullscreen {
   min-width: 0;
 }
 .mem-select {
+  padding-right: 30px;
+  text-overflow: ellipsis;
 }
 .mem-hint {
   margin-top: 6px;
@@ -13895,6 +13897,11 @@ body > .mermaid-diagram--fullscreen {
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: 6px;
+}
+.set-rule--path {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 .set-rule__x {
   border: none;
