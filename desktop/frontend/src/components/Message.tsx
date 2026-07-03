@@ -225,7 +225,6 @@ export function UserMessage({
     for (const { block } of ordered) {
       const idx = remaining.indexOf(block.label);
       if (idx < 0) continue;
-      const state = pasteStates[block.label];
       // Text before the label: strip the trailing newline that separated the
       // label from the preceding line so the card sits tight against the text.
       if (idx > 0) {
@@ -233,18 +232,14 @@ export function UserMessage({
         before = before.replace(/\n$/, "");
         if (before) segments.push({ type: "text", content: before });
       }
-      if (state?.expanded) {
-        segments.push({ type: "text", content: block.content });
-      } else {
-        segments.push({ type: "paste", block });
-      }
+      segments.push({ type: "paste", block });
       remaining = remaining.slice(idx + block.label.length);
     }
     // Strip the leading newline that followed the label.
     remaining = remaining.replace(/^\n/, "");
     if (remaining.trim()) segments.push({ type: "text", content: remaining });
     return segments.length > 0 ? segments : [{ type: "text", content: displayText }];
-  }, [displayText, pasteBlocks, pasteStates]);
+  }, [displayText, pasteBlocks]);
 
   const togglePastePreview = (label: string) => {
     setPasteStates((prev) => ({
@@ -253,10 +248,10 @@ export function UserMessage({
     }));
   };
 
-  const expandPasteBlock = (label: string) => {
+  const togglePasteExpand = (label: string) => {
     setPasteStates((prev) => ({
       ...prev,
-      [label]: { previewOpen: false, expanded: true },
+      [label]: { previewOpen: false, expanded: !prev[label]?.expanded },
     }));
   };
   const orderedDraftAttachments = sortDisplayAttachments(draftAttachments);
@@ -446,19 +441,25 @@ export function UserMessage({
                       <FileText size={15} />
                       <span className="msg-pasted-label">{seg.block.label}</span>
                       <div className="msg-pasted-actions">
-                        <Tooltip label={t(state.previewOpen ? "composer.pastedHidePreview" : "composer.pastedShowPreview")}>
-                          <button type="button" onClick={() => togglePastePreview(seg.block.label)}>
-                            <Eye size={14} />
-                          </button>
-                        </Tooltip>
-                        <Tooltip label={t("msg.pastedExpandTooltip")}>
-                          <button type="button" onClick={() => expandPasteBlock(seg.block.label)}>
-                            {t("composer.pastedExpand")}
+                        {!state.expanded && (
+                          <Tooltip label={t(state.previewOpen ? "composer.pastedHidePreview" : "composer.pastedShowPreview")}>
+                            <button type="button" onClick={() => togglePastePreview(seg.block.label)}>
+                              <Eye size={14} />
+                            </button>
+                          </Tooltip>
+                        )}
+                        <Tooltip label={t(state.expanded ? "msg.pastedCollapseTooltip" : "msg.pastedExpandTooltip")}>
+                          <button type="button" onClick={() => togglePasteExpand(seg.block.label)}>
+                            {state.expanded ? t("common.collapse") : t("composer.pastedExpand")}
                           </button>
                         </Tooltip>
                       </div>
                     </div>
-                    {state.previewOpen && <pre className="msg-pasted-preview">{seg.block.content}</pre>}
+                    {state.expanded ? (
+                      <div className="msg-pasted-expanded">{seg.block.content}</div>
+                    ) : (
+                      state.previewOpen && <pre className="msg-pasted-preview">{seg.block.content}</pre>
+                    )}
                   </div>
                 </div>
               );
