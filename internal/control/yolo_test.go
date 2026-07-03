@@ -211,6 +211,22 @@ func TestToolApprovalModeAutoForcesMemoryAskRules(t *testing.T) {
 	}
 }
 
+func TestToolApprovalModeYoloForcesMemoryAskRules(t *testing.T) {
+	c := New(Options{})
+	c.SetToolApprovalMode(ToolApprovalYolo)
+
+	gate := c.newInteractiveGate()
+	for _, toolName := range []string{"remember", "forget"} {
+		if got := gate.Policy.Decide(toolName, false, json.RawMessage(`{}`)); got != permission.Ask {
+			t.Fatalf("%s under yolo mode = %v, want ask", toolName, got)
+		}
+	}
+	// Verify that regular tools ARE auto-allowed in YOLO (sanity check).
+	if got := gate.Policy.Decide("bash", false, json.RawMessage(`{"command":"go test ./..."}`)); got != permission.Allow {
+		t.Fatalf("regular tool under yolo mode = %v, want allow", got)
+	}
+}
+
 func TestToolApprovalModeAutoDrainsPendingFallbackApproval(t *testing.T) {
 	approvalRequests := make(chan event.Approval, 1)
 	c := New(Options{
