@@ -1371,10 +1371,14 @@ func sameConfigPath(a, b string) bool {
 	return filepath.Clean(a) == filepath.Clean(b)
 }
 
-// rebuild tears down the controller and rebuilds it from the (just-changed)
-// config, carrying the conversation forward. It keeps the active model if it
-// still resolves; otherwise it falls back to the new default. Mirrors SetModel.
+// rebuild builds a replacement controller from the (just-changed) config and
+// swaps it in only after the target session lease is available. The old
+// controller stays usable if the rebuild fails.
 func (a *App) rebuild() error {
+	return a.rebuildSetting("settings")
+}
+
+func (a *App) rebuildSetting(setting string) error {
 	if a.ctx == nil {
 		return nil
 	}
@@ -1383,22 +1387,41 @@ func (a *App) rebuild() error {
 		return fmt.Errorf("no active tab")
 	}
 	if controllerHasActiveRuntimeWork(a.controllerForTab(tab)) {
-		return rebuildControllerActiveWorkError("settings")
+		return rebuildControllerActiveWorkError(setting)
 	}
 	if err := a.ensureTabControllerWorkspace(tab); err != nil {
 		return err
 	}
 	prevPath := a.reconciledSessionPathForTab(tab)
+	if prevPath == "" {
+		prevPath = strings.TrimSpace(tab.currentSessionPath())
+	}
+	if a.controllerForTab(tab) == nil && prevPath != "" && a.attachExistingSessionRuntime(tab, prevPath, a.ctx) {
+		prevPath = a.reconciledSessionPathForTab(tab)
+		if prevPath == "" {
+			prevPath = strings.TrimSpace(tab.currentSessionPath())
+		}
+	}
+	if controllerHasActiveRuntimeWork(a.controllerForTab(tab)) {
+		return rebuildControllerActiveWorkError(setting)
+	}
+	if err := a.ensureTabControllerWorkspace(tab); err != nil {
+		return err
+	}
+
 	var carried []provider.Message
-	if oldCtrl := a.controllerForTab(tab); oldCtrl != nil {
+	oldCtrl := a.controllerForTab(tab)
+	if oldCtrl != nil {
 		if prevPath == "" {
 			prevPath = oldCtrl.SessionPath()
+		}
+		if err := tab.ensureSessionLease(prevPath); err != nil {
+			return userFacingSessionLeaseError(setting, err)
 		}
 		if err := a.snapshotTabForAction(tab, "rebuilding settings"); err != nil {
 			return err
 		}
 		carried = oldCtrl.History()
-		oldCtrl.Close()
 	}
 	model := tab.model
 	if cfg, err := config.LoadForRoot(tab.WorkspaceRoot); err == nil {
@@ -1423,12 +1446,13 @@ func (a *App) rebuild() error {
 		OnSessionRecovered:       a.handleTabSessionRecovered(tab),
 	})
 	if err != nil {
-		tab.releaseSessionLease()
-		a.mu.Lock()
-		tab.StartupErr = err.Error()
-		tab.Ready = true
-		a.mu.Unlock()
-		a.emitReady(a.ctx)
+		if oldCtrl == nil {
+			a.mu.Lock()
+			tab.StartupErr = err.Error()
+			tab.Ready = true
+			a.mu.Unlock()
+			a.emitReady(a.ctx)
+		}
 		return err
 	}
 	a.bindControllerDisplayRecorder(ctrl)
@@ -1444,14 +1468,11 @@ func (a *App) rebuild() error {
 	path := agent.ContinueSessionPath(prevPath, ctrl.SessionDir(), ctrl.Label())
 	if err := tab.ensureSessionLease(path); err != nil {
 		ctrl.Close()
-		tab.releaseSessionLease()
-		return err
+		return userFacingSessionLeaseError(setting, err)
 	}
-	if len(carried) > 0 {
-		carried = withFreshSystemPrompt(carried, systemPromptFrom(ctrl.History()))
-		ctrl.Resume(&agent.Session{Messages: carried}, path)
-	} else if path != "" {
-		ctrl.SetSessionPath(path)
+	resumeWithFreshSystemPrompt(ctrl, carried, path)
+	if oldCtrl != nil {
+		oldCtrl.Close()
 	}
 	a.persistTabSessionPath(tab, path)
 	a.mu.Lock()
@@ -2264,7 +2285,7 @@ func (a *App) SetProviderKey(apiKeyEnv, value string) (string, error) {
 	if err := a.ensureProviderAccessForKey(apiKeyEnv); err != nil {
 		return "", err
 	}
-	if err := a.rebuild(); err != nil {
+	if err := a.rebuildSetting("provider key"); err != nil {
 		return "", err
 	}
 	return warning, nil
@@ -2333,7 +2354,7 @@ func (a *App) ClearProviderKey(apiKeyEnv string) error {
 	if err := removeDotEnv(apiKeyEnv); err != nil {
 		return err
 	}
-	return a.rebuild()
+	return a.rebuildSetting("provider key")
 }
 
 // SetPermissionMode sets the writer-fallback mode (ask|allow|deny).

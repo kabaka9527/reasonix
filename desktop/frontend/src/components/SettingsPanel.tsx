@@ -1,5 +1,5 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent, type ReactNode } from "react";
-import { Bot as BotIcon, Check, CheckCircle2, ChevronDown, ChevronUp, Clipboard, GripVertical, KeyRound, Loader2, MessageCircle, Play, QrCode, RefreshCw, Send } from "lucide-react";
+import { Bot as BotIcon, Check, CheckCircle2, ChevronDown, ChevronUp, Clipboard, GripVertical, KeyRound, Loader2, MessageCircle, Minus, Play, Plus, QrCode, RefreshCw, RotateCcw, Send } from "lucide-react";
 import { asArray } from "../lib/array";
 import { useDeferredClose } from "../lib/useMountTransition";
 import { app } from "../lib/bridge";
@@ -17,7 +17,7 @@ import {
   type ThemeStyle,
 } from "../lib/theme";
 import { TEXT_SIZES, applyTextSize, getTextSize, type TextSize } from "../lib/textSize";
-import { snapZoom, zoomToPercent, saveRestartZoom, getRestartZoom, type ZoomLevel } from "../lib/dpiScale";
+import { DEFAULT_ZOOM, MAX_ZOOM, MIN_ZOOM, ZOOM_STEP, snapZoom, zoomToPercent, saveRestartZoom, getRestartZoom, type ZoomLevel } from "../lib/dpiScale";
 import {
   applyFontFamily,
   applyMonoFontFamily,
@@ -102,6 +102,7 @@ export function SettingsPanel({
   const [tab, setTab] = useState<SettingsTab>(initialTab === "providers" ? "models" : initialTab ?? "general");
   // Play the modal exit animation, then let the parent unmount us.
   const { status, requestClose } = useDeferredClose(onClose, 240);
+  const zoomSaveSeq = useRef(0);
 
   const reload = useCallback(async () => {
     setLoadingSettings(true);
@@ -129,6 +130,24 @@ export function SettingsPanel({
     setThemeState(nextTheme);
     setThemeStyleState(nextStyle);
   }, [s?.desktopTheme, s?.desktopThemeStyle]);
+  useEffect(() => {
+    if (desktopPlatform !== "windows") return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const persisted = await app.GetDesktopZoomFactor();
+        if (cancelled || typeof persisted !== "number" || !Number.isFinite(persisted)) return;
+        const snapped = snapZoom(persisted);
+        saveRestartZoom(snapped);
+        setZoomPct(zoomToPercent(snapped));
+      } catch {
+        // Older mocks or startup races can lack the binding; keep the local fallback.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [desktopPlatform]);
 
   // apply runs a mutation, re-reads settings, and refreshes the topbar/model.
   const apply = useCallback(async (fn: () => Promise<unknown>) => {
@@ -159,6 +178,21 @@ export function SettingsPanel({
       setErr(String((e as Error)?.message ?? e));
     }
   }, [reload, onChanged]);
+  const setRestartZoom = useCallback(async (zoom: ZoomLevel) => {
+    const snapped = snapZoom(zoom);
+    const seq = ++zoomSaveSeq.current;
+    setErr(null);
+    setWarning(null);
+    setZoomPct(zoomToPercent(snapped));
+    try {
+      await app.SetDesktopZoomFactor(snapped);
+      if (seq === zoomSaveSeq.current) saveRestartZoom(snapped);
+    } catch (e) {
+      if (seq !== zoomSaveSeq.current) return;
+      setErr(String((e as Error)?.message ?? e));
+      setZoomPct(zoomToPercent(getRestartZoom()));
+    }
+  }, []);
 
   // Close on Esc
   useEffect(() => {
@@ -248,18 +282,7 @@ export function SettingsPanel({
                         applyTextSize(size);
                         setTextSizeState(size);
                       }}
-                      onRestartZoom={async (zoom) => {
-                        const snapped = snapZoom(zoom);
-                        setErr(null);
-                        setWarning(null);
-                        try {
-                          await app.SetDesktopZoomFactor(snapped);
-                          saveRestartZoom(snapped);
-                          setZoomPct(zoomToPercent(snapped));
-                        } catch (e) {
-                          setErr(String((e as Error)?.message ?? e));
-                        }
-                      }}
+                      onRestartZoom={setRestartZoom}
                       onFontFamily={(font) => {
                         applyFontFamily(font);
                         setFontFamilyState(font);
@@ -4705,6 +4728,10 @@ function providerTemplateConflictProviderName(choice: ProviderTemplateChoice): s
 
 function providerPresetDescription(preset: ProviderPresetView, t: ReturnType<typeof useT>): string {
   switch (preset.id) {
+    case "longcat-openai":
+      return t("settings.addProvider.preset.longcatOpenAIDesc");
+    case "longcat-anthropic":
+      return t("settings.addProvider.preset.longcatAnthropicDesc");
     case "kimi-cn":
       return t("settings.addProvider.preset.kimiCnDesc");
     case "kimi-global":
@@ -5642,10 +5669,17 @@ function ProviderEditor({
 
   const save = async () => {
     if (extraBodyInvalid) return;
+    setFetchStatus(null);
+    setFetchFallback(null);
     const ms = parseProviderListInput(models);
     const vms = parseProviderListInput(visionModels).filter((model) => ms.includes(model));
     const effectiveApiKeyEnv = providerApiKeyEnvForSave(name, apiKeyEnv, keyDraft);
-    if (keyDraft.trim()) await app.SetProviderKey(effectiveApiKeyEnv, keyDraft.trim());
+    try {
+      if (keyDraft.trim()) await app.SetProviderKey(effectiveApiKeyEnv, keyDraft.trim());
+    } catch (e) {
+      setFetchFallback(String((e as Error)?.message ?? e));
+      return;
+    }
     onSave({
       name: name.trim(),
       builtIn: initial?.builtIn ?? false,
@@ -6582,6 +6616,15 @@ function AppearanceSection({
   const themeOptions: Theme[] = ["auto", "light", "dark"];
   const availableFontFamilies = useMemo(() => getAvailableFontFamilies(fontFamily), [fontFamily]);
   const availableMonoFontFamilies = useMemo(() => getAvailableMonoFontFamilies(monoFontFamily), [monoFontFamily]);
+  const zoomMinPct = zoomToPercent(MIN_ZOOM);
+  const zoomMaxPct = zoomToPercent(MAX_ZOOM);
+  const zoomStepPct = Math.round(ZOOM_STEP * 100);
+  const zoomProgressPct = Math.min(100, Math.max(0, ((zoomPct - zoomMinPct) / (zoomMaxPct - zoomMinPct)) * 100));
+  const canDecreaseZoom = zoomPct > zoomMinPct;
+  const canIncreaseZoom = zoomPct < zoomMaxPct;
+  const setZoomPercent = (pct: number) => {
+    void onRestartZoom(pct / 100);
+  };
   return (
     <SettingsSection title={t("settings.appearance")}>
       <SettingsField label={t("settings.theme")}>
@@ -6647,30 +6690,62 @@ function AppearanceSection({
       {showDisplayZoom && (
         <SettingsField label={t("settings.displayZoom")}>
           <div className="zoom-slider-wrap">
-            <div className="zoom-slider__value">{zoomPct}%</div>
+            <div className="zoom-slider__head">
+              <div className="zoom-slider__value">{zoomPct}%</div>
+              <div className="zoom-stepper">
+                <button
+                  type="button"
+                  className="zoom-stepper__btn"
+                  aria-label={t("settings.displayZoomDecrease")}
+                  title={t("settings.displayZoomDecrease")}
+                  disabled={!canDecreaseZoom}
+                  onClick={() => setZoomPercent(zoomPct - zoomStepPct)}
+                >
+                  <Minus size={13} aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  className="zoom-stepper__reset"
+                  aria-label={t("settings.displayZoomReset")}
+                  title={t("settings.displayZoomReset")}
+                  disabled={zoomPct === zoomToPercent(DEFAULT_ZOOM)}
+                  onClick={() => { void onRestartZoom(DEFAULT_ZOOM); }}
+                >
+                  <RotateCcw size={12} aria-hidden="true" />
+                  <span>100%</span>
+                </button>
+                <button
+                  type="button"
+                  className="zoom-stepper__btn"
+                  aria-label={t("settings.displayZoomIncrease")}
+                  title={t("settings.displayZoomIncrease")}
+                  disabled={!canIncreaseZoom}
+                  onClick={() => setZoomPercent(zoomPct + zoomStepPct)}
+                >
+                  <Plus size={13} aria-hidden="true" />
+                </button>
+              </div>
+            </div>
             <div className="zoom-slider-row">
-              <span className="zoom-slider__label">50%</span>
+              <span className="zoom-slider__label">{zoomMinPct}%</span>
               <div className="slider-track">
                 <div className="slider-track__bg" />
                 <div
                   className="slider-track__fill"
-                  style={{ width: `calc(${((zoomPct - 50) / 150) * 100}% + 15px)` }}
+                  style={{ width: `calc(${zoomProgressPct}% + 15px)` }}
                 />
-                <div className="slider-thumb" style={{ left: `${((zoomPct - 50) / 150) * 100}%` }}>
-                  <div className="slider-thumb__left" />
-                  <div className="slider-thumb__mid" />
-                  <div className="slider-thumb__right" />
-                </div>
+                <div className="slider-thumb" style={{ left: `${zoomProgressPct}%` }} />
                 <input
+                  aria-label={t("settings.displayZoom")}
                   type="range"
-                  min={50}
-                  max={200}
-                  step={5}
+                  min={zoomMinPct}
+                  max={zoomMaxPct}
+                  step={zoomStepPct}
                   value={zoomPct}
-                  onChange={(e) => { void onRestartZoom(Number(e.target.value) / 100); }}
+                  onChange={(e) => setZoomPercent(Number(e.target.value))}
                 />
               </div>
-              <span className="zoom-slider__label">200%</span>
+              <span className="zoom-slider__label">{zoomMaxPct}%</span>
             </div>
           </div>
         </SettingsField>

@@ -4873,7 +4873,7 @@ func (a *App) MetaForTab(tabID string) Meta {
 		WorkspaceRoot:     cwd,
 		WorkspaceName:     tabWorkspaceName(tab, cwd),
 		WorkspacePath:     cwd,
-		GitBranch:         workspaceGitBranch(cwd),
+		GitBranch:         workspaceGitBranchForMeta(cwd),
 		ImageInputEnabled: a.imageInputEnabledForTab(tabID),
 		AutoApproveTools:  autoApproveTools,
 		Bypass:            autoApproveTools,
@@ -8019,6 +8019,8 @@ const onboardingKeyEnv = "DEEPSEEK_API_KEY"
 // billing.FetchWithClient surfaces 401/403 for a bad key.
 const onboardingBalanceURL = "https://api.deepseek.com/user/balance"
 
+var connectKeyBalanceFetch = billing.FetchWithClient
+
 // NativeConfirmRequest is the payload for ConfirmAction — a native OS confirmation
 // dialog that replaces web-style confirm() for destructive or important actions.
 type NativeConfirmRequest struct {
@@ -8097,20 +8099,22 @@ func (a *App) ConnectKey(apiKey string) (string, error) {
 	}
 	ctx, cancel := context.WithTimeout(a.ctx, 8*time.Second)
 	defer cancel()
-	if _, err := billing.FetchWithClient(ctx, nil, onboardingBalanceURL, apiKey); err != nil {
+	if _, err := connectKeyBalanceFetch(ctx, nil, onboardingBalanceURL, apiKey); err != nil {
 		return "", fmt.Errorf("validate: %w", err)
 	}
 	warning, err := a.saveProviderCredential(onboardingKeyEnv, apiKey)
 	if err != nil {
 		return "", fmt.Errorf("save: %w", err)
 	}
-	if err := a.rebuild(); err != nil {
-		// Key is persisted; surface the failure but let the next rebuild load it.
-		a.mu.Lock()
-		if tab := a.activeTabLocked(); tab != nil {
-			tab.StartupErr = err.Error()
+	if err := a.rebuildSetting("provider key"); err != nil {
+		// Key is persisted. Keep the current session usable and let a later
+		// rebuild pick up the credential.
+		slog.Warn("desktop: connect key rebuild failed", "err", err)
+		if strings.TrimSpace(warning) == "" {
+			warning = err.Error()
+		} else {
+			warning = warning + "\n" + err.Error()
 		}
-		a.mu.Unlock()
 	}
 	return warning, nil
 }

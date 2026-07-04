@@ -165,6 +165,7 @@ globalThis.localStorage = dom.window.localStorage;
 globalThis.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.window);
 globalThis.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.window);
 window.scrollTo = () => {};
+localStorage.clear();
 
 const settingsSnapshots = [baseSettings("standard"), baseSettings("compact")];
 let settingsCalls = 0;
@@ -191,6 +192,7 @@ await act(async () => {
     <LocaleProvider>
       <SettingsPanel
         initialTab="general"
+        desktopPlatform="linux"
         onClose={() => {}}
         onChanged={(settings?: SettingsView) => {
           onChangedSettings = settings;
@@ -238,6 +240,7 @@ await act(async () => {
     <LocaleProvider>
       <SettingsPanel
         initialTab="general"
+        desktopPlatform="linux"
         onClose={() => {}}
         onChanged={() => {}}
       />
@@ -264,6 +267,55 @@ ok(document.body.textContent?.includes("Settings could not be loaded.") === fals
 
 await act(async () => {
   retryRoot.unmount();
+});
+
+const zoomRootEl = document.createElement("div");
+document.body.appendChild(zoomRootEl);
+const zoomRoot = createRoot(zoomRootEl);
+let persistedZoom = 0.5;
+const savedZoomFactors: number[] = [];
+window.go = {
+  main: {
+    App: {
+      Settings: async () => baseSettings("standard"),
+      GetDesktopZoomFactor: async () => persistedZoom,
+      SetDesktopZoomFactor: async (factor: number) => {
+        persistedZoom = factor;
+        savedZoomFactors.push(factor);
+      },
+    } as Partial<AppBindings> as AppBindings,
+  },
+};
+
+localStorage.setItem("reasonix-zoom-restart", "1");
+await act(async () => {
+  zoomRoot.render(
+    <LocaleProvider>
+      <SettingsPanel
+        initialTab="appearance"
+        desktopPlatform="windows"
+        onClose={() => {}}
+        onChanged={() => {}}
+      />
+    </LocaleProvider>,
+  );
+  await flushPromises();
+});
+await waitFor("persisted display zoom sync", () => document.querySelector(".zoom-slider__value")?.textContent?.trim() === "50%");
+
+const resetZoomButton = document.querySelector("button[aria-label='Reset display zoom to 100%']") as HTMLButtonElement | null;
+if (!resetZoomButton) throw new Error("display zoom reset button did not render");
+await act(async () => {
+  resetZoomButton.click();
+  await flushPromises();
+});
+await waitFor("display zoom reset", () => document.querySelector(".zoom-slider__value")?.textContent?.trim() === "100%");
+
+eq(savedZoomFactors.at(-1), 1, "display zoom reset writes the default zoom factor");
+eq(localStorage.getItem("reasonix-zoom-restart"), "1", "display zoom reset updates the local restart zoom cache");
+
+await act(async () => {
+  zoomRoot.unmount();
 });
 
 // Bots tab: direct four-channel bot manager.
@@ -301,7 +353,7 @@ window.go = {
 await act(async () => {
   botsRoot.render(
     <LocaleProvider>
-      <SettingsPanel initialTab="bots" onClose={() => {}} onChanged={() => {}} />
+      <SettingsPanel initialTab="bots" desktopPlatform="linux" onClose={() => {}} onChanged={() => {}} />
     </LocaleProvider>,
   );
   await flushPromises();

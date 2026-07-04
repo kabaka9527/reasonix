@@ -14257,8 +14257,16 @@ body > .mermaid-diagram--fullscreen {
 .zoom-slider-wrap {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   width: 100%;
+}
+
+.zoom-slider__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 26px;
 }
 
 .zoom-slider-row {
@@ -14275,14 +14283,67 @@ body > .mermaid-diagram--fullscreen {
   flex-shrink: 0;
 }
 
-/* 百分比值 — 居中在轨道上方 */
+/* 百分比值，与右侧步进控件同排显示 */
 .zoom-slider__value {
   font-size: var(--font-control-small);
   font-weight: 700;
   color: var(--accent);
   line-height: 1;
-  text-align: center;
-  width: 100%;
+  text-align: left;
+  min-width: 42px;
+}
+
+.zoom-stepper {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg);
+}
+
+.zoom-stepper__btn,
+.zoom-stepper__reset {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 25px;
+  border: 0;
+  border-right: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: var(--font-control-small);
+  line-height: 1;
+}
+
+.zoom-stepper__btn {
+  width: 28px;
+}
+
+.zoom-stepper__reset {
+  min-width: 58px;
+  padding: 0 8px;
+  font-weight: 650;
+}
+
+.zoom-stepper__btn:last-child {
+  border-right: 0;
+}
+
+.zoom-stepper__btn:not(:disabled):hover,
+.zoom-stepper__reset:not(:disabled):hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.zoom-stepper__btn:disabled,
+.zoom-stepper__reset:disabled {
+  color: var(--fg-faint);
+  opacity: .55;
+  cursor: default;
 }
 
 /* 让 label 在 settings-field 网格中靠下对齐 */
@@ -14329,40 +14390,17 @@ body > .mermaid-diagram--fullscreen {
   position: absolute;
   top: 50%;
   transform: translate(-50%, -50%);
-  width: 28px;
-  height: 18px;
+  width: 26px;
+  height: 16px;
   pointer-events: none;
   z-index: var(--z-local-raised);
-  box-shadow: 0 0 0 1px var(--accent);
+  background: #fff;
+  border: 1px solid var(--accent);
   border-radius: 10px;
+  box-sizing: border-box;
 }
 
-.slider-thumb__left {
-  position: absolute;
-  left: 0;
-  top: 0;
-  width: 9px;
-  height: 18px;
-  background: #fff;
-  border-radius: 9px 0 0 9px;
-}
-.slider-thumb__mid {
-  position: absolute;
-  left: 9px;
-  top: 0;
-  width: 10px;
-  height: 18px;
-  background: #fff;
-}
-.slider-thumb__right {
-  position: absolute;
-  right: 0;
-  top: 0;
-  width: 9px;
-  height: 18px;
-  background: #fff;
-  border-radius: 0 9px 9px 0;
-}
+/* slider-thumb is now a single element; child segments were removed. */
 
 /* 透明 input range — 事件捕获 */
 .slider-track input[type="range"] {
