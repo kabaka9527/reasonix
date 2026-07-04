@@ -1564,6 +1564,8 @@ export const zh: Record<DictKey, string> = {
   "settings.addProvider.customHint": "适合代理、聚合平台或其它 OpenAI-compatible 服务。",
   "settings.addProvider.official.deepseek": "DeepSeek 官方",
   "settings.addProvider.official.deepseekDesc": "官方 API Key 接入，可用 DeepSeek V4 Flash / Pro。",
+  "settings.addProvider.preset.longcatOpenAIDesc": "LongCat 开放平台 OpenAI-compatible 端点，默认 LongCat-2.0。",
+  "settings.addProvider.preset.longcatAnthropicDesc": "LongCat 开放平台 Anthropic-compatible Messages 端点，使用 Bearer 认证。",
   "settings.addProvider.preset.kimiCnDesc": "Kimi 国内 API，走 Moonshot CN 端点，预置 K2 视觉模型。",
   "settings.addProvider.preset.kimiGlobalDesc": "Kimi 国际 API，走 Moonshot global 端点，预置 K2 视觉模型。",
   "settings.addProvider.preset.kimiCodingPlanDesc": "Kimi Coding Plan，走独立 Anthropic-compatible 端点，不归属 CN/Global。",

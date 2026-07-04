@@ -1562,6 +1562,8 @@ export const en = {
   "settings.addProvider.customHint": "Use this for proxies, aggregators, or other OpenAI-compatible services.",
   "settings.addProvider.official.deepseek": "DeepSeek Official",
   "settings.addProvider.official.deepseekDesc": "Official API key access with DeepSeek V4 Flash / Pro.",
+  "settings.addProvider.preset.longcatOpenAIDesc": "LongCat Platform OpenAI-compatible endpoint with LongCat-2.0 default.",
+  "settings.addProvider.preset.longcatAnthropicDesc": "LongCat Platform Anthropic-compatible Messages endpoint using Bearer auth.",
   "settings.addProvider.preset.kimiCnDesc": "Kimi China API via Moonshot CN endpoint with K2 vision models.",
   "settings.addProvider.preset.kimiGlobalDesc": "Kimi international API via Moonshot global endpoint with K2 vision models.",
   "settings.addProvider.preset.kimiCodingPlanDesc": "Kimi Coding Plan via the dedicated Anthropic-compatible endpoint; not a CN/Global variant.",
