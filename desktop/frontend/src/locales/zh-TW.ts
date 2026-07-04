@@ -1486,6 +1486,7 @@ export const zhTW: Record<DictKey, string> = {
   "clearContext.done": "已清空當前上下文",
   "clearContext.failed": "清空當前上下文失敗",
   "projectTree.justNow": "剛剛",
+  "projectTree.previously": "之前",
   "projectTree.running": "輸出中",
   "projectTree.status.thinking": "思考中",
   "projectTree.status.streaming": "輸出中",
