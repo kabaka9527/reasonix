@@ -47,6 +47,30 @@ func TestMainThreadHangReportIsStructuredPerformanceReport(t *testing.T) {
 	}
 }
 
+func TestMainThreadHeartbeatAgeIgnoresWallClockJump(t *testing.T) {
+	oldBase := mainThreadClockBase
+	oldElapsed := mainThreadLastHeartbeatElapsed.Load()
+	oldWall := mainThreadLastHeartbeatWall.Load()
+	t.Cleanup(func() {
+		mainThreadClockBase = oldBase
+		mainThreadLastHeartbeatElapsed.Store(oldElapsed)
+		mainThreadLastHeartbeatWall.Store(oldWall)
+	})
+
+	base := time.Now()
+	mainThreadClockBase = base
+	mainThreadLastHeartbeatElapsed.Store(int64(time.Second))
+	mainThreadLastHeartbeatWall.Store(base.Add(-time.Hour).UnixNano())
+
+	age, _, ok := mainThreadHeartbeatAge(base.Add(2 * time.Second))
+	if !ok {
+		t.Fatal("expected heartbeat age")
+	}
+	if age != time.Second {
+		t.Fatalf("age = %s, want monotonic elapsed 1s despite wall-clock jump", age)
+	}
+}
+
 func TestRecordMainThreadHangWritesPendingReportAndMetrics(t *testing.T) {
 	t.Cleanup(func() {
 		os.Remove(pendingCrashPath())

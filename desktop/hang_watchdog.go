@@ -16,12 +16,32 @@ const (
 )
 
 var (
-	mainThreadLastHeartbeat atomic.Int64
-	mainThreadHangReported  atomic.Bool
+	mainThreadClockBase            = time.Now()
+	mainThreadLastHeartbeatElapsed atomic.Int64
+	mainThreadLastHeartbeatWall    atomic.Int64
+	mainThreadHangReported         atomic.Bool
 )
 
 func recordMainThreadHeartbeat(t time.Time) {
-	mainThreadLastHeartbeat.Store(t.UnixNano())
+	elapsed := t.Sub(mainThreadClockBase)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	mainThreadLastHeartbeatElapsed.Store(int64(elapsed))
+	mainThreadLastHeartbeatWall.Store(t.UnixNano())
+}
+
+func mainThreadHeartbeatAge(now time.Time) (time.Duration, time.Time, bool) {
+	lastElapsed := time.Duration(mainThreadLastHeartbeatElapsed.Load())
+	lastWall := mainThreadLastHeartbeatWall.Load()
+	if lastWall <= 0 {
+		return 0, time.Time{}, false
+	}
+	age := now.Sub(mainThreadClockBase) - lastElapsed
+	if age < 0 {
+		age = 0
+	}
+	return age, time.Unix(0, lastWall), true
 }
 
 func (a *App) startMainThreadWatchdog() {
@@ -73,16 +93,15 @@ func (a *App) watchMainThreadHeartbeat(ctx context.Context) {
 				continue
 			}
 			lastCheck = now
-			lastUnix := mainThreadLastHeartbeat.Load()
-			if lastUnix <= 0 {
+			age, last, ok := mainThreadHeartbeatAge(now)
+			if !ok {
 				continue
 			}
-			last := time.Unix(0, lastUnix)
-			if now.Sub(last) < mainThreadHangThreshold {
+			if age < mainThreadHangThreshold {
 				continue
 			}
 			if mainThreadHangReported.CompareAndSwap(false, true) {
-				a.recordMainThreadHang(now.Sub(last), last, now)
+				a.recordMainThreadHang(age, last, now)
 			}
 		}
 	}

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 )
@@ -88,6 +89,42 @@ func TestWritePendingReportCanAvoidOverwritingExistingCrash(t *testing.T) {
 	}
 	if after.Label != before.Label || after.Message != before.Message {
 		t.Fatalf("pending crash was overwritten: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestWritePendingReportNonOverwriteAllowsOneConcurrentWriter(t *testing.T) {
+	t.Cleanup(func() { os.Remove(pendingCrashPath()) })
+	const writers = 32
+	start := make(chan struct{})
+	var ready sync.WaitGroup
+	var done sync.WaitGroup
+	var successes atomic.Int32
+
+	for i := 0; i < writers; i++ {
+		ready.Add(1)
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			report := baseCrashReport("performance")
+			report.Source = "native.watchdog"
+			report.Label = "mac.main_thread.hang"
+			report.Message = strings.Repeat("hang", 1024)
+			ready.Done()
+			<-start
+			if writePendingReport(report, false) {
+				successes.Add(1)
+			}
+		}()
+	}
+	ready.Wait()
+	close(start)
+	done.Wait()
+
+	if got := successes.Load(); got != 1 {
+		t.Fatalf("successful non-overwrite writers = %d, want 1", got)
+	}
+	if _, ok := readPending(t); !ok {
+		t.Fatal("expected one pending report")
 	}
 }
 

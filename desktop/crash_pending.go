@@ -55,15 +55,23 @@ func writePendingReport(report crashReport, overwrite bool) bool {
 		return false
 	}
 	path := pendingCrashPath()
-	if !overwrite {
-		if _, err := os.Stat(path); err == nil {
-			return false
-		}
-	}
 	if os.MkdirAll(filepath.Dir(path), 0o755) != nil {
 		return false
 	}
-	return os.WriteFile(path, body, 0o644) == nil
+	if overwrite {
+		return os.WriteFile(path, body, 0o644) == nil
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	n, err := f.Write(body)
+	if err != nil || n != len(body) {
+		_ = os.Remove(path)
+		return false
+	}
+	return true
 }
 
 func (a *App) goSafe(site string, fn func()) {
