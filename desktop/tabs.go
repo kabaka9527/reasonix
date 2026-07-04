@@ -1760,6 +1760,7 @@ func resetReusableBlankTabTitle(tab *WorkspaceTab, scope, workspaceRoot string) 
 	if err := setTopicTitleWithSource(titleRoot, topicID, defaultTopicTitle, topicTitleSourceAuto); err != nil {
 		return err
 	}
+	_ = deleteTopicAutoTitleMeta(titleRoot, topicID)
 	tab.TopicTitle = defaultTopicTitle
 	return nil
 }
@@ -2899,6 +2900,9 @@ func (a *App) maybeAutoTitleTopic(tab *WorkspaceTab) bool {
 	if sessionPath == "" {
 		return false
 	}
+	if sessionHasManualDisplayTitle(sessionPath) {
+		return false
+	}
 	nextTitle, updated := autoTitleTopicFromSession(titleRoot, tab.TopicID, sessionPath)
 	if !updated {
 		return false
@@ -2913,14 +2917,90 @@ func autoTitleTopicFromSession(workspaceRoot, topicID, sessionPath string) (stri
 	if source := loadTopicTitleSource(workspaceRoot, topicID); source != topicTitleSourceAuto {
 		return "", false
 	}
-	nextTitle := topicTitleFromSession(sessionPath)
-	if nextTitle == "" || nextTitle == loadTopicTitle(workspaceRoot, topicID) {
+	if sessionHasManualDisplayTitle(sessionPath) {
+		return "", false
+	}
+	proposal := autoTopicTitleProposalFromSession(sessionPath)
+	if proposal.Title == "" {
+		return "", false
+	}
+	if !shouldApplyAutoTopicTitle(workspaceRoot, topicID, proposal) {
+		return "", false
+	}
+	nextTitle := proposal.Title
+	if nextTitle == strings.TrimSpace(loadTopicTitle(workspaceRoot, topicID)) {
+		_ = recordTopicAutoTitleMeta(workspaceRoot, topicID, proposal)
 		return "", false
 	}
 	if err := setTopicTitleWithSource(workspaceRoot, topicID, nextTitle, topicTitleSourceAuto); err != nil {
 		return "", false
 	}
+	_ = recordTopicAutoTitleMeta(workspaceRoot, topicID, proposal)
 	return nextTitle, true
+}
+
+type autoTopicTitleProposal struct {
+	Title     string
+	Stage     int
+	UserTurns int
+	BasisHash string
+}
+
+func autoTopicTitleProposalFromSession(path string) autoTopicTitleProposal {
+	users := topicTitleUserTurnsFromSession(path)
+	if len(users) == 0 {
+		return autoTopicTitleProposal{}
+	}
+	stage := 1
+	if len(users) >= 3 {
+		stage = 3
+	}
+	basis := users
+	if len(basis) > stage {
+		basis = basis[:stage]
+	}
+	title := topicTitleFromUserTurns(basis)
+	if title == "" {
+		return autoTopicTitleProposal{}
+	}
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%d\x00%s", stage, strings.Join(basis, "\x00"))))
+	return autoTopicTitleProposal{
+		Title:     title,
+		Stage:     stage,
+		UserTurns: len(users),
+		BasisHash: hex.EncodeToString(sum[:8]),
+	}
+}
+
+func shouldApplyAutoTopicTitle(workspaceRoot, topicID string, proposal autoTopicTitleProposal) bool {
+	if proposal.Stage <= 0 || proposal.BasisHash == "" {
+		return false
+	}
+	meta := loadTopicAutoTitleMeta(workspaceRoot)[topicID]
+	if meta.Stage > proposal.Stage {
+		return false
+	}
+	if meta.Stage == proposal.Stage && meta.BasisHash == proposal.BasisHash {
+		return false
+	}
+	return true
+}
+
+func sessionHasManualDisplayTitle(sessionPath string) bool {
+	sessionPath = strings.TrimSpace(sessionPath)
+	if sessionPath == "" {
+		return false
+	}
+	if meta, ok, err := agent.LoadBranchMeta(sessionPath); err == nil && ok {
+		if strings.TrimSpace(meta.CustomTitle) != "" {
+			return true
+		}
+	}
+	dir := filepath.Dir(sessionPath)
+	if dir == "." || dir == string(filepath.Separator) {
+		return false
+	}
+	return strings.TrimSpace(loadSessionTitles(dir)[filepath.Base(sessionPath)]) != ""
 }
 
 func topicTitleFallbackForOpen(workspaceRoot, topicID, sessionPath string) (string, string, bool) {
@@ -2960,25 +3040,82 @@ func topicTitleFallbackForOpen(workspaceRoot, topicID, sessionPath string) (stri
 }
 
 func topicTitleFromSession(path string) string {
+	users := topicTitleUserTurnsFromSession(path)
+	if len(users) == 0 {
+		return ""
+	}
+	return topicTitleFromText(users[0])
+}
+
+func topicTitleUserTurnsFromSession(path string) []string {
 	f, err := os.Open(path)
 	if err != nil {
-		return ""
+		return nil
 	}
 	defer f.Close()
 	dec := json.NewDecoder(f)
+	var users []string
 	for {
 		var msg struct {
 			Role    string `json:"role"`
 			Content string `json:"content"`
 		}
 		if err := dec.Decode(&msg); err != nil {
-			return ""
+			return users
 		}
 		if msg.Role == "user" {
 			content := control.StripComposePrefixes(agent.HandoffTask(msg.Content))
 			content = control.StripReferencedContextPrefix(content)
-			return topicTitleFromText(content)
+			if strings.TrimSpace(content) != "" {
+				users = append(users, content)
+			}
 		}
+	}
+}
+
+func topicTitleFromUserTurns(users []string) string {
+	type candidate struct {
+		title string
+		score int
+	}
+	best := candidate{score: -1}
+	for i, text := range users {
+		title := topicTitleFromText(text)
+		if title == "" || lowSignalTopicTitle(title) {
+			continue
+		}
+		runes := len([]rune(title))
+		score := runes
+		if score > 24 {
+			score = 24
+		}
+		if i == 0 {
+			score += 3
+		}
+		if runes < 5 {
+			score -= 6
+		}
+		if score > best.score {
+			best = candidate{title: title, score: score}
+		}
+	}
+	if best.title != "" {
+		return best.title
+	}
+	if len(users) > 0 {
+		return topicTitleFromText(users[0])
+	}
+	return ""
+}
+
+func lowSignalTopicTitle(title string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(title))
+	normalized = strings.Trim(normalized, " \t\r\n，。！？；：、,.!?;:\"'`“”‘’()（）[]【】")
+	switch normalized {
+	case "", "好", "好的", "好啊", "可以", "嗯", "对", "是的", "继续", "继续吧", "采纳建议", "采用建议", "收到", "明白", "ok", "okay", "yes", "yep", "go on", "continue", "thanks", "thank you":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -3799,6 +3936,7 @@ const (
 	topicTitlesFile        = "desktop-topic-titles.json"
 	topicTitleSourcesFile  = "desktop-topic-title-sources.json"
 	topicCreatedAtsFile    = "desktop-topic-created-at.json"
+	topicAutoTitlesFile    = "desktop-topic-auto-title-meta.json"
 	defaultTopicTitle      = "新的会话"
 	topicTitleSourceAuto   = "auto"
 	topicTitleSourceManual = "manual"
@@ -3823,6 +3961,13 @@ func topicCreatedAtsPath(workspaceRoot string) string {
 		return filepath.Join(desktopConfigDir(), "global", topicCreatedAtsFile)
 	}
 	return filepath.Join(workspaceRoot, ".reasonix", topicCreatedAtsFile)
+}
+
+func topicAutoTitleMetaPath(workspaceRoot string) string {
+	if workspaceRoot == "" {
+		return filepath.Join(desktopConfigDir(), "global", topicAutoTitlesFile)
+	}
+	return filepath.Join(workspaceRoot, ".reasonix", topicAutoTitlesFile)
 }
 
 const topicFileReadTimeout = 200 * time.Millisecond
@@ -3888,6 +4033,23 @@ func loadTopicCreatedAts(workspaceRoot string) map[string]int64 {
 	return m
 }
 
+type topicAutoTitleMeta struct {
+	Stage     int    `json:"stage,omitempty"`
+	UserTurns int    `json:"userTurns,omitempty"`
+	BasisHash string `json:"basisHash,omitempty"`
+	UpdatedAt int64  `json:"updatedAt,omitempty"`
+}
+
+func loadTopicAutoTitleMeta(workspaceRoot string) map[string]topicAutoTitleMeta {
+	m := map[string]topicAutoTitleMeta{}
+	b, err := readFileWithTimeout(topicAutoTitleMetaPath(workspaceRoot), topicFileReadTimeout)
+	if err != nil {
+		return m
+	}
+	_ = json.Unmarshal(b, &m)
+	return m
+}
+
 func loadStringMapForUpdate(path string) (map[string]string, error) {
 	m := map[string]string{}
 	b, err := os.ReadFile(path)
@@ -3899,6 +4061,22 @@ func loadStringMapForUpdate(path string) (map[string]string, error) {
 	}
 	if err := json.Unmarshal(b, &m); err != nil || m == nil {
 		return map[string]string{}, nil
+	}
+	return m, nil
+}
+
+func loadTopicAutoTitleMetaForUpdate(workspaceRoot string) (map[string]topicAutoTitleMeta, error) {
+	m := map[string]topicAutoTitleMeta{}
+	path := topicAutoTitleMetaPath(workspaceRoot)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return m, nil
+		}
+		return nil, err
+	}
+	if err := json.Unmarshal(b, &m); err != nil || m == nil {
+		return map[string]topicAutoTitleMeta{}, nil
 	}
 	return m, nil
 }
@@ -3968,6 +4146,22 @@ func saveTopicCreatedAts(workspaceRoot string, m map[string]int64) error {
 		return err
 	}
 	path := topicCreatedAtsPath(workspaceRoot)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		return err
+	}
+	return fileutil.ReplaceFile(tmp, path)
+}
+
+func saveTopicAutoTitleMeta(workspaceRoot string, m map[string]topicAutoTitleMeta) error {
+	b, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	path := topicAutoTitleMetaPath(workspaceRoot)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -4177,7 +4371,48 @@ func setTopicTitleWithSource(workspaceRoot, topicID, title, source string) error
 	} else {
 		sources[topicID] = strings.TrimSpace(source)
 	}
-	return saveTopicTitleSources(workspaceRoot, sources)
+	if err := saveTopicTitleSources(workspaceRoot, sources); err != nil {
+		return err
+	}
+	if strings.TrimSpace(source) == topicTitleSourceManual ||
+		(strings.TrimSpace(source) == topicTitleSourceAuto && strings.TrimSpace(title) == defaultTopicTitle) {
+		_ = deleteTopicAutoTitleMeta(workspaceRoot, topicID)
+	}
+	return nil
+}
+
+func recordTopicAutoTitleMeta(workspaceRoot, topicID string, proposal autoTopicTitleProposal) error {
+	topicID = strings.TrimSpace(topicID)
+	if topicID == "" || proposal.Stage <= 0 || proposal.BasisHash == "" {
+		return nil
+	}
+	m, err := loadTopicAutoTitleMetaForUpdate(workspaceRoot)
+	if err != nil {
+		return err
+	}
+	m[topicID] = topicAutoTitleMeta{
+		Stage:     proposal.Stage,
+		UserTurns: proposal.UserTurns,
+		BasisHash: proposal.BasisHash,
+		UpdatedAt: time.Now().UnixMilli(),
+	}
+	return saveTopicAutoTitleMeta(workspaceRoot, m)
+}
+
+func deleteTopicAutoTitleMeta(workspaceRoot, topicID string) error {
+	topicID = strings.TrimSpace(topicID)
+	if topicID == "" {
+		return nil
+	}
+	m, err := loadTopicAutoTitleMetaForUpdate(workspaceRoot)
+	if err != nil {
+		return err
+	}
+	if _, ok := m[topicID]; !ok {
+		return nil
+	}
+	delete(m, topicID)
+	return saveTopicAutoTitleMeta(workspaceRoot, m)
 }
 
 func setTopicCreatedAt(workspaceRoot, topicID string, createdAt int64) error {
@@ -4845,6 +5080,9 @@ func (a *App) ReorderProjects(workspaceRoots []string) error {
 // RenameTopic updates a topic's display title.
 func (a *App) RenameTopic(topicID, title string) error {
 	trimmed := strings.TrimSpace(title)
+	if trimmed == "" {
+		trimmed = defaultTopicTitle
+	}
 	// Find which workspace this topic belongs to by scanning all project topic titles.
 	f := loadProjectsFile()
 	for _, p := range f.Projects {
@@ -6327,7 +6565,11 @@ func mergeSessionInfos(dir string, infos []agent.SessionInfo, titles map[string]
 		sessionKey := sessionRuntimeKey(info.Path)
 		if sessionKey != "" {
 			sessionInfos[sessionKey] = info
-			sessionTitles[sessionKey] = titles[filepath.Base(info.Path)]
+			title := strings.TrimSpace(info.CustomTitle)
+			if title == "" {
+				title = titles[filepath.Base(info.Path)]
+			}
+			sessionTitles[sessionKey] = title
 		}
 		if strings.TrimSpace(info.TopicID) == "" {
 			continue

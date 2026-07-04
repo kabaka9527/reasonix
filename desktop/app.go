@@ -1916,7 +1916,11 @@ func (a *App) ListSessions() []SessionMeta {
 	out := make([]SessionMeta, 0, len(infos))
 	for _, s := range infos {
 		_, isOpen := open[s.Path]
-		meta := sessionMetaFromInfo(s, titles[filepath.Base(s.Path)], s.Path == active, isOpen, 0)
+		title := strings.TrimSpace(s.CustomTitle)
+		if title == "" {
+			title = titles[filepath.Base(s.Path)]
+		}
+		meta := sessionMetaFromInfo(s, title, s.Path == active, isOpen, 0)
 		if route, ok := channelRoutes[sessionRuntimeKey(s.Path)]; ok {
 			applyChannelSessionRoute(&meta, route)
 		}
@@ -1941,7 +1945,11 @@ func (a *App) ListTrashedSessions() []SessionMeta {
 				continue
 			}
 			deletedAt := trashedSessionDeletedAt(path)
-			out = append(out, sessionMetaFromInfo(infos[0], titles[filepath.Base(path)], false, false, deletedAt))
+			title := strings.TrimSpace(infos[0].CustomTitle)
+			if title == "" {
+				title = titles[filepath.Base(path)]
+			}
+			out = append(out, sessionMetaFromInfo(infos[0], title, false, false, deletedAt))
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -2627,9 +2635,19 @@ func (a *App) PurgeTrashedSession(path string) error {
 }
 
 // RenameSession sets a custom display name for a session (empty clears it back to
-// the preview). It only affects the history panel; the file on disk is unchanged.
+// the preview). The transcript file is unchanged; the canonical name lives in
+// the branch meta sidecar, with the legacy .titles.json map kept as a
+// compatibility write-through for older desktop data paths.
 func (a *App) RenameSession(path, title string) error {
-	if err := setSessionTitle(a.activeSessionDir(), path, title); err != nil {
+	dir := a.activeSessionDir()
+	sessionPath, _, err := validateSessionPath(dir, path)
+	if err != nil {
+		return err
+	}
+	if err := agent.RenameSession(sessionPath, title); err != nil {
+		return err
+	}
+	if err := setSessionTitle(dir, sessionPath, title); err != nil {
 		return err
 	}
 	a.invalidatePromptHistoryCache()

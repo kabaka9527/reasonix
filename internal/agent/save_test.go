@@ -517,6 +517,39 @@ func TestListSessionsOrdersByMTime(t *testing.T) {
 	}
 }
 
+func TestListSessionsIncludesCustomTitle(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "named.jsonl")
+	s := NewSession("")
+	s.Add(provider.Message{Role: provider.RoleUser, Content: "first user prompt"})
+	if err := s.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveBranchMetaPreserveUpdated(path, BranchMeta{
+		TopicTitle:    "Topic title",
+		CustomTitle:   "Custom session title",
+		Preview:       "first user prompt",
+		Turns:         1,
+		SchemaVersion: BranchMetaCountsVersion,
+	}); err != nil {
+		t.Fatalf("SaveBranchMetaPreserveUpdated: %v", err)
+	}
+
+	got, err := ListSessions(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1", len(got))
+	}
+	if got[0].CustomTitle != "Custom session title" {
+		t.Fatalf("custom title = %q, want Custom session title", got[0].CustomTitle)
+	}
+	if got[0].TopicTitle != "Topic title" {
+		t.Fatalf("topic title = %q, want Topic title", got[0].TopicTitle)
+	}
+}
+
 func TestListSessionsSkipsCleanupPending(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "pending.jsonl")

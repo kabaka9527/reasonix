@@ -3721,6 +3721,17 @@ func TestDesktopSessionAPIsUseControllerSessionDir(t *testing.T) {
 	if err := app.RenameSession(pathA, "A title"); err != nil {
 		t.Fatalf("RenameSession in active session dir: %v", err)
 	}
+	meta, ok, err := agent.LoadBranchMeta(pathA)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta after RenameSession ok=%v err=%v", ok, err)
+	}
+	if meta.CustomTitle != "A title" {
+		t.Fatalf("custom title should be written to branch meta, got %q", meta.CustomTitle)
+	}
+	sessions = app.ListSessions()
+	if len(sessions) != 1 || sessions[0].Title != "A title" {
+		t.Fatalf("ListSessions should return custom title from branch meta, got %+v", sessions)
+	}
 	if titles := loadSessionTitles(dirA); titles["a.jsonl"] != "A title" {
 		t.Fatalf("title should be written beside the active session, got %+v", titles)
 	}

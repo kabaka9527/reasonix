@@ -28,6 +28,7 @@ type BranchMeta struct {
 	WorkspaceRoot    string    `json:"workspace_root,omitempty"`
 	TopicID          string    `json:"topic_id,omitempty"`
 	TopicTitle       string    `json:"topic_title,omitempty"`
+	CustomTitle      string    `json:"custom_title,omitempty"`
 	Model            string    `json:"model,omitempty"`
 	TokenMode        string    `json:"token_mode,omitempty"`
 	Mode             string    `json:"mode,omitempty"`
@@ -317,9 +318,10 @@ func ListBranches(dir string) ([]BranchInfo, error) {
 	return out, nil
 }
 
-// RenameSession updates the TopicTitle in the session's .jsonl.meta sidecar
-// file. If no meta file exists yet, one is created. This is used by the
-// /rename CLI command and desktop UI to give sessions human-readable names.
+// RenameSession updates the user-chosen display title in the session's
+// .jsonl.meta sidecar file. If no meta file exists yet, one is created. The
+// topic title remains a separate grouping label, so explicit session names do
+// not fight topic auto-titling.
 func RenameSession(sessionPath string, title string) error {
 	if sessionPath == "" {
 		return fmt.Errorf("empty session path")
@@ -328,8 +330,8 @@ func RenameSession(sessionPath string, title string) error {
 	if err != nil {
 		return err
 	}
-	m.TopicTitle = title
-	return SaveBranchMeta(sessionPath, m)
+	m.CustomTitle = strings.TrimSpace(title)
+	return SaveBranchMetaPreserveUpdated(sessionPath, m)
 }
 
 // LoadSessionModel reads the canonical provider/model ref saved beside a

@@ -630,6 +630,7 @@ type SessionInfo struct {
 	WorkspaceRoot  string
 	TopicID        string
 	TopicTitle     string
+	CustomTitle    string
 	Recovered      bool
 	RecoveryReason string
 	RecoveryDigest string
@@ -648,6 +649,7 @@ type SessionOrderInfo struct {
 	WorkspaceRoot  string
 	TopicID        string
 	TopicTitle     string
+	CustomTitle    string
 	Recovered      bool
 	RecoveryReason string
 	RecoveryDigest string
@@ -821,6 +823,7 @@ func ListSessionOrder(dir string) ([]SessionOrderInfo, error) {
 		workspaceRoot := ""
 		topicID := ""
 		topicTitle := ""
+		customTitle := ""
 		recovered := false
 		recoveryReason := ""
 		recoveryDigest := ""
@@ -839,6 +842,7 @@ func ListSessionOrder(dir string) ([]SessionOrderInfo, error) {
 			workspaceRoot = meta.WorkspaceRoot
 			topicID = meta.TopicID
 			topicTitle = meta.TopicTitle
+			customTitle = meta.CustomTitle
 			recovered = meta.Recovered
 			recoveryReason = meta.RecoveryReason
 			recoveryDigest = meta.RecoveryDigest
@@ -856,6 +860,7 @@ func ListSessionOrder(dir string) ([]SessionOrderInfo, error) {
 			WorkspaceRoot:  workspaceRoot,
 			TopicID:        topicID,
 			TopicTitle:     topicTitle,
+			CustomTitle:    customTitle,
 			Recovered:      recovered,
 			RecoveryReason: recoveryReason,
 			RecoveryDigest: recoveryDigest,
@@ -911,6 +916,7 @@ func ListSessions(dir string) ([]SessionInfo, error) {
 			WorkspaceRoot:  session.WorkspaceRoot,
 			TopicID:        session.TopicID,
 			TopicTitle:     session.TopicTitle,
+			CustomTitle:    session.CustomTitle,
 			Recovered:      session.Recovered,
 			RecoveryReason: session.RecoveryReason,
 			RecoveryDigest: session.RecoveryDigest,
