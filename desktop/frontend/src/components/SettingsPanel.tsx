@@ -977,7 +977,7 @@ function normalizeProviderView(p: ProviderView): ProviderView {
 type ProviderPresetStatus = NonNullable<ProviderPresetView["status"]>;
 
 function normalizeProviderPresetStatus(status: ProviderPresetView["status"] | undefined, added: boolean): ProviderPresetStatus {
-  if (status === "installed" || status === "name_conflict" || status === "similar_existing") return status;
+  if (status === "installed" || status === "installed_modified" || status === "name_conflict" || status === "similar_existing") return status;
   return added ? "installed" : "available";
 }
 
@@ -993,7 +993,7 @@ function normalizeProviderPresetView(p: ProviderPresetView): ProviderPresetView 
     keyEnv: String(p.keyEnv ?? "").trim(),
     providerNames: asArray(p.providerNames),
     models: asArray(p.models),
-    added: Boolean(p.added || status === "installed" || status === "name_conflict"),
+    added: Boolean(p.added || status === "installed" || status === "installed_modified" || status === "name_conflict"),
     status,
     statusProviderNames: asArray(p.statusProviderNames),
     keySet: Boolean(p.keySet),
@@ -4011,12 +4011,13 @@ type ProviderTemplateChoice =
 function providerTemplateCanAdd(choice: ProviderTemplateChoice | undefined): boolean {
   if (!choice) return false;
   if (choice.source === "official") return !choice.added;
-  return choice.status !== "installed" && choice.status !== "name_conflict";
+  return choice.status !== "installed" && choice.status !== "installed_modified" && choice.status !== "name_conflict";
 }
 
 function providerTemplateStatusBadge(choice: ProviderTemplateChoice, t: ReturnType<typeof useT>): string {
   if (choice.source === "official") return choice.added ? t("settings.addProvider.addedBadge") : "";
   if (choice.status === "installed") return t("settings.addProvider.addedBadge");
+  if (choice.status === "installed_modified") return t("settings.addProvider.modifiedBadge");
   if (choice.status === "name_conflict") return t("settings.addProvider.nameConflictBadge");
   if (choice.status === "similar_existing") return t("settings.addProvider.similarExistingBadge");
   return "";
@@ -4035,7 +4036,7 @@ function providerTemplateStatusClass(choice: ProviderTemplateChoice): string {
 }
 
 function providerTemplateConflictProviderName(choice: ProviderTemplateChoice): string {
-  if (choice.source !== "preset" || choice.status !== "name_conflict") return "";
+  if (choice.source !== "preset" || (choice.status !== "name_conflict" && choice.status !== "installed_modified")) return "";
   return choice.statusProviderNames[0] ?? "";
 }
 
@@ -4232,7 +4233,7 @@ function AddProviderPanel({
             const canAdd = providerTemplateCanAdd(choice);
             const badge = providerTemplateStatusBadge(choice, t);
             const conflictProviderName = providerTemplateConflictProviderName(choice);
-            if (choice.source === "preset" && choice.status === "name_conflict") {
+            if (choice.source === "preset" && (choice.status === "name_conflict" || choice.status === "installed_modified")) {
               return (
                 <div
                   key={choice.id}
@@ -4250,7 +4251,7 @@ function AddProviderPanel({
                       disabled={busy || !conflictProviderName}
                       onClick={() => onViewPresetConflict(conflictProviderName)}
                     >
-                      {t("settings.addProvider.viewConflictProvider")}
+                      {choice.status === "installed_modified" ? t("settings.addProvider.viewPresetProvider") : t("settings.addProvider.viewConflictProvider")}
                     </button>
                     <InlineConfirmButton
                       label={t("settings.addProvider.resetPreset")}

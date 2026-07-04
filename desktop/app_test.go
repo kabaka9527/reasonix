@@ -1330,6 +1330,30 @@ func TestSettingsMarksLegacyEquivalentPresetAsInstalled(t *testing.T) {
 	}
 }
 
+func TestSettingsMarksPresetWithChangedCoreConfigAsModified(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	preset, ok := config.CuratedProviderPreset("mimo-api")
+	if !ok || len(preset.Entries) == 0 {
+		t.Fatal("missing mimo-api preset")
+	}
+	modified := preset.Entries[0]
+	modified.BaseURL = "https://custom.example/v1"
+	cfg := config.Default()
+	if err := cfg.UpsertProvider(modified); err != nil {
+		t.Fatalf("upsert modified provider: %v", err)
+	}
+	cfg.Desktop.ProviderAccess = []string{"mimo-api"}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	view := NewApp().Settings()
+	presetView := providerPresetViewByID(t, view, "mimo-api")
+	if !presetView.Added || presetView.Status != providerPresetStatusInstalledModified || !reflect.DeepEqual(presetView.StatusProviderNames, []string{"mimo-api"}) {
+		t.Fatalf("mimo-api preset view = %+v, want installed-modified for edited preset provider", presetView)
+	}
+}
+
 func TestSettingsMarksSimilarProviderPresetWithoutBlockingAdd(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	preset, ok := config.CuratedProviderPreset("mimo-api")

@@ -76,10 +76,11 @@ type ProviderPresetView struct {
 }
 
 const (
-	providerPresetStatusAvailable       = "available"
-	providerPresetStatusInstalled       = "installed"
-	providerPresetStatusNameConflict    = "name_conflict"
-	providerPresetStatusSimilarExisting = "similar_existing"
+	providerPresetStatusAvailable         = "available"
+	providerPresetStatusInstalled         = "installed"
+	providerPresetStatusInstalledModified = "installed_modified"
+	providerPresetStatusNameConflict      = "name_conflict"
+	providerPresetStatusSimilarExisting   = "similar_existing"
 )
 
 type ProviderModelOverrideView struct {
@@ -522,7 +523,7 @@ func providerPresetViewsForRootWithResolver(cfg *config.Config, root string, res
 			key = resolver.ResolveGlobalFirst(keyEnv)
 		}
 		status, statusNames := classifyProviderPresetStatus(cfg, preset)
-		added := status == providerPresetStatusInstalled || status == providerPresetStatusNameConflict
+		added := status == providerPresetStatusInstalled || status == providerPresetStatusInstalledModified || status == providerPresetStatusNameConflict
 		out = append(out, ProviderPresetView{
 			ID:                  preset.ID,
 			Label:               preset.Label,
@@ -548,6 +549,7 @@ func classifyProviderPresetStatus(cfg *config.Config, preset config.ProviderPres
 		return providerPresetStatusAvailable, nil
 	}
 	installed := make([]string, 0)
+	modified := make([]string, 0)
 	conflicts := make([]string, 0)
 	similar := make([]string, 0)
 	presetID := strings.TrimSpace(preset.ID)
@@ -562,12 +564,17 @@ func classifyProviderPresetStatus(cfg *config.Config, preset config.ProviderPres
 		}
 		if providerEntryMatchesPreset(*existing, entry, presetID) {
 			installed = append(installed, name)
+		} else if providerEntryUsesPresetID(*existing, presetID) {
+			modified = append(modified, name)
 		} else {
 			conflicts = append(conflicts, name)
 		}
 	}
 	if len(conflicts) > 0 {
 		return providerPresetStatusNameConflict, uniqueNonEmptyStrings(conflicts)
+	}
+	if len(modified) > 0 {
+		return providerPresetStatusInstalledModified, uniqueNonEmptyStrings(modified)
 	}
 	if len(installed) > 0 {
 		return providerPresetStatusInstalled, uniqueNonEmptyStrings(installed)
@@ -595,20 +602,25 @@ func classifyProviderPresetStatus(cfg *config.Config, preset config.ProviderPres
 }
 
 func providerEntryMatchesPreset(existing, preset config.ProviderEntry, presetID string) bool {
-	if presetID != "" && strings.TrimSpace(existing.PresetID) == presetID {
-		return true
-	}
 	if strings.TrimSpace(existing.PresetID) != "" {
+		if providerEntryUsesPresetID(existing, presetID) {
+			return providerEntryCoreMatches(existing, preset)
+		}
 		return false
 	}
 	return providerEntryCoreMatches(existing, preset)
 }
 
 func providerEntrySimilarToPreset(existing, preset config.ProviderEntry, presetID string) bool {
-	if presetID != "" && strings.TrimSpace(existing.PresetID) == presetID {
+	if providerEntryUsesPresetID(existing, presetID) {
 		return true
 	}
 	return providerEntryCoreMatches(existing, preset)
+}
+
+func providerEntryUsesPresetID(existing config.ProviderEntry, presetID string) bool {
+	presetID = strings.TrimSpace(presetID)
+	return presetID != "" && strings.TrimSpace(existing.PresetID) == presetID
 }
 
 func providerEntryCoreMatches(existing, preset config.ProviderEntry) bool {
@@ -1758,11 +1770,13 @@ func providerPresetNoExistingProviderError(id string) error {
 // it never touches chat request serialization or provider-visible prompt data.
 func (a *App) FetchProviderModels(p ProviderView) ([]string, error) {
 	e := config.ProviderEntry{
-		Name:      p.Name,
-		BaseURL:   p.BaseURL,
-		ModelsURL: strings.TrimSpace(p.ModelsURL),
-		APIKeyEnv: p.APIKeyEnv,
-		Headers:   p.Headers,
+		Name:       p.Name,
+		Kind:       p.Kind,
+		BaseURL:    p.BaseURL,
+		ModelsURL:  strings.TrimSpace(p.ModelsURL),
+		APIKeyEnv:  p.APIKeyEnv,
+		Headers:    p.Headers,
+		AuthHeader: p.AuthHeader,
 	}
 	e.ResolveAPIKeyForRoot(a.activeWorkspaceRoot())
 	ctx, cancel := context.WithTimeout(a.reqCtx(), 15*time.Second)

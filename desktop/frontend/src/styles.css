@@ -13465,9 +13465,11 @@ body > .mermaid-diagram--fullscreen {
 }
 .provider-template-card--added,
 .provider-template-card--installed,
+.provider-template-card--installed-modified,
 .provider-template-card--name-conflict {
   background: color-mix(in srgb, var(--bg-elev-1) 82%, var(--bg) 18%);
 }
+.provider-template-card--installed-modified,
 .provider-template-card--name-conflict {
   cursor: default;
 }
@@ -13503,6 +13505,7 @@ body > .mermaid-diagram--fullscreen {
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
+.provider-template-card--installed-modified > span,
 .provider-template-card--name-conflict > span {
   -webkit-line-clamp: 1;
 }
