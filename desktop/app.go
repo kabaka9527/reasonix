@@ -136,6 +136,8 @@ type App struct {
 	backgroundMaximised atomic.Bool
 	trayReady           bool
 	tray                *desktopTray
+	hangWatchdogMu      sync.Mutex
+	hangWatchdogCancel  context.CancelFunc
 
 	mediaTokens *mediaTokenStore
 	botInstalls map[string]*botInstallSession
@@ -366,6 +368,7 @@ func (a *App) startup(ctx context.Context) {
 		a.metrics.Store(newMetricsAggregator(config.MemoryUserDir()))
 		a.recordSettingsMetricsSnapshot(cfg)
 	}
+	a.startMainThreadWatchdog()
 
 	a.heartbeat = newHeartbeatEngine(a)
 	a.heartbeat.Start()
@@ -648,6 +651,7 @@ func (a *App) snapshotAllTabs() {
 
 // shutdown snapshots all tabs, saves the final window geometry, and closes tabs.
 func (a *App) shutdown(context.Context) {
+	a.stopMainThreadWatchdog()
 	if a.heartbeat != nil {
 		a.heartbeat.Stop()
 	}
