@@ -668,6 +668,7 @@ export interface ServerView {
   tools: number;
   prompts: number;
   resources: number;
+  hasTools?: boolean;
   error?: string;
   toolList?: MCPToolView[];
   trustedReadOnlyTools?: string[];

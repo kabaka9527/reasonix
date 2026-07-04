@@ -5269,6 +5269,7 @@ type ServerView struct {
 	Tools                int        `json:"tools"`
 	Prompts              int        `json:"prompts"`
 	Resources            int        `json:"resources"`
+	HasTools             bool       `json:"hasTools,omitempty"`
 	Error                string     `json:"error,omitempty"`
 	ToolList             []ToolView `json:"toolList,omitempty"`
 	TrustedReadOnlyTools []string   `json:"trustedReadOnlyTools,omitempty"`
@@ -5415,6 +5416,7 @@ func (a *App) mcpServersView() []ServerView {
 			view := ServerView{
 				Name: s.Name, Transport: s.Transport, Status: "connected", RuntimeState: "ready",
 				Tools: s.Tools, Prompts: s.Prompts, Resources: s.Resources,
+				HasTools: s.HasTools,
 				ToolList: pluginToolsToView(s.ToolList),
 			}
 			if p, ok := configured[s.Name]; ok {
@@ -6512,6 +6514,7 @@ func findMCPServerView(ctrl control.SessionAPI, name string) (ServerView, bool) 
 			return ServerView{
 				Name: s.Name, Transport: s.Transport, Status: "connected",
 				Tools: s.Tools, Prompts: s.Prompts, Resources: s.Resources,
+				HasTools: s.HasTools,
 				ToolList: pluginToolsToView(s.ToolList),
 			}, true
 		}
