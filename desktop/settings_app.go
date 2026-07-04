@@ -1438,8 +1438,7 @@ func (a *App) rebuild() error {
 		return err
 	}
 	if len(carried) > 0 {
-		carried = withFreshSystemPrompt(carried, systemPromptFrom(ctrl.History()))
-		ctrl.Resume(&agent.Session{Messages: carried}, path)
+		resumeWithFreshSystemPrompt(ctrl, carried, path)
 	} else if path != "" {
 		ctrl.SetSessionPath(path)
 	}

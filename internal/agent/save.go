@@ -547,6 +547,18 @@ func messagesEqualForStorage(a, b provider.Message) bool {
 	return bytes.Equal(ab, bb)
 }
 
+func messagesEqualForStorageList(a, b []provider.Message) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !messagesEqualForStorage(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
 func lockSessionSavePath(path string) func() {
 	key := canonicalSessionSavePath(path)
 	v, _ := sessionSaveLocks.LoadOrStore(key, &sync.Mutex{})
