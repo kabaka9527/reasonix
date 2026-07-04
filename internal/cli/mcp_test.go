@@ -143,6 +143,12 @@ func TestRenderMCPStatusCapsLongSections(t *testing.T) {
 	}
 }
 
+func TestMCPCapabilitiesTextUsesAdvertisedTools(t *testing.T) {
+	if got := mcpCapabilitiesText(mcpServerView{HasTools: true}); got != "tools" {
+		t.Fatalf("mcpCapabilitiesText = %q, want tools", got)
+	}
+}
+
 func TestRenderMCPStatusShowsFailures(t *testing.T) {
 	got := renderMCPStatus(90,
 		nil,
