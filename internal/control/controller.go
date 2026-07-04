@@ -1327,11 +1327,14 @@ func (c *Controller) Run(ctx context.Context, input string) error {
 		c.guardianSess.ResetTurn()
 	}
 	if c.hooks.Enabled() {
+		c.mu.Lock()
 		c.turn++
-		if block, _ := c.hooks.PromptSubmit(ctx, input, c.turn); block {
+		turn := c.turn
+		c.mu.Unlock()
+		if block, _ := c.hooks.PromptSubmit(ctx, input, turn); block {
 			return nil
 		}
-		defer func() { c.hooks.Stop(context.Background(), lastAssistantText(c.History()), c.turn) }()
+		defer func() { c.hooks.Stop(context.Background(), lastAssistantText(c.History()), turn) }()
 	}
 	c.markInFlightTurn(startMessages, true)
 	defer c.clearInFlightTurn()
@@ -1988,6 +1991,12 @@ func (c *Controller) Compact(ctx context.Context, instructions string) error {
 	if c.executor == nil {
 		return nil
 	}
+	// The run loop is the only sanctioned writer of the live session during a
+	// turn; a manual compact would rewrite the log underneath it (same guard as
+	// Rewind/Branch).
+	if c.Running() {
+		return fmt.Errorf("cannot compact while a turn is running")
+	}
 	return c.executor.CompactNow(ctx, instructions)
 }
 
@@ -2202,10 +2211,13 @@ func (c *Controller) Rewind(turn int, scope RewindScope) error {
 		// boundary is the message-log index at turn start; compaction shrinks the
 		// log without rewriting boundaries, so a stale boundary past the end means
 		// the turn was compacted away — fail loudly instead of skipping silently.
-		if boundary > len(s.Messages) {
+		// Snapshot/Replace keep the truncation safe against concurrent History/Save
+		// readers on other goroutines.
+		msgs := s.Snapshot()
+		if boundary > len(msgs) {
 			return c.rewindFail(fmt.Errorf("conversation rewind unavailable for turn %d: the conversation was compacted past this point", turn))
 		}
-		s.Messages = s.Messages[:boundary]
+		s.Replace(msgs[:boundary])
 		c.checkpoints.truncateFrom(turn) // renumber future turns from here; later turns are gone
 		if err := c.SnapshotRewrite(); err != nil {
 			slog.Warn("controller: snapshot after rewind", "err", err)
@@ -2308,7 +2320,8 @@ func (c *Controller) CheckpointHasBoundary(turn int) bool {
 	// After compaction the key may still exist but the boundary value is
 	// stale (it points past the truncated message log).  Treat those
 	// turns the same as "no boundary" so the UI can disable the button.
-	return boundary <= len(c.executor.Session().Messages)
+	// Len is lock-guarded: this runs on frontend goroutines while a turn appends.
+	return boundary <= c.executor.Session().Len()
 }
 
 // Branch copies the current conversation into a child branch and switches to it.
@@ -2785,7 +2798,7 @@ func (c *Controller) messageCount() int {
 	if c.executor == nil {
 		return 0
 	}
-	return len(c.executor.Session().Snapshot())
+	return c.executor.Session().Len()
 }
 
 func (c *Controller) markInFlightTurn(startMessageIndex int, preserveUser bool) {
@@ -3967,7 +3980,7 @@ func (c *Controller) sessionMessageCount() int {
 	if c.executor == nil {
 		return 0
 	}
-	return len(c.executor.Session().Messages)
+	return c.executor.Session().Len()
 }
 
 // hasTodoUpdateSince reports whether the model emitted its own todo_write after

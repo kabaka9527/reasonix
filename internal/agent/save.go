@@ -555,6 +555,14 @@ func lockSessionSavePath(path string) func() {
 	return mu.Unlock
 }
 
+// LockSessionMetaPath serializes a read-modify-write cycle on a session's
+// sidecar metadata with every other writer in this process (Save, the
+// UpdateSessionMeta family). Callers outside this package that load, mutate,
+// and re-save branch meta must hold it for the whole cycle.
+func LockSessionMetaPath(path string) func() {
+	return lockSessionSavePath(path)
+}
+
 func canonicalSessionSavePath(path string) string {
 	key := filepath.Clean(strings.TrimSpace(path))
 	if abs, err := filepath.Abs(key); err == nil {

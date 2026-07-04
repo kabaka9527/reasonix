@@ -51,7 +51,9 @@ type approvalManager struct {
 
 	// promptMu serializes outstanding prompts so at most one user decision is in
 	// flight. Held across the blocking wait, so it must never be taken by the
-	// resolve paths (Approve/AnswerQuestion).
+	// resolve paths (Approve/AnswerQuestion). sink.Emit also runs under it (Ask,
+	// requestApproval): Sink implementations must not block and must not call
+	// back into Ask or the tool-approval chain, or they deadlock the prompt.
 	promptMu sync.Mutex
 }
 

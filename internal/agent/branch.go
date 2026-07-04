@@ -226,6 +226,8 @@ func EnsureBranchMeta(sessionPath string) (BranchMeta, error) {
 }
 
 func TouchBranchMeta(sessionPath string) error {
+	unlock := lockSessionSavePath(sessionPath)
+	defer unlock()
 	m, err := EnsureBranchMeta(sessionPath)
 	if err != nil {
 		return err
@@ -238,6 +240,11 @@ func MarkSessionInFlightTurn(sessionPath string, startMessageIndex int, preserve
 	if startMessageIndex < 0 {
 		startMessageIndex = 0
 	}
+	// The sidecar is read-modify-write; the per-path save lock keeps concurrent
+	// writers (autosave's UpdateSessionMeta, listing backfill) from dropping
+	// each other's fields.
+	unlock := lockSessionSavePath(sessionPath)
+	defer unlock()
 	m, err := EnsureBranchMeta(sessionPath)
 	if err != nil {
 		return err
@@ -251,6 +258,8 @@ func MarkSessionInFlightTurn(sessionPath string, startMessageIndex int, preserve
 }
 
 func ClearSessionInFlightTurn(sessionPath string) error {
+	unlock := lockSessionSavePath(sessionPath)
+	defer unlock()
 	m, ok, err := LoadBranchMeta(sessionPath)
 	if err != nil || !ok {
 		return err
@@ -354,6 +363,8 @@ func SetBranchModelPreserveUpdated(sessionPath, model string) error {
 	if sessionPath == "" {
 		return fmt.Errorf("empty session path")
 	}
+	unlock := lockSessionSavePath(sessionPath)
+	defer unlock()
 	meta, err := EnsureBranchMeta(sessionPath)
 	if err != nil {
 		return err
@@ -371,6 +382,8 @@ func UpdateSessionMeta(sessionPath, model, preview string, turns int, markActivi
 	if sessionPath == "" {
 		return fmt.Errorf("empty session path")
 	}
+	unlock := lockSessionSavePath(sessionPath)
+	defer unlock()
 	m, err := EnsureBranchMeta(sessionPath)
 	if err != nil {
 		return err

@@ -61,6 +61,13 @@ func (s *Session) Snapshot() []provider.Message {
 	return msgs
 }
 
+// Len returns the number of messages, safe to call from any goroutine.
+func (s *Session) Len() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.Messages)
+}
+
 func (s *Session) snapshotWithVersion() ([]provider.Message, uint64) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
