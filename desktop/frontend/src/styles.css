@@ -3980,6 +3980,11 @@ a[href] {
   justify-content: center;
   width: 64px;
   padding: 4px;
+  cursor: pointer;
+  transition: transform 0.15s ease;
+}
+.msg-attachment--image:hover {
+  transform: scale(1.08);
 }
 .msg-attachment__icon {
   display: inline-flex;
@@ -4886,6 +4891,69 @@ body > .mermaid-diagram--fullscreen {
   .mermaid-diagram__preview {
     height: clamp(200px, 52vh, 480px);
   }
+}
+
+/* ---- ImageViewer (fullscreen image preview) ---- */
+.image-viewer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-onboarding);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+.image-viewer--enter {
+  opacity: 1;
+}
+.image-viewer__close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: var(--z-local-raised);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 8px;
+  background: var(--bg-elev);
+  color: var(--fg-dim);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.image-viewer__close:hover {
+  background: var(--bg-soft);
+  color: var(--fg);
+}
+.image-viewer__content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  max-width: 90vw;
+  max-height: 90vh;
+}
+.image-viewer__image {
+  max-width: 90vw;
+  max-height: 80vh;
+  object-fit: contain;
+  border-radius: 6px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.18);
+}
+.image-viewer__name {
+  color: var(--fg-dim);
+  font-size: 13px;
+  max-width: 90vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .msg--assistant .msg__body {
@@ -16410,6 +16478,13 @@ body > .mermaid-diagram--fullscreen {
   flex-shrink: 0;
   width: 56px;
   height: 56px;
+}
+.composer-context__thumb--interactive {
+  cursor: pointer;
+  transition: transform 0.15s ease;
+}
+.composer-context__thumb--interactive:hover {
+  transform: scale(1.08);
 }
 .composer-context__item--image-only .composer-context__thumb {
   width: 68px;

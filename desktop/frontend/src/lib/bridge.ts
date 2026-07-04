@@ -851,11 +851,15 @@ function cloneMockProviderTemplate(id: string, key: string): ProviderView | unde
   };
 }
 
+const mockPreviewImageDataURL =
+  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='120' viewBox='0 0 160 120'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%23f97316'/%3E%3Cstop offset='1' stop-color='%232563eb'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='160' height='120' rx='14' fill='url(%23g)'/%3E%3Ccircle cx='44' cy='38' r='16' fill='%23fff7ed' opacity='.9'/%3E%3Cpath d='M18 96 62 58l24 22 18-16 38 32z' fill='%23ffffff' opacity='.9'/%3E%3C/svg%3E";
+
 function makeMockApp(): AppBindings {
   const scenario = mockScenario();
   const freshMock = scenario === "fresh";
   const guidanceMock = scenario === "guidance";
   const runningMock = scenario === "running" || guidanceMock;
+  const mockAttachmentDataURLs = new Map<string, string>();
   let cancelled = false;
   let pendingAskPreview = false;
   let pendingApprovalPreview = false;
@@ -2667,14 +2671,20 @@ function makeMockApp(): AppBindings {
     async RevealPath(path: string) {
       console.info("mock RevealPath", path);
     },
-    async SavePastedImage(_dataUrl: string) {
-      return ".reasonix/attachments/mock.png";
+    async SavePastedImage(dataUrl: string) {
+      const path = `.reasonix/attachments/mock-${mockAttachmentDataURLs.size + 1}.png`;
+      mockAttachmentDataURLs.set(path, dataUrl);
+      return path;
     },
     async SaveClipboardImage() {
-      return ".reasonix/attachments/mock-clipboard.png";
+      const path = `.reasonix/attachments/mock-clipboard-${mockAttachmentDataURLs.size + 1}.png`;
+      mockAttachmentDataURLs.set(path, mockPreviewImageDataURL);
+      return path;
     },
-    async SavePastedFile(name: string, _dataUrl: string) {
-      return `.reasonix/attachments/mock-${name}`;
+    async SavePastedFile(name: string, dataUrl: string) {
+      const path = `.reasonix/attachments/mock-${name}`;
+      mockAttachmentDataURLs.set(path, dataUrl);
+      return path;
     },
     async PickExportFile(defaultFilename: string, _mimeType: string) {
       return defaultFilename;
@@ -2701,10 +2711,12 @@ function makeMockApp(): AppBindings {
         const tokenName = name.replace(/[^\w.-]+/g, "-") || "folder";
         return { kind: "workspace" as const, path: `__reasonix_external_folder/mock/${tokenName}`, isDir: true, displayPath: path };
       }
-      return { kind: "attachment" as const, path: `.reasonix/attachments/mock-${name}` };
+      const attachmentPath = `.reasonix/attachments/mock-${name}`;
+      mockAttachmentDataURLs.set(attachmentPath, mockPreviewImageDataURL);
+      return { kind: "attachment" as const, path: attachmentPath };
     },
-    async AttachmentDataURL(_path: string) {
-      return "data:image/png;base64,iVBORw0KGgo=";
+    async AttachmentDataURL(path: string) {
+      return mockAttachmentDataURLs.get(path) ?? mockPreviewImageDataURL;
     },
         async Models() {
           const active = mockTabs.find((tab) => tab.active) ?? mockTabs[0];
