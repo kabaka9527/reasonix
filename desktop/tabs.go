@@ -2029,74 +2029,85 @@ func (a *App) keepOnlyVisibleTab(tabID string) (TabMeta, error) {
 		tab *WorkspaceTab
 	}
 
-	a.sessionRemovalMu.Lock()
-	defer a.sessionRemovalMu.Unlock()
+	// sessionRemovalMu covers snapshotting, pruning the hidden bindings, and
+	// closing the removed runtimes (a detached runtime must finish its
+	// in-flight autosave before DeleteSession can see the files). The
+	// project-tree event stays outside so a listener can never re-enter a
+	// removal path while the lock is held.
+	meta, err := func() (TabMeta, error) {
+		a.sessionRemovalMu.Lock()
+		defer a.sessionRemovalMu.Unlock()
 
-	a.mu.Lock()
-	active := a.tabs[tabID]
-	if active == nil {
-		a.mu.Unlock()
-		return TabMeta{}, fmt.Errorf("tab %q not found", tabID)
-	}
-	candidates := make([]pruneCandidate, 0, len(a.tabs)-1)
-	for id, tab := range a.tabs {
-		if id == tabID {
-			continue
-		}
-		candidates = append(candidates, pruneCandidate{id: id, tab: tab})
-	}
-	a.mu.Unlock()
-
-	// Keep tab bindings in a.tabs while saving so DeleteSession still sees
-	// them, but do not hold a.mu: Snapshot can run recovery callbacks that
-	// re-enter App and need the same lock.
-	snapshotted := make(map[string]*WorkspaceTab, len(candidates))
-	for _, candidate := range candidates {
-		id, tab := candidate.id, candidate.tab
-		snapshotted[id] = tab
-		if err := a.snapshotTab(tab); err != nil {
-			slog.Warn("desktop: snapshot before pruning hidden tab failed", "tab", id, "err", err)
-			return TabMeta{}, fmt.Errorf("save current session before switching tabs: %w", err)
-		}
-		if err := a.saveTabSessionMetaForCurrentSession(tab); err != nil {
-			slog.Warn("desktop: session metadata before pruning hidden tab failed", "tab", id, "err", err)
-			return TabMeta{}, fmt.Errorf("save current session metadata before switching tabs: %w", err)
-		}
-	}
-
-	a.mu.Lock()
-	active = a.tabs[tabID]
-	if active == nil {
-		a.mu.Unlock()
-		return TabMeta{}, fmt.Errorf("tab %q not found", tabID)
-	}
-	for id, tab := range a.tabs {
-		if id != tabID && snapshotted[id] != tab {
+		a.mu.Lock()
+		active := a.tabs[tabID]
+		if active == nil {
 			a.mu.Unlock()
-			return TabMeta{}, fmt.Errorf("visible tabs changed while switching; retry")
+			return TabMeta{}, fmt.Errorf("tab %q not found", tabID)
 		}
-	}
-	a.activeTabID = tabID
-	removed := make([]*WorkspaceTab, 0, len(candidates))
-	for _, candidate := range candidates {
-		id, tab := candidate.id, candidate.tab
-		if tab == nil || a.tabs[id] != tab {
-			continue
+		candidates := make([]pruneCandidate, 0, len(a.tabs)-1)
+		for id, tab := range a.tabs {
+			if id == tabID {
+				continue
+			}
+			candidates = append(candidates, pruneCandidate{id: id, tab: tab})
 		}
-		if tab.Ctrl == nil || !tab.hasActiveRuntimeWork() {
-			a.markTabRemovedLocked(tab)
-		}
-		removed = append(removed, tab)
-		delete(a.tabs, id)
-		a.removeTabOrderLocked(id)
-	}
-	a.tabOrder = []string{tabID}
-	a.saveTabsLocked()
-	meta := a.tabMeta(active, true)
-	a.mu.Unlock()
+		a.mu.Unlock()
 
-	for _, tab := range removed {
-		a.removeVisibleTabRuntime(tab)
+		// Keep tab bindings in a.tabs while saving so DeleteSession still sees
+		// them, but do not hold a.mu: Snapshot can run recovery callbacks that
+		// re-enter App and need the same lock.
+		snapshotted := make(map[string]*WorkspaceTab, len(candidates))
+		for _, candidate := range candidates {
+			id, tab := candidate.id, candidate.tab
+			snapshotted[id] = tab
+			if err := a.snapshotTab(tab); err != nil {
+				slog.Warn("desktop: snapshot before pruning hidden tab failed", "tab", id, "err", err)
+				return TabMeta{}, fmt.Errorf("save current session before switching tabs: %w", err)
+			}
+			if err := a.saveTabSessionMetaForCurrentSession(tab); err != nil {
+				slog.Warn("desktop: session metadata before pruning hidden tab failed", "tab", id, "err", err)
+				return TabMeta{}, fmt.Errorf("save current session metadata before switching tabs: %w", err)
+			}
+		}
+
+		a.mu.Lock()
+		active = a.tabs[tabID]
+		if active == nil {
+			a.mu.Unlock()
+			return TabMeta{}, fmt.Errorf("tab %q not found", tabID)
+		}
+		for id, tab := range a.tabs {
+			if id != tabID && snapshotted[id] != tab {
+				a.mu.Unlock()
+				return TabMeta{}, fmt.Errorf("visible tabs changed while switching; retry")
+			}
+		}
+		a.activeTabID = tabID
+		removed := make([]*WorkspaceTab, 0, len(candidates))
+		for _, candidate := range candidates {
+			id, tab := candidate.id, candidate.tab
+			if tab == nil || a.tabs[id] != tab {
+				continue
+			}
+			if tab.Ctrl == nil || !tab.hasActiveRuntimeWork() {
+				a.markTabRemovedLocked(tab)
+			}
+			removed = append(removed, tab)
+			delete(a.tabs, id)
+			a.removeTabOrderLocked(id)
+		}
+		a.tabOrder = []string{tabID}
+		a.saveTabsLocked()
+		meta := a.tabMeta(active, true)
+		a.mu.Unlock()
+
+		for _, tab := range removed {
+			a.removeVisibleTabRuntime(tab)
+		}
+		return meta, nil
+	}()
+	if err != nil {
+		return TabMeta{}, err
 	}
 	a.emitProjectTreeChanged()
 	return enrichTabMeta(meta), nil
