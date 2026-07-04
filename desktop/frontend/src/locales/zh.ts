@@ -758,6 +758,7 @@ export const zh: Record<DictKey, string> = {
   "projectTree.renameProjectWorkbench": "重命名项目",
   "projectTree.projectHistory": "查看项目历史",
   "projectTree.justNow": "刚刚",
+  "projectTree.previously": "之前",
   "projectTree.running": "输出中",
   "projectTree.status.thinking": "思考中",
   "projectTree.status.streaming": "输出中",

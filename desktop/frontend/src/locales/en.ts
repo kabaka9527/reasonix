@@ -757,6 +757,7 @@ export const en = {
   "projectTree.renameProjectWorkbench": "Rename project",
   "projectTree.projectHistory": "View project history",
   "projectTree.justNow": "just now",
+  "projectTree.previously": "previously",
   "projectTree.running": "responding",
   "projectTree.status.thinking": "thinking",
   "projectTree.status.streaming": "responding",
