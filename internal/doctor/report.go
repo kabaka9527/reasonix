@@ -78,8 +78,8 @@ type SandboxReport struct {
 	Network    bool     `json:"network"`
 	WriteRoots []string `json:"write_roots,omitempty"`
 	// Available is whether an OS sandbox actually backs an "enforce" request on
-	// this host (bwrap/seatbelt present). Without it "enforce" refuses bash
-	// execution instead of running unconfined.
+	// this host (Seatbelt, bubblewrap, or the Windows helper). Without it
+	// "enforce" refuses bash execution instead of running unconfined.
 	Available bool `json:"available"`
 }
 

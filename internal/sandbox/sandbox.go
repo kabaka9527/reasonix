@@ -5,14 +5,21 @@
 // allowed. This is the *enforcement* layer beneath the permission rules
 // (*policy*): a permitted command still cannot escape the box.
 //
-// macOS uses Seatbelt via sandbox-exec and Linux uses bubblewrap when
-// available. When enforce is requested but no OS sandbox backend is available,
-// the bash tool fails closed instead of running the command unwrapped. Confining
-// the in-process file-writer built-ins is handled separately, in package
-// tool/builtin.
+// macOS uses Seatbelt via sandbox-exec, Linux uses bubblewrap when available,
+// and Windows uses a helper process backed by github.com/SivanCola/windows-sandbox:
+// AppContainer for read-only commands, a low-integrity token for writable
+// commands, and a kill-on-close Job Object. When enforce is requested but no
+// OS sandbox backend is available, the bash tool fails closed instead of
+// running the command unwrapped. Confining the in-process file-writer
+// built-ins is handled separately, in package tool/builtin.
 package sandbox
 
 import "runtime"
+
+// WindowsHelperCommand is an internal CLI subcommand used only by the Windows
+// sandbox wrapper. It is intentionally obscure so it does not collide with
+// public commands.
+const WindowsHelperCommand = "__reasonix_windows_sandbox"
 
 // Spec describes how to confine one command. The zero value (Mode == "") does
 // not enforce, so an unconfigured caller runs commands unchanged.
@@ -21,8 +28,8 @@ type Spec struct {
 	// to run it unwrapped.
 	Mode string
 	// WriteRoots are directories the command may write to (the workspace root
-	// plus any configured extras). Temp dirs and common toolchain caches are
-	// added automatically so builds and package managers keep working.
+	// plus any configured extras). Platforms may add command-scoped temp/cache
+	// roots so builds and package managers keep working without broad writes.
 	WriteRoots []string
 	// ForbidReadRoots are directories the command may not read from when
 	// confined. The OS sandbox denies access to these paths (macOS Seatbelt
@@ -58,7 +65,7 @@ func UnavailableRemediation() string {
 	case "darwin":
 		return "Ensure `sandbox-exec` is available on PATH or set [sandbox] bash = \"off\" in config.toml / Settings -> Sandbox to restore pre-1.16 unconfined shell execution."
 	case "windows":
-		return "Reasonix does not yet have a Windows OS sandbox backend; set [sandbox] bash = \"off\" in config.toml / Settings -> Sandbox to run shell commands unconfined."
+		return "The native Windows sandbox backend (AppContainer) is unavailable on this host; set [sandbox] bash = \"off\" in config.toml / Settings -> Sandbox to run shell commands unconfined."
 	default:
 		return "Set [sandbox] bash = \"off\" in config.toml / Settings -> Sandbox to run shell commands unconfined on this platform."
 	}

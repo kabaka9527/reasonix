@@ -479,16 +479,26 @@ out. `forbid_read` optionally hides sensitive directories from the agent's
 read/list/search tools; use absolute paths or `${HOME}` / `${VAR}` references,
 not `~`, because config expansion is environment-variable based. `bash` is
 itself jailed by default when an OS sandbox is available (`[sandbox] bash`,
-Seatbelt on macOS and bubblewrap on Linux): commands may write only those same
-roots (plus temp and toolchain caches), cannot read configured `forbid_read`
-roots while the OS sandbox is active, and reach the network only when
-`[sandbox] network` is set. When no OS sandbox is available, `bash = "enforce"`
-refuses bash execution instead of running unconfined. Install the platform
-sandbox backend (bubblewrap/`bwrap` on Linux, `sandbox-exec` on macOS) or set
+Seatbelt on macOS, bubblewrap on Linux, and a native helper on Windows):
+commands may write only those same roots plus platform-specific command
+temp/cache roots, cannot read configured `forbid_read` roots while the OS
+sandbox is active, and reach the network only when `[sandbox] network` is set.
+The native Windows helper delegates the low-level isolation to
+`github.com/SivanCola/windows-sandbox`, which uses AppContainer for read-only
+commands and a low-integrity token for writable commands, temporarily grants
+access to the workspace, a per-command temp root, and the target executable,
+applies deny ACEs for `forbid_read`, snapshots touched DACLs before editing
+them, and restores those snapshots best-effort after the command exits.
+Read-only AppContainer commands omit network capabilities when networking is
+disabled; writable Windows commands fail closed when
+`[sandbox] network = false`.
+When no OS sandbox backend is available, `bash = "enforce"` refuses bash
+execution instead of running unconfined. Install the platform sandbox backend
+(bubblewrap/`bwrap` on Linux, `sandbox-exec` on macOS) or set
 `[sandbox] bash = "off"` to explicitly restore the pre-1.16 unconfined shell
 behavior (see
-[`SPEC.md` §9](./SPEC.md#9-roadmap-not-in-current-scope) for the escape-prompt and
-broader OS support still to come).
+[`SPEC.md` §9](./SPEC.md#9-roadmap-not-in-current-scope) for the escape-prompt
+and optional elevated Windows hardening still to come).
 
 ## Plugins (MCP)
 

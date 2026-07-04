@@ -315,6 +315,9 @@ func TestAvailableNonDarwin(t *testing.T) {
 	if runtime.GOOS == "darwin" {
 		t.Skip("testing non-darwin path")
 	}
+	if runtime.GOOS == "windows" {
+		t.Skip("windows has its own helper-backed sandbox availability")
+	}
 	_, err := exec.LookPath("bwrap")
 	if Available() != (err == nil) {
 		t.Errorf("Available() = %v, bwrap err = %v", Available(), err)

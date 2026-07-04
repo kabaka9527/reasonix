@@ -173,7 +173,7 @@ func (b bash) Execute(ctx context.Context, args json.RawMessage) (string, error)
 			cmd.WaitDelay = bashWaitDelay
 			cmd.Stdout = out
 			cmd.Stderr = out
-			tracked, runErr := runShellProcess(jobCtx, cmd, sh, p.Command, shouldTrackShellProcess(sh, p.Command, p.PreserveBackgroundProcesses))
+			tracked, runErr := runShellProcess(jobCtx, cmd, sh, p.Command, shouldTrackShellProcess(wrapped, sh, p.Command, p.PreserveBackgroundProcesses))
 			if shouldReapAfterRun(jobCtx, sh, p.Command, p.PreserveBackgroundProcesses) {
 				reapShellProcess(cmd, tracked) // reap process-group stragglers the job left running (#3702)
 			}
@@ -201,7 +201,7 @@ func (b bash) Execute(ctx context.Context, args json.RawMessage) (string, error)
 	}
 	cmd.Stdout = w
 	cmd.Stderr = w
-	tracked, err := runShellProcess(runCtx, cmd, sh, p.Command, shouldTrackShellProcess(sh, p.Command, p.PreserveBackgroundProcesses))
+	tracked, err := runShellProcess(runCtx, cmd, sh, p.Command, shouldTrackShellProcess(wrapped, sh, p.Command, p.PreserveBackgroundProcesses))
 	// A foreground command that spawned a lingering child (e.g. `bazel run`'s
 	// server) leaves it in the process group; Wait only reaped the shell leader.
 	// Kill the group so those don't accumulate into an OOM (#3702). On cancel/
@@ -277,8 +277,11 @@ func (b bash) foregroundTimeout() time.Duration {
 	return b.timeout
 }
 
-func shouldTrackShellProcess(sh sandbox.Shell, command string, preserveBackgroundProcesses bool) bool {
+func shouldTrackShellProcess(wrapped bool, sh sandbox.Shell, command string, preserveBackgroundProcesses bool) bool {
 	if preserveBackgroundProcesses {
+		return false
+	}
+	if runtime.GOOS == "windows" && wrapped {
 		return false
 	}
 	return sh.Kind != sandbox.ShellBash || !hasExplicitBackgroundKeepalive(command)
