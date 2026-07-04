@@ -572,19 +572,27 @@ func applyLinux(targz []byte) error {
 }
 
 func applyWindowsFile(path string) error {
-	return installerCommand(path, currentInstallDir()).Start()
+	return startWindowsUpdateHandoff(path, currentInstallDir(), currentExecutablePath())
 }
 
-// currentInstallDir is the directory of the running executable — the location a
-// Windows update must overwrite. Empty when it can't be resolved, in which case
-// the installer falls back to its own InstallDir logic.
-func currentInstallDir() string {
+func currentExecutablePath() string {
 	exe, err := os.Executable()
 	if err != nil {
 		return ""
 	}
 	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = resolved
+	}
+	return exe
+}
+
+// currentInstallDir is the directory of the running executable — the location a
+// Windows update must overwrite. Empty when it can't be resolved, in which case
+// the installer falls back to its own InstallDir logic.
+func currentInstallDir() string {
+	exe := currentExecutablePath()
+	if exe == "" {
+		return ""
 	}
 	return filepath.Dir(exe)
 }
