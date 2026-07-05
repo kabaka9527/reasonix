@@ -5084,22 +5084,33 @@ func migrateLegacySessionsIntoGlobalTopics(dir string) []string {
 			}
 		}
 
-		meta, err := agent.EnsureBranchMeta(info.Path)
+		migrated, err := func() (bool, error) {
+			// Read-modify-write on the branch-meta sidecar: hold the per-path
+			// meta lock so agent-side writers (autosave revision bumps,
+			// in-flight markers) can't interleave between the load and save
+			// below and lose their fields.
+			unlock := agent.LockSessionMetaPath(info.Path)
+			defer unlock()
+			meta, err := agent.EnsureBranchMeta(info.Path)
+			if err != nil {
+				return false, err
+			}
+			// Preserve scoped sessions only when their existing ownership matches
+			// the directory being migrated.
+			if !legacySessionMetaMatchesMigrationTarget(meta, scope, workspaceRoot) {
+				return false, nil
+			}
+			meta.Scope = scope
+			meta.WorkspaceRoot = workspaceRoot
+			meta.TopicID = topicID
+			meta.TopicTitle = title
+			return true, agent.SaveBranchMetaPreserveUpdated(info.Path, meta)
+		}()
 		if err != nil {
 			deferred = true
 			continue
 		}
-		// Preserve scoped sessions only when their existing ownership matches
-		// the directory being migrated.
-		if !legacySessionMetaMatchesMigrationTarget(meta, scope, workspaceRoot) {
-			continue
-		}
-		meta.Scope = scope
-		meta.WorkspaceRoot = workspaceRoot
-		meta.TopicID = topicID
-		meta.TopicTitle = title
-		if err := agent.SaveBranchMetaPreserveUpdated(info.Path, meta); err != nil {
-			deferred = true
+		if !migrated {
 			continue
 		}
 		if topicTitles == nil {
@@ -5199,7 +5210,22 @@ func restoreSessionTopicIndex(dir, sessionPath string) error {
 		return err
 	}
 	if !ok || strings.TrimSpace(meta.TopicID) == "" {
+		// The migration pass takes per-session meta locks itself, so it must
+		// run outside the lock taken below.
 		migrateLegacySessionsIntoGlobalTopics(dir)
+		return nil
+	}
+
+	// Read-modify-write on the branch-meta sidecar: re-read and save under the
+	// per-path meta lock so a concurrent save's revision bump can't land in
+	// between and get rolled back by the write at the end.
+	unlock := agent.LockSessionMetaPath(sessionPath)
+	defer unlock()
+	meta, ok, err = agent.LoadBranchMeta(sessionPath)
+	if err != nil {
+		return err
+	}
+	if !ok || strings.TrimSpace(meta.TopicID) == "" {
 		return nil
 	}
 
@@ -5551,12 +5577,19 @@ func (a *App) updateTopicSessionTitles(topicID, title string) {
 	}
 	for _, dir := range a.knownSessionDirs() {
 		for _, match := range topicSessionMatches(dir, topicID) {
+			// Read-modify-write on the branch-meta sidecar: hold the per-path
+			// meta lock so a concurrent save's revision bump can't land between
+			// the load and save below and get rolled back by this write.
+			unlock := agent.LockSessionMetaPath(match.path)
 			meta, ok, err := agent.LoadBranchMeta(match.path)
 			if err != nil || !ok {
+				unlock()
 				continue
 			}
 			meta.TopicTitle = title
-			if err := agent.SaveBranchMetaPreserveUpdated(match.path, meta); err == nil {
+			err = agent.SaveBranchMetaPreserveUpdated(match.path, meta)
+			unlock()
+			if err == nil {
 				invalidateTopicSessionIndex(dir)
 			}
 		}
