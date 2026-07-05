@@ -6934,11 +6934,10 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 	if prevPath == "" {
 		prevPath = strings.TrimSpace(tab.currentSessionPath())
 	}
-	if a.controllerForTab(tab) == nil && prevPath != "" && a.attachExistingSessionRuntime(tab, prevPath, a.ctx) {
-		prevPath = a.reconciledSessionPathForTab(tab)
-		if prevPath == "" {
-			prevPath = strings.TrimSpace(tab.currentSessionPath())
-		}
+	// Recomputing prevPath after this attach would be a dead store: it is
+	// unconditionally derived again after ensureTabControllerWorkspace below.
+	if a.controllerForTab(tab) == nil && prevPath != "" {
+		a.attachExistingSessionRuntime(tab, prevPath, a.ctx)
 	}
 	if controllerHasActiveRuntimeWork(a.controllerForTab(tab)) {
 		return rebuildControllerActiveWorkError("effort")
@@ -7052,11 +7051,10 @@ func (a *App) SetTokenModeForTab(tabID, mode string) error {
 	if prevPath == "" {
 		prevPath = strings.TrimSpace(tab.currentSessionPath())
 	}
-	if a.controllerForTab(tab) == nil && prevPath != "" && a.attachExistingSessionRuntime(tab, prevPath, a.ctx) {
-		prevPath = a.reconciledSessionPathForTab(tab)
-		if prevPath == "" {
-			prevPath = strings.TrimSpace(tab.currentSessionPath())
-		}
+	// Recomputing prevPath after this attach would be a dead store: it is
+	// unconditionally derived again after ensureTabControllerWorkspace below.
+	if a.controllerForTab(tab) == nil && prevPath != "" {
+		a.attachExistingSessionRuntime(tab, prevPath, a.ctx)
 	}
 	if controllerHasActiveRuntimeWork(a.controllerForTab(tab)) {
 		return rebuildControllerActiveWorkError("token mode")
