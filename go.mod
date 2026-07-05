@@ -10,7 +10,7 @@ require (
 	charm.land/lipgloss/v2 v2.0.4
 	git.sr.ht/~jackmordaunt/go-toast/v2 v2.0.3
 	github.com/BurntSushi/toml v1.6.0
-	github.com/SivanCola/windows-sandbox v0.0.0-20260705043509-a2e10470e533
+	github.com/SivanCola/windows-sandbox v0.0.0-20260705063922-1a3e77eb4310
 	github.com/alecthomas/chroma/v2 v2.27.0
 	github.com/atotto/clipboard v0.1.4
 	github.com/aymanbagabas/go-udiff v0.4.1
