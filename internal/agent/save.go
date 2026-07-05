@@ -249,9 +249,10 @@ func (s *Session) save(path string, mode sessionSaveMode) error {
 	// writes leaves the newer transcript authoritative; the anchor rewrite
 	// keeps the compatibility .jsonl fresh for direct readers.
 	reason := "save"
-	if mode == sessionSaveSnapshot {
+	switch mode {
+	case sessionSaveSnapshot:
 		reason = "snapshot"
-	} else if mode == sessionSaveRewrite {
+	case sessionSaveRewrite:
 		reason = "rewrite"
 	}
 	if repairLog {

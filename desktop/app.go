@@ -1586,9 +1586,11 @@ func removeDesktopSessionArtifacts(path string) error {
 	if strings.TrimSpace(path) == "" {
 		return nil
 	}
-	if sessionLeaseBusyCheck(path) {
-		return errSessionBusyElsewhere
+	guard, err := acquireSessionRemovalGuard(path)
+	if err != nil {
+		return err
 	}
+	defer guard.Release()
 	defer invalidateTopicSessionIndexForPath(path)
 	for _, p := range sessionOwnedArtifactPaths(path) {
 		if strings.TrimSpace(p) == "" {
@@ -1597,6 +1599,9 @@ func removeDesktopSessionArtifacts(path string) error {
 		if err := os.RemoveAll(p); err != nil && !os.IsNotExist(err) {
 			return err
 		}
+	}
+	if err := guard.RemoveSidecarsAndRelease(); err != nil {
+		return err
 	}
 	if err := removeSessionDisplay(filepath.Dir(path), path); err != nil {
 		return err

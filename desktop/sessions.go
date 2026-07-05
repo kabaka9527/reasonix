@@ -153,36 +153,37 @@ func sessionTrashArtifacts(sessionPath, key string) []sessionTrashArtifact {
 	}
 }
 
-func sessionEphemeralArtifactPaths(sessionPath string) []string {
-	return []string{
-		store.SessionLockFile(sessionPath),
-		store.SessionLeaseLock(sessionPath),
-		store.SessionLeaseInfo(sessionPath),
-	}
-}
-
 // errSessionBusyElsewhere is the sanitized error surfaced when a destructive
-// session operation is blocked by a live external owner. It intentionally
-// carries no writer id, hostname, or path.
+// session operation is blocked by a live owner. It intentionally carries no
+// writer id, hostname, or path.
 var errSessionBusyElsewhere = errors.New("session is in use by another Reasonix window or process")
 
-// sessionLeaseBusyCheck guards deletion of a session and its lease files: a
-// live external owner holds the lease lock on an open handle, and unlinking
-// the lock file would let a third runtime lock a fresh inode — two owners.
-// Swappable for tests.
-var sessionLeaseBusyCheck = agent.SessionLeaseHeldByOtherRuntime
+// acquireSessionRemovalGuard wraps agent.TryAcquireSessionRemovalGuard with
+// the sanitized busy error. The guard holds the session's save and lease
+// locks across the destructive operation and deletes the lock files
+// atomically with the release — a one-shot busy probe followed by RemoveAll
+// would let another process acquire the lease in between and then lose its
+// freshly locked lease file, breaking cross-process mutual exclusion.
+func acquireSessionRemovalGuard(sessionPath string) (*agent.SessionRemovalGuard, error) {
+	guard, err := agent.TryAcquireSessionRemovalGuard(sessionPath)
+	if err != nil {
+		if errors.Is(err, agent.ErrSessionLeaseHeld) {
+			return nil, errSessionBusyElsewhere
+		}
+		return nil, err
+	}
+	return guard, nil
+}
 
 func sessionOwnedArtifactPaths(sessionPath string) []string {
 	key := filepath.Base(sessionPath)
 	artifacts := sessionTrashArtifacts(sessionPath, key)
-	ephemeral := sessionEphemeralArtifactPaths(sessionPath)
-	paths := make([]string, 0, len(artifacts)+len(ephemeral))
+	paths := make([]string, 0, len(artifacts))
 	for _, artifact := range artifacts {
 		if strings.TrimSpace(artifact.src) != "" {
 			paths = append(paths, artifact.src)
 		}
 	}
-	paths = append(paths, ephemeral...)
 	return paths
 }
 
@@ -204,9 +205,14 @@ func reconcileDesktopCleanupPending(dir string) error {
 }
 
 func reconcileDesktopTrashSessionArtifacts(dir, sessionPath, key string) error {
-	if sessionLeaseBusyCheck(sessionPath) {
-		return errSessionBusyElsewhere
+	// Hold the removal guard across the whole move so no runtime can acquire
+	// the session (or save into it) while its artifacts are relocated; the
+	// lock sidecars are deleted atomically with the guard release.
+	guard, err := acquireSessionRemovalGuard(sessionPath)
+	if err != nil {
+		return err
 	}
+	defer guard.Release()
 	itemDir := filepath.Join(sessionTrashPath(dir), key)
 	if err := os.MkdirAll(itemDir, 0o755); err != nil {
 		return err
@@ -219,7 +225,7 @@ func reconcileDesktopTrashSessionArtifacts(dir, sessionPath, key string) error {
 	if err := trashSubagentArtifacts(dir, sessionPath, itemDir); err != nil {
 		return err
 	}
-	if err := removeEphemeralSessionArtifacts(sessionPath); err != nil {
+	if err := guard.RemoveSidecarsAndRelease(); err != nil {
 		return err
 	}
 	meta := trashedSessionMeta{Key: key, DeletedAt: time.Now().UnixMilli()}
@@ -374,9 +380,6 @@ func sessionFileHasConversationContent(sessionPath string) bool {
 }
 
 func trashSessionArtifactsBeforeMove(dir, sessionPath, key string, beforeMove func()) error {
-	if sessionLeaseBusyCheck(sessionPath) {
-		return errSessionBusyElsewhere
-	}
 	if err := validateSessionTrashTarget(dir, sessionPath, key); err != nil {
 		return err
 	}
@@ -387,6 +390,13 @@ func trashSessionArtifactsBeforeMove(dir, sessionPath, key string, beforeMove fu
 	if !shouldMove {
 		return nil
 	}
+	// Acquired after prepareSessionTrashTarget: the duplicate-trash path in
+	// there takes its own removal guard, and the guard is not reentrant.
+	guard, err := acquireSessionRemovalGuard(sessionPath)
+	if err != nil {
+		return err
+	}
+	defer guard.Release()
 	itemDir := filepath.Join(sessionTrashPath(dir), key)
 	if err := os.MkdirAll(itemDir, 0o755); err != nil {
 		return err
@@ -402,7 +412,7 @@ func trashSessionArtifactsBeforeMove(dir, sessionPath, key string, beforeMove fu
 	if err := trashSubagentArtifacts(dir, sessionPath, itemDir); err != nil {
 		return err
 	}
-	if err := removeEphemeralSessionArtifacts(sessionPath); err != nil {
+	if err := guard.RemoveSidecarsAndRelease(); err != nil {
 		return err
 	}
 	meta := trashedSessionMeta{Key: key, DeletedAt: time.Now().UnixMilli()}
@@ -496,18 +506,6 @@ func restoreTrashedSessionFile(dir, path string) error {
 		return err
 	}
 	return os.RemoveAll(itemDir)
-}
-
-func removeEphemeralSessionArtifacts(sessionPath string) error {
-	for _, path := range sessionEphemeralArtifactPaths(sessionPath) {
-		if strings.TrimSpace(path) == "" {
-			continue
-		}
-		if err := os.RemoveAll(path); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-	}
-	return nil
 }
 
 func purgeTrashedSessionFile(dir, path string) error {

@@ -114,14 +114,29 @@ type sessionEventLogProbe struct {
 	schemaVersion int
 }
 
+// sessionEventSidecarsFit reports whether the event log and index filenames
+// stay within the filesystem's name limit. Overlong transcript names (from the
+// pre-bounded recovery cascade, until reconcileOverlongSessionFilenames renames
+// them) must run checkpoint-only: creating their sidecars would fail with
+// ENAMETOOLONG mid-save.
+func sessionEventSidecarsFit(sessionPath string) bool {
+	logName := filepath.Base(store.SessionEventLog(sessionPath))
+	indexName := filepath.Base(store.SessionEventIndex(sessionPath))
+	return len(logName) <= nameMaxBytes && len(indexName) <= nameMaxBytes
+}
+
 // probeSessionEventLog inspects the first record of the event log to decide
 // whether the native persistence layer owns the file. Missing or empty logs
 // count as native (we may create/append); an undecodable or foreign first
-// record marks the file as not ours.
+// record — or a transcript name too long for the sidecars to fit — marks the
+// file as not ours.
 func probeSessionEventLog(sessionPath string) (sessionEventLogProbe, error) {
 	path := store.SessionEventLog(sessionPath)
 	if path == "" {
 		return sessionEventLogProbe{native: true}, nil
+	}
+	if !sessionEventSidecarsFit(sessionPath) {
+		return sessionEventLogProbe{}, nil
 	}
 	info, err := os.Stat(path)
 	if err != nil {

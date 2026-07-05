@@ -140,14 +140,25 @@ func TestTrashSessionMatchesLiveSeesEventLogDivergence(t *testing.T) {
 	}
 }
 
-func TestTrashPathsBlockedWhenExternalOwnerHoldsLease(t *testing.T) {
-	prev := sessionLeaseBusyCheck
-	sessionLeaseBusyCheck = func(string) bool { return true }
-	t.Cleanup(func() { sessionLeaseBusyCheck = prev })
-
+func TestTrashPathsBlockedWhileLeaseHeld(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")
 	saveSnapshotTurns(t, path, 1)
+
+	// A live owner (any runtime — this process or another) holds the lease
+	// lock on an open handle for its whole hold. Every destructive path must
+	// refuse while it is held: probing once and deleting later would let the
+	// owner's freshly locked lease file be unlinked out from under it.
+	lease, err := agent.TryAcquireSessionLease(path)
+	if err != nil {
+		t.Fatalf("TryAcquireSessionLease: %v", err)
+	}
+	released := false
+	defer func() {
+		if !released {
+			lease.Release()
+		}
+	}()
 
 	if err := trashSessionArtifactsBeforeMove(dir, path, "session.jsonl", nil); !errors.Is(err, errSessionBusyElsewhere) {
 		t.Fatalf("trashSessionArtifactsBeforeMove err = %v, want errSessionBusyElsewhere", err)
@@ -159,10 +170,31 @@ func TestTrashPathsBlockedWhenExternalOwnerHoldsLease(t *testing.T) {
 		t.Fatalf("removeDesktopSessionArtifacts err = %v, want errSessionBusyElsewhere", err)
 	}
 	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("session file touched despite external owner: %v", err)
+		t.Fatalf("session file touched despite live owner: %v", err)
 	}
 	if _, err := os.Stat(store.SessionEventLog(path)); err != nil {
-		t.Fatalf("event log touched despite external owner: %v", err)
+		t.Fatalf("event log touched despite live owner: %v", err)
+	}
+	if _, err := os.Stat(store.SessionLeaseLock(path)); err != nil {
+		t.Fatalf("lease lock deleted while held: %v", err)
+	}
+
+	// Once the owner releases, the same trash call succeeds and the lock
+	// sidecars are gone with it.
+	lease.Release()
+	released = true
+	if err := trashSessionArtifactsBeforeMove(dir, path, "session.jsonl", nil); err != nil {
+		t.Fatalf("trashSessionArtifactsBeforeMove after release: %v", err)
+	}
+	for _, p := range []string{
+		path,
+		store.SessionLockFile(path),
+		store.SessionLeaseLock(path),
+		store.SessionLeaseInfo(path),
+	} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("artifact survived trash: %s (err=%v)", p, err)
+		}
 	}
 }
 
