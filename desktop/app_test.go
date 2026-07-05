@@ -3776,6 +3776,74 @@ func TestClearActiveSessionRuntimeSupersedesInFlightStartupBuild(t *testing.T) {
 	assertTabBuildSuperseded(t, app, tab, 1, buildCtx)
 }
 
+func TestClearActiveSessionRuntimeReleasesResourcesWhenTabReplaced(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "OLD_MODEL_KEY", "sk-test")
+
+	cfg := config.Default()
+	cfg.DefaultModel = "old/old-model"
+	cfg.Desktop.ProviderAccess = []string{"old"}
+	cfg.Providers = []config.ProviderEntry{{
+		Name:      "old",
+		Kind:      "openai",
+		BaseURL:   "https://example.invalid/v1",
+		Model:     "old-model",
+		APIKeyEnv: "OLD_MODEL_KEY",
+	}}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	sessionPath := filepath.Join(dir, "clear-runtime-replaced-tab.jsonl")
+	if err := os.WriteFile(sessionPath, nil, 0o644); err != nil {
+		t.Fatalf("write placeholder session: %v", err)
+	}
+
+	oldSession := agent.NewSession("old system prompt")
+	oldExec := agent.New(nil, nil, oldSession, agent.Options{}, event.Discard)
+	oldCtrl := control.New(control.Options{Executor: oldExec, SessionDir: dir, SessionPath: sessionPath, Label: "old", Sink: event.Discard})
+
+	app := NewApp()
+	tab := &WorkspaceTab{
+		ID:          "tab_replaced",
+		Scope:       "global",
+		SessionPath: sessionPath,
+		model:       "old/old-model",
+		Ready:       true,
+		Ctrl:        oldCtrl,
+		disabledMCP: map[string]ServerView{},
+	}
+	tab.sink = &tabEventSink{tabID: tab.ID, app: app}
+	// The tab entry now points at a replacement struct (the tab was closed and
+	// reopened while the clear ran off-lock), so the swap must not apply.
+	replacement := &WorkspaceTab{ID: tab.ID, Scope: "global"}
+	app.tabs = map[string]*WorkspaceTab{tab.ID: replacement}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+	t.Cleanup(tab.releaseSessionLease)
+
+	err := app.clearActiveSessionRuntime(tab, oldCtrl)
+	if err == nil || !strings.Contains(err.Error(), "changed while clearing") {
+		t.Fatalf("clearActiveSessionRuntime error = %v, want tab-changed error", err)
+	}
+	if replacement.Ctrl != nil {
+		t.Fatalf("replacement tab controller = %v, want untouched nil", replacement.Ctrl)
+	}
+	if tab.Ctrl != oldCtrl {
+		t.Fatalf("replaced tab controller = %v, want left on the destroyed runtime", tab.Ctrl)
+	}
+	if key := tab.sessionLeaseRuntimeKey(); key != "" {
+		t.Fatalf("replaced tab still holds a session lease for %q; the fresh lease leaked", key)
+	}
+	if _, err := os.Stat(sessionPath); !os.IsNotExist(err) {
+		t.Fatalf("old session artifacts were not destroyed (stat err=%v)", err)
+	}
+}
+
 func TestDeleteProviderRejectsRunningAffectedTab(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	setDesktopTestCredential(t, "REASONIX_TEST_KEY", "sk-test")

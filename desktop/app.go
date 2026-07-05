@@ -1655,19 +1655,28 @@ func (a *App) clearActiveSessionRuntime(tab *WorkspaceTab, oldCtrl control.Sessi
 	newCtrl.SetSessionPath(path)
 
 	a.mu.Lock()
-	if current := a.tabs[tab.ID]; current == tab {
-		tab.Ctrl = newCtrl
-		tab.sink = newSink
-		tab.SessionPath = path
-		tab.Label = newCtrl.Label()
-		tab.Ready = true
-		tab.StartupErr = ""
-		// Supersede any in-flight startup build: the session it was resuming
-		// was just destroyed, and finishing later would pass the generation
-		// check and overwrite this controller.
-		a.supersedeTabBuildLocked(tab)
-		a.saveTabsLocked()
+	if current := a.tabs[tab.ID]; current != tab {
+		a.mu.Unlock()
+		// The old session is already destroyed either way; release what this
+		// clear acquired for the replaced tab (fresh controller and its
+		// lease) so neither leaks, and still finish the old runtime teardown.
+		newCtrl.Close()
+		tab.releaseSessionLease()
+		oldCtrl.CloseAfterDestroy()
+		a.emitProjectTreeChanged()
+		return fmt.Errorf("tab %q changed while clearing the session", tab.ID)
 	}
+	tab.Ctrl = newCtrl
+	tab.sink = newSink
+	tab.SessionPath = path
+	tab.Label = newCtrl.Label()
+	tab.Ready = true
+	tab.StartupErr = ""
+	// Supersede any in-flight startup build: the session it was resuming
+	// was just destroyed, and finishing later would pass the generation
+	// check and overwrite this controller.
+	a.supersedeTabBuildLocked(tab)
+	a.saveTabsLocked()
 	a.mu.Unlock()
 	oldCtrl.CloseAfterDestroy()
 	a.emitProjectTreeChanged()
