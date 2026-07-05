@@ -154,7 +154,7 @@ func (b bash) Execute(ctx context.Context, args json.RawMessage) (string, error)
 	// Wrap in the OS sandbox when configured; otherwise argv is just the shell.
 	argv, wrapped := sandbox.Command(b.sb, sh, p.Command)
 	if b.sb.Enforce() && !wrapped {
-		return "", fmt.Errorf("bash sandbox requested but unavailable on this platform; refusing to run unconfined")
+		return "", fmt.Errorf("%s", sandbox.UnavailableMessage())
 	}
 	cmdEnv := bashCommandEnv(ctx)
 

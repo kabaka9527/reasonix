@@ -1,15 +1,18 @@
 // Package sandbox wraps a shell command in an OS-level jail so the model's
 // `bash` calls are confined: it may read almost freely but write only inside
 // the writable roots (workspace, configured extras, plus temp and toolchain
-// caches) , with optional forbid-read roots, and reach the network only when
+// caches), with optional forbid-read roots, and reach the network only when
 // allowed. This is the *enforcement* layer beneath the permission rules
 // (*policy*): a permitted command still cannot escape the box.
 //
-// macOS uses Seatbelt via sandbox-exec, Linux uses bubblewrap when available,
-// and platforms without OS tooling fall back to running the command unwrapped
-// (see Available). Confining the in-process file-writer built-ins is handled
-// separately, in package tool/builtin.
+// macOS uses Seatbelt via sandbox-exec and Linux uses bubblewrap when
+// available. When enforce is requested but no OS sandbox backend is available,
+// the bash tool fails closed instead of running the command unwrapped. Confining
+// the in-process file-writer built-ins is handled separately, in package
+// tool/builtin.
 package sandbox
+
+import "runtime"
 
 // Spec describes how to confine one command. The zero value (Mode == "") does
 // not enforce, so an unconfigured caller runs commands unchanged.
@@ -38,3 +41,25 @@ type Spec struct {
 
 // Enforce reports whether the spec asks for confinement.
 func (s Spec) Enforce() bool { return s.Mode == "enforce" }
+
+// UnavailableMessage explains why an enforced bash sandbox cannot run and gives
+// the user the two durable fixes: install an OS sandbox backend, or opt into the
+// older unconfined behavior explicitly.
+func UnavailableMessage() string {
+	return "bash sandbox requested but unavailable on this host; refusing to run unconfined. " + UnavailableRemediation()
+}
+
+// UnavailableRemediation is split out so status surfaces can append the same
+// actionable hint without repeating the leading error.
+func UnavailableRemediation() string {
+	switch runtime.GOOS {
+	case "linux":
+		return "Install bubblewrap (`bwrap`) or set [sandbox] bash = \"off\" in config.toml / Settings -> Sandbox to restore pre-1.16 unconfined shell execution."
+	case "darwin":
+		return "Ensure `sandbox-exec` is available on PATH or set [sandbox] bash = \"off\" in config.toml / Settings -> Sandbox to restore pre-1.16 unconfined shell execution."
+	case "windows":
+		return "Reasonix does not yet have a Windows OS sandbox backend; set [sandbox] bash = \"off\" in config.toml / Settings -> Sandbox to run shell commands unconfined."
+	default:
+		return "Set [sandbox] bash = \"off\" in config.toml / Settings -> Sandbox to run shell commands unconfined on this platform."
+	}
+}

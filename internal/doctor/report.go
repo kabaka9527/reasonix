@@ -237,7 +237,7 @@ func RenderText(r Report) string {
 	fmt.Fprintf(&b, "\nsandbox\n")
 	bashLine := r.Sandbox.Bash
 	if r.Sandbox.Bash == "enforce" && !r.Sandbox.Available {
-		bashLine += " (unavailable: no OS sandbox on this host — bash execution is refused)"
+		bashLine += " (unavailable: no OS sandbox on this host; bash execution is refused. " + sandbox.UnavailableRemediation() + ")"
 	}
 	fmt.Fprintf(&b, "  bash         %s\n", bashLine)
 	fmt.Fprintf(&b, "  network      %v\n", r.Sandbox.Network)

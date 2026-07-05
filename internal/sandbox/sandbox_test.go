@@ -43,6 +43,19 @@ func TestSpecZeroValue(t *testing.T) {
 	}
 }
 
+func TestUnavailableMessageIsActionable(t *testing.T) {
+	msg := UnavailableMessage()
+	for _, want := range []string{
+		"refusing to run unconfined",
+		`[sandbox] bash = "off"`,
+		"Settings -> Sandbox",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("UnavailableMessage() = %q, want %q", msg, want)
+		}
+	}
+}
+
 // --- Command ---
 
 func TestCommandNonEnforce(t *testing.T) {

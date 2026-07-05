@@ -650,8 +650,10 @@ Linux): each command is allowed to write only the same roots (+ temp and
 toolchain caches), denied reads under `forbid_read`, and allowed to reach the
 network only when `network = true`.
 When no OS sandbox is available, `bash = "enforce"` refuses bash execution
-instead of running unconfined. The escape-prompt and broader OS support are Phase
-1's remainder (§9).
+instead of running unconfined. Install the platform sandbox backend
+(bubblewrap/`bwrap` on Linux, `sandbox-exec` on macOS) or set
+`[sandbox] bash = "off"` to explicitly restore the pre-1.16 unconfined shell
+behavior. The escape-prompt and broader OS support are Phase 1's remainder (§9).
 
 ## 6. Error Handling
 

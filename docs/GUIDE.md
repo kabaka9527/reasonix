@@ -483,7 +483,10 @@ Seatbelt on macOS and bubblewrap on Linux): commands may write only those same
 roots (plus temp and toolchain caches), cannot read configured `forbid_read`
 roots while the OS sandbox is active, and reach the network only when
 `[sandbox] network` is set. When no OS sandbox is available, `bash = "enforce"`
-refuses bash execution instead of running unconfined (see
+refuses bash execution instead of running unconfined. Install the platform
+sandbox backend (bubblewrap/`bwrap` on Linux, `sandbox-exec` on macOS) or set
+`[sandbox] bash = "off"` to explicitly restore the pre-1.16 unconfined shell
+behavior (see
 [`SPEC.md` §9](./SPEC.md#9-roadmap-not-in-current-scope) for the escape-prompt and
 broader OS support still to come).
 
