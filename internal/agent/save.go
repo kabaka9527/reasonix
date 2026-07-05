@@ -813,6 +813,20 @@ func canonicalSessionSavePath(path string) string {
 	return key
 }
 
+// CanonicalSessionPath is the identity key of a session path: cleaned,
+// absolute, and case-folded on Windows, matching the key form used by the
+// lease registry and the save-path locks. Any runtime bookkeeping that
+// compares or maps session paths (desktop tabs, detached runtimes) must use
+// this exact form, or the same file splits into distinct keys — e.g.
+// `C:\Users\...` vs the lease's lowercased `c:\users\...`. Empty input stays
+// empty instead of resolving to the working directory.
+func CanonicalSessionPath(path string) string {
+	if strings.TrimSpace(path) == "" {
+		return ""
+	}
+	return canonicalSessionSavePath(path)
+}
+
 // LoadSession reads a saved session into a fresh Session value. New sessions
 // replay the append-only event log; legacy sessions without an event log fall
 // back to the compatibility .jsonl checkpoint. A damaged log is replayed to its

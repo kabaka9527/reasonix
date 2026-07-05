@@ -1582,7 +1582,10 @@ func (a *App) clearActiveSessionRuntime(tab *WorkspaceTab, oldCtrl control.Sessi
 	snap := a.tabRuntimeSnapshot(tab)
 	oldSink := snap.sink
 	if oldSink != nil {
-		oldSink.setBinding(detachedRuntimeTabID(oldPath), nil)
+		// Rebind under the runtime key, matching the id cloneDetachedRuntimeTab
+		// derives — a raw path here would hash to a different detached id on
+		// Windows where keys are case-folded.
+		oldSink.setBinding(detachedRuntimeTabID(sessionRuntimeKey(oldPath)), nil)
 		oldSink.clearContext()
 	}
 	if oldCtrl.RuntimeStatus().Cancellable {
@@ -7155,6 +7158,9 @@ func (a *App) SetModelForTab(tabID, name string) error {
 	tab.model = name
 	tab.effort = cloneStringPtr(effortOverride)
 	tab.Label = newCtrl.Label()
+	// Supersede any in-flight startup build: it would otherwise finish later,
+	// overwrite this controller, and release/steal the tab's session lease.
+	a.supersedeTabBuildLocked(tab)
 	a.saveTabsLocked()
 	a.mu.Unlock()
 	if oldCtrl != nil {
@@ -7304,6 +7310,7 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 	tab.Label = newCtrl.Label()
 	tab.StartupErr = ""
 	tab.Ready = true
+	a.supersedeTabBuildLocked(tab)
 	a.saveTabsLocked()
 	a.mu.Unlock()
 	if oldCtrl != nil {
@@ -7429,6 +7436,7 @@ func (a *App) SetTokenModeForTab(tabID, mode string) error {
 	tab.Label = newCtrl.Label()
 	tab.StartupErr = ""
 	tab.Ready = true
+	a.supersedeTabBuildLocked(tab)
 	a.saveTabsLocked()
 	a.mu.Unlock()
 	if oldCtrl != nil {
