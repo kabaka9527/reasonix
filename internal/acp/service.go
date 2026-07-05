@@ -170,8 +170,12 @@ type acpSession struct {
 	deleted bool
 	// lease is the session lease guarding transcript against other runtimes
 	// (a desktop window, the CLI) for the life of this session. Held from
-	// session/new / session/load and released on close/delete/teardown; config
-	// rebuilds keep the same transcript, so the lease never moves.
+	// session/new / session/load and released on close/delete/teardown. Config
+	// rebuilds normally keep the same transcript; when the pre-rebuild
+	// snapshot conflicts and retargets the controller to a recovery branch,
+	// the lease keeps guarding the original transcript (the recovery file was
+	// just created by this process — following it needs OnSessionRecovered
+	// wiring, tracked as a follow-up).
 	lease *agent.SessionLease
 	// maintenanceDone is non-nil while session-owned maintenance, such as an
 	// idle config rebuild, is in flight outside mu.
@@ -766,7 +770,6 @@ func (s *service) rebuildSession(ctx context.Context, sess *acpSession, cfgState
 	sess.pendingConfig = nil
 
 	cur := sess.ctrl
-	prevPath := cur.SessionPath()
 	sink := sess.sink
 	mcpServers := clonePluginSpecs(sess.mcpServers)
 	cwd := sess.cwd
@@ -783,6 +786,12 @@ func (s *service) rebuildSession(ctx context.Context, sess *acpSession, cfgState
 	if err := cur.Snapshot(); err != nil {
 		return &RPCError{Code: ErrInternal, Message: "session config: snapshot before switch: " + err.Error()}
 	}
+	// Capture the adopt path and history only after Snapshot: a snapshot
+	// conflict can retarget cur to a recovery branch (or adopt the newer disk
+	// transcript), and a pre-snapshot capture would bind the rebuilt controller
+	// back to the original file, re-conflicting on every later save.
+	// SessionPath is controller-locked, so reading it off sess.mu is safe.
+	prevPath := cur.SessionPath()
 	carried := cur.History()
 
 	newCtrl, err := s.factory.NewSession(ctx, SessionParams{
