@@ -248,5 +248,23 @@ func TestSessionLeaseHeldByOtherRuntime(t *testing.T) {
 		if SessionLeaseHeldByOtherRuntime(path) {
 			t.Fatal("crashed holder's leftover info reported as held")
 		}
+		if _, err := os.Stat(sessionLeaseInfoPath(path)); !os.IsNotExist(err) {
+			t.Fatalf("crashed holder's leftover info should be removed, stat err = %v", err)
+		}
+	})
+	t.Run("corrupt info from crashed process", func(t *testing.T) {
+		path := canonicalSessionSavePath(filepath.Join(t.TempDir(), "session.jsonl"))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(sessionLeaseInfoPath(path), nil, 0o644); err != nil {
+			t.Fatalf("write corrupt lease info: %v", err)
+		}
+		if SessionLeaseHeldByOtherRuntime(path) {
+			t.Fatal("corrupt crashed holder info reported as held")
+		}
+		if _, err := os.Stat(sessionLeaseInfoPath(path)); !os.IsNotExist(err) {
+			t.Fatalf("corrupt lease info should be removed, stat err = %v", err)
+		}
 	})
 }

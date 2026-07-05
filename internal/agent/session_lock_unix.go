@@ -6,11 +6,13 @@ import (
 	"errors"
 	"os"
 
+	"reasonix/internal/store"
+
 	"golang.org/x/sys/unix"
 )
 
 func lockSessionFile(path string) (func(), error) {
-	f, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	f, err := os.OpenFile(store.SessionLockFile(path), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -65,7 +67,7 @@ func (l *sessionLockFile) RemoveAndUnlock() error {
 }
 
 func tryLockSessionLeaseFile(path string) (func(), error) {
-	f, err := os.OpenFile(path+".lease.lock", os.O_CREATE|os.O_RDWR, 0o600)
+	f, err := os.OpenFile(store.SessionLeaseLock(path), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
 	}

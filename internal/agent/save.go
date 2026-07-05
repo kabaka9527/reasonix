@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -64,6 +63,17 @@ const (
 	sessionSaveSnapshot
 	sessionSaveRewrite
 )
+
+type snapshotWriteDecision struct {
+	revision   int64
+	upToDate   bool
+	appendFrom int
+	appendOnly bool
+	// repairLog is set when the on-disk event log was damaged (torn tail with
+	// a lost suffix, or nothing decodable): the safe write shape is a full
+	// rewrite that also compacts the log back to a healthy single event.
+	repairLog bool
+}
 
 type SessionSnapshotConflictKind string
 
@@ -125,11 +135,9 @@ type RecoveryBranchInfo struct {
 	Turns    int
 }
 
-// Save writes the session's messages to path in JSONL — one provider.Message
-// per line — so a user can resume the conversation later. The file is
-// rewritten in full on every save: chat sessions are small (kilobytes), and
-// append-only would have to be reconciled with the compaction pass that
-// mutates the middle of session.Messages.
+// Save persists the session using an append-only event log beside path. The
+// .jsonl file remains as a compatibility checkpoint and discovery anchor; the
+// event log is the authoritative transcript once present.
 func (s *Session) Save(path string) error {
 	return s.save(path, sessionSaveForce)
 }
@@ -153,7 +161,7 @@ func (s *Session) save(path string, mode sessionSaveMode) error {
 		return fmt.Errorf("empty session path")
 	}
 	msgs, version := s.snapshotWithVersion()
-	digest, err := digestSessionMessages(msgs)
+	digest, contentBytes, err := digestAndSizeSessionMessages(msgs)
 	if err != nil {
 		return err
 	}
@@ -168,25 +176,111 @@ func (s *Session) save(path string, mode sessionSaveMode) error {
 		return fmt.Errorf("lock session file: %w", err)
 	}
 	defer unlockFile()
+	probe, err := probeSessionEventLog(path)
+	if err != nil {
+		return err
+	}
+	if probe.futureSchema {
+		return fmt.Errorf("session event log for %s uses schema %d; this build supports up to %d", path, probe.schemaVersion, sessionEventSchemaVersion)
+	}
+	if probe.native && probe.size > 0 {
+		// Drop any torn tail a crashed or disk-full append left behind before
+		// it can be buried under new records where replay would stop forever.
+		if err := repairSessionEventLogTail(path); err != nil {
+			return fmt.Errorf("repair session event log: %w", err)
+		}
+	}
+	repairLog := false
 	if mode != sessionSaveForce {
-		revision, upToDate, err := s.checkSnapshotWrite(path, msgs, digest, version, mode == sessionSaveRewrite)
+		decision, err := s.checkSnapshotWrite(path, msgs, digest, version, mode == sessionSaveRewrite)
 		if err != nil {
 			return err
 		}
-		if upToDate {
+		if decision.upToDate {
 			// Disk already holds exactly this transcript. Rewriting it would only
 			// bump the revision, invalidating the persistence baseline of every
 			// other runtime resumed on this file and turning their next
 			// legitimate save into a stale-runtime conflict. Skip the write and
 			// adopt the current on-disk revision as this session's baseline.
+			s.markPersisted(path, digest, version, decision.revision)
+			return nil
+		}
+		if decision.appendOnly && probe.native {
+			logSize := sessionEventLogSize(path)
+			switch {
+			case logSize == 0:
+				if err := appendSessionReplaceEvent(path, msgs, digest, decision.revision, "snapshot"); err != nil {
+					return err
+				}
+			case sessionEventLogOversized(logSize, contentBytes):
+				// Checkpoint: fold history into one replace event and refresh
+				// the .jsonl anchor so direct readers and older binaries stay
+				// bounded-stale instead of frozen at first save.
+				if err := compactSessionEventLog(path, msgs, digest, decision.revision, "compact"); err != nil {
+					return err
+				}
+				if err := writeSessionMessages(path, msgs); err != nil {
+					return err
+				}
+			default:
+				if err := appendSessionAppendEvent(path, decision.appendFrom, msgs[decision.appendFrom:], digest, decision.revision); err != nil {
+					return err
+				}
+			}
+			revision, err := recordSessionContentRevision(path, digest, decision.revision)
+			if err != nil {
+				return err
+			}
+			if err := writeSessionEventIndex(path, msgs, digest, revision); err != nil {
+				return err
+			}
 			s.markPersisted(path, digest, version, revision)
 			return nil
 		}
-		baseRevision = revision
+		baseRevision = decision.revision
+		repairLog = decision.repairLog
 	} else if revision, _, err := sessionContentRevision(path); err != nil {
 		return err
 	} else {
 		baseRevision = revision
+	}
+	// Full-rewrite path: intentional history rewrites, damage repairs, and
+	// force saves. The event log mutates first so a crash between the two
+	// writes leaves the newer transcript authoritative; the anchor rewrite
+	// keeps the compatibility .jsonl fresh for direct readers.
+	reason := "save"
+	switch mode {
+	case sessionSaveSnapshot:
+		reason = "snapshot"
+	case sessionSaveRewrite:
+		reason = "rewrite"
+	}
+	if repairLog {
+		reason = "repair"
+	}
+	logSize := sessionEventLogSize(path)
+	switch {
+	case !probe.native:
+		// A foreign file (legacy import leftover) squats the native log path.
+		// Never write into or over it — the session stays checkpoint-only.
+	case mode == sessionSaveForce:
+		// Force saves are one-shot copies (subagents, guardian, migrations,
+		// forks): they never bootstrap an event log, and fold an existing one
+		// into a single replace event so the log cannot disagree with the
+		// anchor.
+		if logSize > 0 {
+			if err := compactSessionEventLog(path, msgs, digest, baseRevision, reason); err != nil {
+				return err
+			}
+		}
+	case repairLog, sessionEventLogOversized(logSize, contentBytes):
+		if err := compactSessionEventLog(path, msgs, digest, baseRevision, reason); err != nil {
+			return err
+		}
+	default:
+		if err := appendSessionReplaceEvent(path, msgs, digest, baseRevision, reason); err != nil {
+			return err
+		}
 	}
 	if err := writeSessionMessages(path, msgs); err != nil {
 		return err
@@ -195,13 +289,19 @@ func (s *Session) save(path string, mode sessionSaveMode) error {
 	if err != nil {
 		return err
 	}
+	if probe.native {
+		if err := writeSessionEventIndex(path, msgs, digest, revision); err != nil {
+			return err
+		}
+	}
 	s.markPersisted(path, digest, version, revision)
 	return nil
 }
 
 func writeSessionMessages(path string, msgs []provider.Message) error {
 	// Write to a sibling tmp file then rename, so a crash mid-write can't
-	// leave a partial JSONL that won't reload.
+	// leave a partial JSONL that won't reload. The fsync guards the anchor
+	// against power loss — it is the fallback when the event log is damaged.
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".session.*.tmp")
 	if err != nil {
 		return fmt.Errorf("create session tmp: %w", err)
@@ -215,6 +315,11 @@ func writeSessionMessages(path string, msgs []provider.Message) error {
 			return fmt.Errorf("encode message: %w", err)
 		}
 	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpPath)
 		return err
@@ -226,43 +331,53 @@ func writeSessionMessages(path string, msgs []provider.Message) error {
 	return nil
 }
 
-// checkSnapshotWrite decides whether this session may write msgs over path.
-// The bool result reports the write is a no-op: the on-disk transcript already
-// matches next byte-for-byte, so the caller should skip the rewrite instead of
-// burning a revision bump that would stale-out other runtimes' baselines.
-func (s *Session) checkSnapshotWrite(path string, next []provider.Message, nextDigest [sha256.Size]byte, nextVersion uint64, allowOwnedRewrite bool) (int64, bool, error) {
+// checkSnapshotWrite decides whether this session may write msgs over path, and
+// whether the safe write shape is a no-op, append-only suffix, or full rewrite.
+func (s *Session) checkSnapshotWrite(path string, next []provider.Message, nextDigest [sha256.Size]byte, nextVersion uint64, allowOwnedRewrite bool) (snapshotWriteDecision, error) {
 	current, err := LoadSession(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return 0, false, nil
+			return snapshotWriteDecision{}, nil
 		}
-		return 0, false, err
+		return snapshotWriteDecision{}, err
 	}
 	currentRevision, _, err := sessionContentRevision(path)
 	if err != nil {
-		return 0, false, err
+		return snapshotWriteDecision{}, err
 	}
 	baseState := s.persistState(path)
 	existing := current.Snapshot()
 	existingDigest, err := digestSessionMessages(existing)
 	if err != nil {
-		return 0, false, err
+		return snapshotWriteDecision{}, err
 	}
 	contentUnchanged := bytes.Equal(existingDigest[:], nextDigest[:])
-	if contentUnchanged || messagesHavePrefix(next, existing) || messagesHavePrefixWithCompatibleSystem(next, existing) {
+	exactAppend := messagesHavePrefix(next, existing)
+	if contentUnchanged || exactAppend || messagesHavePrefixWithCompatibleSystem(next, existing) {
 		if baseState.ok && currentRevision != baseState.revision && !contentUnchanged {
-			return 0, false, snapshotConflict(path, existing, next, baseState.revision, currentRevision)
+			return snapshotWriteDecision{}, snapshotConflict(path, existing, next, baseState.revision, currentRevision)
 		}
 		// A normalized-dirty load means LoadSession repaired the history on the
 		// way in: the digests match but the raw bytes on disk do not, so the
-		// repair still needs a real write to persist.
-		return currentRevision, contentUnchanged && !current.normalizedDirty, nil
+		// repair still needs a real write to persist. A damaged event log
+		// likewise needs a real write (rewrite + compact) even when the
+		// replayable prefix already matches this snapshot.
+		decision := snapshotWriteDecision{
+			revision:  currentRevision,
+			upToDate:  contentUnchanged && !current.normalizedDirty && !current.eventLogDamaged,
+			repairLog: current.eventLogDamaged,
+		}
+		if exactAppend && !contentUnchanged && len(existing) < len(next) && !current.eventLogDamaged {
+			decision.appendOnly = true
+			decision.appendFrom = len(existing)
+		}
+		return decision, nil
 	}
 	if allowOwnedRewrite && s.ownsPersistedState(path, existingDigest, currentRevision, nextVersion) {
-		return currentRevision, false, nil
+		return snapshotWriteDecision{revision: currentRevision, repairLog: current.eventLogDamaged}, nil
 	}
 	if messagesHavePrefix(existing, next) || messagesHavePrefixWithCompatibleSystem(existing, next) {
-		return 0, false, &SessionSnapshotConflictError{
+		return snapshotWriteDecision{}, &SessionSnapshotConflictError{
 			Path:             path,
 			Kind:             SessionSnapshotConflictStalePrefix,
 			ExistingMessages: len(existing),
@@ -271,7 +386,7 @@ func (s *Session) checkSnapshotWrite(path string, next []provider.Message, nextD
 			DiskRevision:     currentRevision,
 		}
 	}
-	return 0, false, &SessionSnapshotConflictError{
+	return snapshotWriteDecision{}, &SessionSnapshotConflictError{
 		Path:             path,
 		Kind:             SessionSnapshotConflictDiverged,
 		ExistingMessages: len(existing),
@@ -365,11 +480,26 @@ func (s *Session) SaveRecoveryBranch(opts RecoveryBranchOptions) (RecoveryBranch
 	if err := os.MkdirAll(filepath.Dir(recoveryPath), 0o755); err != nil {
 		return RecoveryBranchInfo{}, fmt.Errorf("create recovery session dir: %w", err)
 	}
+	// Log first, anchor second: a crash in between leaves the (authoritative)
+	// log holding the recovered transcript. A foreign file at the log path is
+	// left alone; the recovery stays checkpoint-only then.
+	recoveryProbe, err := probeSessionEventLog(recoveryPath)
+	if err != nil {
+		return RecoveryBranchInfo{}, err
+	}
+	if recoveryProbe.native {
+		if err := appendSessionReplaceEvent(recoveryPath, msgs, digest, 0, "recovery"); err != nil {
+			return RecoveryBranchInfo{}, err
+		}
+	}
 	if err := writeSessionMessages(recoveryPath, msgs); err != nil {
 		return RecoveryBranchInfo{}, err
 	}
 	meta, err := s.saveRecoveryBranchMeta(recoveryPath, opts, preview, turns, digestText)
 	if err != nil {
+		return RecoveryBranchInfo{}, err
+	}
+	if err := writeSessionEventIndex(recoveryPath, msgs, digest, meta.Revision); err != nil {
 		return RecoveryBranchInfo{}, err
 	}
 	s.markPersisted(recoveryPath, digest, version, meta.Revision)
@@ -573,22 +703,31 @@ func newSessionWriterID() string {
 }
 
 func digestSessionMessages(msgs []provider.Message) ([sha256.Size]byte, error) {
+	digest, _, err := digestAndSizeSessionMessages(msgs)
+	return digest, err
+}
+
+// digestAndSizeSessionMessages also reports the encoded transcript size, which
+// the save path uses to bound the event log relative to the live content.
+func digestAndSizeSessionMessages(msgs []provider.Message) ([sha256.Size]byte, int64, error) {
 	h := sha256.New()
+	size := int64(0)
 	for _, m := range msgs {
 		b, err := json.Marshal(m)
 		if err != nil {
-			return [sha256.Size]byte{}, err
+			return [sha256.Size]byte{}, 0, err
 		}
 		if _, err := h.Write(b); err != nil {
-			return [sha256.Size]byte{}, err
+			return [sha256.Size]byte{}, 0, err
 		}
 		if _, err := h.Write([]byte{'\n'}); err != nil {
-			return [sha256.Size]byte{}, err
+			return [sha256.Size]byte{}, 0, err
 		}
+		size += int64(len(b)) + 1
 	}
 	var out [sha256.Size]byte
 	copy(out[:], h.Sum(nil))
-	return out, nil
+	return out, size, nil
 }
 
 func messagesHavePrefix(full, prefix []provider.Message) bool {
@@ -674,32 +813,19 @@ func canonicalSessionSavePath(path string) string {
 	return key
 }
 
-// LoadSession reads a JSONL file written by Save into a fresh Session value.
+// LoadSession reads a saved session into a fresh Session value. New sessions
+// replay the append-only event log; legacy sessions without an event log fall
+// back to the compatibility .jsonl checkpoint. A damaged log is replayed to its
+// last clean record (or the checkpoint when nothing decodes) and flagged so the
+// next save heals it with a rewrite-and-compact.
 // Missing files surface as os.IsNotExist so callers can fall through to a
 // new session.
 func LoadSession(path string) (*Session, error) {
-	f, err := os.Open(path)
+	msgs, _, damaged, err := loadSessionMessages(path)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-
-	s := &Session{}
-	// Decode a stream of JSON values rather than scanning lines: a single
-	// message (e.g. a multi-MiB bash output) can exceed any line-buffer cap, and
-	// Save's json.Encoder has no such limit — a Scanner here made sessions that
-	// saved fine fail to reload.
-	dec := json.NewDecoder(f)
-	for {
-		var m provider.Message
-		if err := dec.Decode(&m); err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			return nil, fmt.Errorf("decode %s: %w", path, err)
-		}
-		s.Messages = append(s.Messages, m)
-	}
+	s := &Session{Messages: msgs, eventLogDamaged: damaged}
 	// Repair persisted-history-safe issues before anything reads the session.
 	// Old sessions (pre adde2d3e) and interrupted turns can carry empty tool-call
 	// names, dangling tool_calls, or half-streamed argument JSON that DeepSeek
@@ -1249,7 +1375,7 @@ func ListSessionOrder(dir string) ([]SessionOrderInfo, error) {
 	}
 	var out []SessionOrderInfo
 	for _, e := range entries {
-		if e.IsDir() || filepath.Ext(e.Name()) != ".jsonl" {
+		if e.IsDir() || !store.IsSessionTranscriptName(e.Name()) {
 			continue
 		}
 		info, err := e.Info()
@@ -1260,8 +1386,12 @@ func ListSessionOrder(dir string) ([]SessionOrderInfo, error) {
 		if !IsVisibleSession(full) {
 			continue
 		}
+		contentMod := SessionContentModTime(full)
+		if contentMod.IsZero() {
+			contentMod = info.ModTime()
+		}
 		createdAt := info.ModTime()
-		lastActivityAt := info.ModTime()
+		lastActivityAt := contentMod
 		scope := "global"
 		workspaceRoot := ""
 		topicID := ""
@@ -1398,19 +1528,13 @@ func SessionPreviewFromMessages(msgs []provider.Message) (string, int) {
 // user-role messages so the picker can show "5 turns · 'help me debug the…'".
 // Errors are swallowed — a malformed file just shows up with an empty preview.
 func previewSession(path string) (string, int) {
-	f, err := os.Open(path)
+	msgs, _, _, err := loadSessionMessages(path)
 	if err != nil {
 		return "", 0
 	}
-	defer f.Close()
-	dec := json.NewDecoder(f)
 	first := ""
 	turns := 0
-	for {
-		var m provider.Message
-		if err := dec.Decode(&m); err != nil {
-			break // EOF or a malformed tail — return the preview gathered so far
-		}
+	for _, m := range msgs {
 		if m.Role == provider.RoleUser {
 			turns++
 			if first == "" {

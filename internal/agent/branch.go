@@ -281,7 +281,7 @@ func ListBranches(dir string) ([]BranchInfo, error) {
 	}
 	var out []BranchInfo
 	for _, e := range entries {
-		if e.IsDir() || filepath.Ext(e.Name()) != ".jsonl" {
+		if e.IsDir() || !store.IsSessionTranscriptName(e.Name()) {
 			continue
 		}
 		info, err := e.Info()

@@ -2130,7 +2130,15 @@ func removeSessionArtifacts(path string) error {
 	if err := jobs.RemoveArtifacts(path); err != nil {
 		return err
 	}
-	for _, p := range []string{path, agent.BranchMetaPath(path), guardian.PathFor(path), guardian.CursorPathFor(path)} {
+	remove := []string{path}
+	// Sidecars include the event log — the authoritative transcript. Leaving
+	// it behind would both leak the cleared conversation and let LoadSession
+	// resurrect it on the recycled path. The guardian transcript saves through
+	// the same session layer, so its sidecars are swept too.
+	remove = append(remove, store.SessionSidecarFiles(path)...)
+	remove = append(remove, guardian.PathFor(path), guardian.CursorPathFor(path))
+	remove = append(remove, store.SessionSidecarFiles(guardian.PathFor(path))...)
+	for _, p := range remove {
 		if p == "" {
 			continue
 		}

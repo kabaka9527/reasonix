@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"reasonix/internal/fileutil"
+	"reasonix/internal/store"
 )
 
 var ErrSessionLeaseHeld = errors.New("session lease held by another runtime")
@@ -153,10 +154,22 @@ func SessionLeaseHeldByOtherRuntime(path string) bool {
 	}
 	info, err := LoadSessionLeaseInfo(path)
 	if err != nil {
-		// No info file means no holder: live holders keep it present for
-		// their whole hold. An unreadable one hides the holder's identity,
-		// so err on the side of treating the session as busy.
-		return !os.IsNotExist(err)
+		if os.IsNotExist(err) {
+			// No info file means no holder: live holders keep it present for
+			// their whole hold.
+			return false
+		}
+		unlock, lockErr := tryLockSessionLeaseFile(path)
+		if lockErr == nil {
+			// Corrupt/empty info with a free lock is a crash leftover. Remove the
+			// bad metadata so future probes do not keep reporting a ghost owner.
+			_ = os.Remove(sessionLeaseInfoPath(path))
+			unlock()
+			return false
+		}
+		// An unreadable info file with a live lock still hides the holder's
+		// identity, so err on the side of treating the session as busy.
+		return true
 	}
 	if info != nil && info.PID == os.Getpid() && info.WriterID == SessionWriterID() {
 		return false
@@ -164,6 +177,7 @@ func SessionLeaseHeldByOtherRuntime(path string) bool {
 	unlock, err := tryLockSessionLeaseFile(path)
 	if err == nil {
 		// Foreign info but a free lock: leftover from a crashed process.
+		_ = os.Remove(sessionLeaseInfoPath(path))
 		unlock()
 		return false
 	}
@@ -247,5 +261,5 @@ func SaveSessionLeaseInfo(path string, info SessionLeaseInfo) error {
 }
 
 func sessionLeaseInfoPath(path string) string {
-	return canonicalSessionSavePath(path) + ".lease.json"
+	return store.SessionLeaseInfo(canonicalSessionSavePath(path))
 }

@@ -48,6 +48,7 @@ import (
 	"reasonix/internal/pluginpkg"
 	"reasonix/internal/provider"
 	"reasonix/internal/skill"
+	"reasonix/internal/store"
 )
 
 // eventChannel is the Wails runtime event name the frontend subscribes to for the
@@ -1670,6 +1671,11 @@ func removeDesktopSessionArtifacts(path string) error {
 	if strings.TrimSpace(path) == "" {
 		return nil
 	}
+	guard, err := acquireSessionRemovalGuard(path)
+	if err != nil {
+		return err
+	}
+	defer guard.Release()
 	defer invalidateTopicSessionIndexForPath(path)
 	for _, p := range sessionOwnedArtifactPaths(path) {
 		if strings.TrimSpace(p) == "" {
@@ -1678,6 +1684,12 @@ func removeDesktopSessionArtifacts(path string) error {
 		if err := os.RemoveAll(p); err != nil && !os.IsNotExist(err) {
 			return err
 		}
+	}
+	if err := guard.RemoveSidecarsAndRelease(); err != nil {
+		return err
+	}
+	if err := removeSessionDisplay(filepath.Dir(path), path); err != nil {
+		return err
 	}
 	if err := agent.DeleteSubagentsByParent(filepath.Dir(path), agent.BranchID(path)); err != nil {
 		return err
@@ -1961,6 +1973,7 @@ type SessionMeta struct {
 	UserID         string `json:"userId,omitempty"`
 	ThreadID       string `json:"threadId,omitempty"`
 	SessionSource  string `json:"sessionSource,omitempty"`
+	Recovered      bool   `json:"recovered,omitempty"` // conflict-recovery copy of another session
 }
 
 type channelSessionRoute struct {
@@ -2037,9 +2050,16 @@ func (a *App) ListSessions() []SessionMeta {
 	if err != nil {
 		return []SessionMeta{}
 	}
+	open := a.openSessionPaths(dir)
+	protectedDisplays := make(map[string]struct{}, len(open))
+	for path := range open {
+		if key := filepath.Base(path); store.IsSessionTranscriptName(key) {
+			protectedDisplays[key] = struct{}{}
+		}
+	}
+	_ = pruneSessionDisplays(dir, protectedDisplays)
 	titles := loadSessionTitles(dir)
 	channelRoutes := channelSessionRoutesForDir(dir)
-	open := a.openSessionPaths(dir)
 	active := a.activeSessionPath(dir)
 	out := make([]SessionMeta, 0, len(infos))
 	for _, s := range infos {
@@ -2124,6 +2144,7 @@ func sessionMetaFromInfo(s agent.SessionInfo, title string, current, open bool, 
 		WorkspaceRoot:  s.WorkspaceRoot,
 		TopicID:        s.TopicID,
 		TopicTitle:     s.TopicTitle,
+		Recovered:      s.Recovered,
 	}
 }
 
@@ -3366,10 +3387,51 @@ func sortPromptHistoryNewestFirst(entries []PromptHistoryEntry) {
 
 func collectPromptHistoryEntries(path string, info os.FileInfo, resolveUserContent func(string) string) ([]PromptHistoryEntry, error) {
 	var out []PromptHistoryEntry
-	err := collectJSONLUserPrompts(path, info, resolveUserContent, func(entry PromptHistoryEntry) {
+	emit := func(entry PromptHistoryEntry) {
 		out = append(out, entry)
-	})
+	}
+	// Sessions with an event log must replay it: the .jsonl checkpoint stops
+	// gaining turns between checkpoints, so scanning it directly would freeze
+	// ↑-recall at each session's last checkpoint.
+	if handled, err := collectEventLogUserPrompts(path, info, resolveUserContent, emit); handled {
+		return out, err
+	}
+	err := collectJSONLUserPrompts(path, info, resolveUserContent, emit)
 	return out, err
+}
+
+func collectEventLogUserPrompts(path string, info os.FileInfo, resolveUserContent func(string) string, emit func(PromptHistoryEntry)) (bool, error) {
+	logPath := store.SessionEventLog(path)
+	if logPath == "" {
+		return false, nil
+	}
+	if logInfo, err := os.Stat(logPath); err != nil || logInfo.IsDir() || logInfo.Size() == 0 {
+		return false, nil
+	}
+	users, err := agent.LoadSessionUserMessages(path)
+	if err != nil {
+		return true, err
+	}
+	fallbackAt := promptHistoryFallbackMillis(path, info)
+	turn := 0
+	for _, user := range users {
+		text := strings.TrimSpace(resolveUserContent(strings.TrimSpace(user.Text)))
+		if text == "" || control.IsSyntheticUserMessage(text) {
+			continue
+		}
+		at := fallbackAt
+		if !user.At.IsZero() {
+			at = user.At.UnixMilli()
+		}
+		emit(PromptHistoryEntry{
+			Text:        text,
+			At:          at,
+			SessionPath: path,
+			Turn:        turn,
+		})
+		turn++
+	}
+	return true, nil
 }
 
 func collectJSONLUserPrompts(path string, info os.FileInfo, resolveUserContent func(string) string, emit func(PromptHistoryEntry)) error {

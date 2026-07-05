@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -140,6 +141,151 @@ func TestSaveSnapshotAllowsAppendFromDiskPrefix(t *testing.T) {
 	}
 	if got := len(loaded.Messages); got != 3 {
 		t.Fatalf("message count after append snapshot = %d, want 3", got)
+	}
+}
+
+func TestSaveSnapshotAppendsWithoutReplacingPrefixFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	base := NewSession("sys")
+	base.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	if err := base.Save(path); err != nil {
+		t.Fatalf("Save base: %v", err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat before append: %v", err)
+	}
+
+	next := NewSession("sys")
+	next.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	next.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	if err := next.SaveSnapshot(path); err != nil {
+		t.Fatalf("SaveSnapshot append: %v", err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat after append: %v", err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("SaveSnapshot replaced the session file; want append-in-place for disk-prefix snapshots")
+	}
+}
+
+func TestSaveSnapshotAppendsToEventLogWithoutChangingCheckpoint(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	base := NewSession("sys")
+	base.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	if err := base.SaveSnapshot(path); err != nil {
+		t.Fatalf("SaveSnapshot base: %v", err)
+	}
+	checkpointBefore, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile checkpoint before append: %v", err)
+	}
+
+	next, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession base: %v", err)
+	}
+	next.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	if err := next.SaveSnapshot(path); err != nil {
+		t.Fatalf("SaveSnapshot append: %v", err)
+	}
+
+	checkpointAfter, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile checkpoint after append: %v", err)
+	}
+	if string(checkpointAfter) != string(checkpointBefore) {
+		t.Fatalf("checkpoint changed after append-only snapshot:\nbefore=%s\nafter=%s", checkpointBefore, checkpointAfter)
+	}
+	events := readSessionEventsForTest(t, path)
+	if len(events) != 2 {
+		t.Fatalf("event count = %d, want replace + append", len(events))
+	}
+	if events[0].Type != sessionEventTypeReplace || events[1].Type != sessionEventTypeAppend {
+		t.Fatalf("event types = %q, %q; want replace, append", events[0].Type, events[1].Type)
+	}
+	if events[1].MessageIndex != 2 || len(events[1].Messages) != 1 || events[1].Messages[0].Content != "one" {
+		t.Fatalf("append event = %+v, want assistant suffix at index 2", events[1])
+	}
+	loaded, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession after append: %v", err)
+	}
+	if got := loaded.Messages[len(loaded.Messages)-1].Content; got != "one" {
+		t.Fatalf("loaded tail = %q, want one", got)
+	}
+}
+
+func TestSaveRewriteAppendsReplaceEventAndRefreshesCheckpoint(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	base := NewSession("sys")
+	base.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	base.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	if err := base.SaveSnapshot(path); err != nil {
+		t.Fatalf("SaveSnapshot base: %v", err)
+	}
+
+	loaded, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession base: %v", err)
+	}
+	loaded.Replace([]provider.Message{
+		{Role: provider.RoleSystem, Content: "sys"},
+		{Role: provider.RoleUser, Content: "rewound"},
+	})
+	if err := loaded.SaveRewrite(path); err != nil {
+		t.Fatalf("SaveRewrite: %v", err)
+	}
+	// Rewrites refresh the compatibility checkpoint so direct .jsonl readers
+	// and older binaries stay bounded-stale instead of frozen at first save.
+	anchor, err := loadSessionMessagesFromJSONL(path)
+	if err != nil {
+		t.Fatalf("read checkpoint after rewrite: %v", err)
+	}
+	if len(anchor) != 2 || anchor[1].Content != "rewound" {
+		t.Fatalf("checkpoint after rewrite = %+v, want refreshed rewound transcript", anchor)
+	}
+	events := readSessionEventsForTest(t, path)
+	if len(events) != 2 || events[1].Type != sessionEventTypeReplace || events[1].Reason != "rewrite" {
+		t.Fatalf("events after rewrite = %+v, want trailing rewrite replace", events)
+	}
+	reloaded, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession after rewrite: %v", err)
+	}
+	if len(reloaded.Messages) != 2 || reloaded.Messages[1].Content != "rewound" {
+		t.Fatalf("replayed rewrite messages = %+v", reloaded.Messages)
+	}
+}
+
+func TestSaveSnapshotMigratesLegacyJSONLToEventLog(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.jsonl")
+	if err := os.WriteFile(path, []byte(`{"role":"system","content":"sys"}`+"\n"+`{"role":"user","content":"legacy"}`+"\n"), 0o644); err != nil {
+		t.Fatalf("write legacy jsonl: %v", err)
+	}
+	loaded, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession legacy: %v", err)
+	}
+	loaded.Add(provider.Message{Role: provider.RoleAssistant, Content: "migrated"})
+	if err := loaded.SaveSnapshot(path); err != nil {
+		t.Fatalf("SaveSnapshot legacy append: %v", err)
+	}
+	events := readSessionEventsForTest(t, path)
+	if len(events) != 1 || events[0].Type != sessionEventTypeReplace {
+		t.Fatalf("legacy migration events = %+v, want one replace seed", events)
+	}
+	reloaded, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession migrated: %v", err)
+	}
+	if got := reloaded.Messages[len(reloaded.Messages)-1].Content; got != "migrated" {
+		t.Fatalf("migrated tail = %q, want migrated", got)
+	}
+	if _, err := os.Stat(SessionEventIndexPath(path)); err != nil {
+		t.Fatalf("event index missing: %v", err)
 	}
 }
 
@@ -1203,4 +1349,26 @@ func TestListSessionsMissingDir(t *testing.T) {
 	if err != nil || got != nil {
 		t.Errorf("missing dir = %v / %v, want nil/nil", got, err)
 	}
+}
+
+func readSessionEventsForTest(t *testing.T, path string) []sessionEventRecord {
+	t.Helper()
+	f, err := os.Open(SessionEventLogPath(path))
+	if err != nil {
+		t.Fatalf("open event log: %v", err)
+	}
+	defer f.Close()
+	dec := json.NewDecoder(f)
+	var out []sessionEventRecord
+	for {
+		var rec sessionEventRecord
+		if err := dec.Decode(&rec); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			t.Fatalf("decode event log: %v", err)
+		}
+		out = append(out, rec)
+	}
+	return out
 }

@@ -1556,9 +1556,9 @@ func parseSessionUpdatedAt(s string) time.Time {
 func deleteSessionFiles(sessionPath string) error {
 	paths := []string{
 		sessionPath,
-		store.SessionMeta(sessionPath),
 		acpMetaPath(sessionPath),
 	}
+	paths = append(paths, store.SessionSidecarFiles(sessionPath)...)
 	for _, path := range paths {
 		if path == "" {
 			continue

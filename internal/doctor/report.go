@@ -13,6 +13,7 @@ import (
 	"reasonix/internal/config"
 	"reasonix/internal/netclient"
 	"reasonix/internal/sandbox"
+	"reasonix/internal/store"
 )
 
 type Options struct {
@@ -265,7 +266,15 @@ func collectSessions(dir string) SessionsReport {
 	}
 	r.Count = len(sessions)
 	if err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || filepath.Ext(path) != ".jsonl" {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		// Transcript storage spans the .jsonl checkpoint plus the event
+		// log/index; counting only checkpoints would under-report usage.
+		name := filepath.Base(path)
+		if !store.IsSessionTranscriptName(name) &&
+			!strings.HasSuffix(name, ".events.jsonl") &&
+			!strings.HasSuffix(name, ".event-index.json") {
 			return nil
 		}
 		if info, statErr := d.Info(); statErr == nil {
