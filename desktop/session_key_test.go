@@ -101,3 +101,37 @@ func TestEnsureSessionLeaseReusesHeldLease(t *testing.T) {
 		t.Fatalf("expected fast-path reuse, got %d new acquires", acquires)
 	}
 }
+
+func TestCanReclaimAllowsMissingLeaseInfo(t *testing.T) {
+	// lease.json deleted or torn: Info is nil but nothing actually holds the
+	// session. The reclaim attempt must be allowed — the OS lock arbitrates —
+	// instead of wedging the session as busy on missing metadata (#5999's
+	// fresh-install variant).
+	app := NewApp()
+	tab := &WorkspaceTab{ID: "tab_nil_info"}
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	path := filepath.Join(t.TempDir(), "Sessions", "20260705-a.jsonl")
+
+	errNil := &agent.SessionLeaseError{Path: path}
+	if !app.canReclaimCurrentProcessSessionLease(tab, path, errNil) {
+		t.Fatal("nil-Info lease error must allow a reclaim attempt")
+	}
+
+	foreign := &agent.SessionLeaseError{Path: path, Info: &agent.SessionLeaseInfo{
+		SessionPath: path, WriterID: "other-host-1-deadbeef", PID: os.Getpid() + 1,
+	}}
+	if app.canReclaimCurrentProcessSessionLease(tab, path, foreign) {
+		t.Fatal("foreign-holder lease error must not allow reclaim")
+	}
+}
+
+func TestSessionLeaseBusyErrorOmitsSettingClause(t *testing.T) {
+	generic := (&sessionLeaseBusyError{}).Error()
+	if strings.Contains(generic, "before changing") {
+		t.Fatalf("empty-setting busy error still names a setting: %q", generic)
+	}
+	withSetting := (&sessionLeaseBusyError{setting: "model"}).Error()
+	if !strings.Contains(withSetting, "before changing model") {
+		t.Fatalf("setting busy error lost its clause: %q", withSetting)
+	}
+}

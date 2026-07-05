@@ -66,6 +66,10 @@ type WorkspaceTab struct {
 	saving       bool
 	saveAgain    bool
 	saveFailures int
+	// lastAutosaveWarnAt debounces the user-facing autosave-failure notice:
+	// a persistently failing disk (AV hold, full volume) otherwise emits a
+	// chat warning for every completed turn. Logs are never debounced.
+	lastAutosaveWarnAt time.Time
 
 	// closing is set under saveMu when the tab is being torn down. Once set,
 	// tabSnapshotLoop stops taking new snapshot work and CloseTab waits on
@@ -2577,7 +2581,7 @@ func (a *App) buildTabControllerWithContext(tab *WorkspaceTab, loadedSession loa
 			a.mu.Unlock()
 			return
 		}
-		tab.StartupErr = err.Error()
+		tab.StartupErr = userFacingSessionLeaseError("", err).Error()
 		tab.Ready = true
 		tab.releaseSessionLease()
 		a.mu.Unlock()
@@ -2703,7 +2707,7 @@ func (a *App) buildTabControllerWithContext(tab *WorkspaceTab, loadedSession loa
 			a.abandonSupersededBuild(tab, nil, rootKey, "")
 			return
 		}
-		tab.StartupErr = err.Error()
+		tab.StartupErr = userFacingSessionLeaseError("", err).Error()
 		tab.Ready = true
 		hostKey := takeTabSharedHostKey(tab)
 		tab.releaseSessionLease()
@@ -2788,7 +2792,7 @@ func (a *App) buildTabControllerWithContext(tab *WorkspaceTab, loadedSession loa
 					a.abandonSupersededBuild(tab, ctrl, rootKey, "")
 					return
 				}
-				tab.StartupErr = err.Error()
+				tab.StartupErr = userFacingSessionLeaseError("", err).Error()
 				tab.Ready = true
 				hostKey := takeTabSharedHostKey(tab)
 				// Release only a lease bound to THIS build's session: a failed
@@ -3158,6 +3162,10 @@ func (a *App) ctrlByTabID(tabID string) control.SessionAPI {
 
 const maxTabSnapshotFailureRetries = 2
 
+// autosaveWarnInterval rate-limits the user-facing autosave-failure notice
+// per tab; slog keeps recording every failure regardless.
+const autosaveWarnInterval = 5 * time.Minute
+
 func tabSnapshotRetryDelay(failures int) time.Duration {
 	switch {
 	case failures <= 1:
@@ -3231,7 +3239,6 @@ func (a *App) tabSnapshotLoop(tab *WorkspaceTab) {
 				}
 			} else {
 				snapshotErr = err
-				a.reportTabSnapshotError(tab, "autosave", err)
 			}
 		}
 		tab.saveMu.Lock()
@@ -3248,22 +3255,36 @@ func (a *App) tabSnapshotLoop(tab *WorkspaceTab) {
 			tab.saving = false
 			tab.saveCond.Broadcast()
 			tab.saveMu.Unlock()
+			if snapshotErr != nil {
+				slog.Warn("desktop: session autosave failed during teardown", "tab", tab.ID, "err", snapshotErr)
+			}
 			return
 		}
 		if tab.saveAgain {
 			tab.saveAgain = false
 			tab.saveMu.Unlock()
+			if snapshotErr != nil {
+				slog.Warn("desktop: session autosave failed; newer snapshot queued", "tab", tab.ID, "err", snapshotErr)
+			}
 			continue
 		}
 		if snapshotErr != nil && tab.saveFailures <= maxTabSnapshotFailureRetries {
 			delay := tabSnapshotRetryDelay(tab.saveFailures)
+			attempt := tab.saveFailures
 			tab.saveMu.Unlock()
+			// Retries are routine (transient AV/indexer holds); tell the user
+			// only when the whole burst gives up, not once per attempt.
+			slog.Warn("desktop: session autosave failed; retrying", "tab", tab.ID, "attempt", attempt, "err", snapshotErr)
 			time.Sleep(delay)
 			continue
 		}
+		exhausted := snapshotErr
 		tab.saving = false
 		tab.saveCond.Broadcast()
 		tab.saveMu.Unlock()
+		if exhausted != nil {
+			a.reportTabSnapshotError(tab, "autosave", exhausted)
+		}
 		return
 	}
 }
@@ -4706,7 +4727,12 @@ func (a *App) handleTabSessionRecovered(tab *WorkspaceTab) func(control.SessionR
 					reason = "lease_held"
 				}
 				a.emitRuntimeEvent("session:recovery-failed", sessionRecoveryFailedEvent{Reason: reason})
-				return fmt.Errorf("acquire recovery session lease: %w", err)
+				// This error propagates out through ctrl.Snapshot() into chat
+				// notices and bridge returns (reportTabSnapshotError). The raw
+				// path/holder id stayed in the slog line above; keep it out of
+				// the surfaced message.
+				return fmt.Errorf("acquire recovery session lease: %w",
+					userFacingSessionLeaseError("", err))
 			}
 		}
 		meta := info.Meta

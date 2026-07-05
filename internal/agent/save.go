@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -500,7 +501,12 @@ func (s *Session) SaveRecoveryBranch(opts RecoveryBranchOptions) (RecoveryBranch
 		return RecoveryBranchInfo{}, err
 	}
 	if err := writeSessionEventIndex(recoveryPath, msgs, digest, meta.Revision); err != nil {
-		return RecoveryBranchInfo{}, err
+		// The recovery transcript (log + checkpoint) and its meta are already
+		// durable; the index is only a listing accelerator. Failing here would
+		// discard a recovery that in fact succeeded and re-run the whole
+		// conflict path on the next save.
+		slog.Warn("session: keeping recovery branch after event index write failure",
+			"path", recoveryPath, "err", err)
 	}
 	s.markPersisted(recoveryPath, digest, version, meta.Revision)
 	return RecoveryBranchInfo{Path: recoveryPath, Digest: digestText, Meta: meta, Preview: preview, Turns: turns}, nil

@@ -909,8 +909,15 @@ func TestBuildTabControllerBlocksWhenSessionLeaseHeld(t *testing.T) {
 	if !tab.Ready {
 		t.Fatal("tab should be ready with startup error")
 	}
-	if !strings.Contains(tab.StartupErr, agent.ErrSessionLeaseHeld.Error()) {
-		t.Fatalf("startup error = %q, want lease-held error", tab.StartupErr)
+	// The surfaced startup error is the sanitized busy message: the raw lease
+	// error would leak the session path and the holder's host-pid-writer id
+	// into the topbar banner.
+	if !strings.Contains(tab.StartupErr, "already open in another Reasonix window") {
+		t.Fatalf("startup error = %q, want user-facing busy message", tab.StartupErr)
+	}
+	if strings.Contains(tab.StartupErr, agent.ErrSessionLeaseHeld.Error()) ||
+		strings.Contains(tab.StartupErr, path) {
+		t.Fatalf("startup error leaked raw lease details: %q", tab.StartupErr)
 	}
 }
 

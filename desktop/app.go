@@ -1045,6 +1045,20 @@ func (a *App) reportTabSnapshotError(tab *WorkspaceTab, action string, err error
 	if tab == nil || tab.sink == nil {
 		return
 	}
+	// Autosave fires once per turn; on a persistently failing disk that would
+	// stream a chat warning after every turn. Rate-limit the user-facing
+	// notice per tab (the slog line above always records every failure). Saves
+	// triggered by an explicit action are one-shot and always surface.
+	if action == "autosave" {
+		tab.saveMu.Lock()
+		now := time.Now()
+		if !tab.lastAutosaveWarnAt.IsZero() && now.Sub(tab.lastAutosaveWarnAt) < autosaveWarnInterval {
+			tab.saveMu.Unlock()
+			return
+		}
+		tab.lastAutosaveWarnAt = now
+		tab.saveMu.Unlock()
+	}
 	prefix := "Session autosave failed"
 	if strings.TrimSpace(action) != "" && action != "autosave" {
 		prefix = "Session save failed before " + action
@@ -1551,7 +1565,9 @@ func (a *App) ClearSession() error {
 		return err
 	}
 	if err := tab.ensureSessionLease(ctrl.SessionPath()); err != nil {
-		return err
+		// Wails bridge return: a raw lease error would carry the session path
+		// and holder id across to the frontend.
+		return userFacingSessionLeaseError("", err)
 	}
 	tab.resetTelemetry()
 	a.persistTabSessionPath(tab, ctrl.SessionPath())
@@ -1650,7 +1666,9 @@ func (a *App) clearActiveSessionRuntime(tab *WorkspaceTab, oldCtrl control.Sessi
 	path := agent.NewSessionPath(newCtrl.SessionDir(), newCtrl.Label())
 	if err := tab.ensureSessionLease(path); err != nil {
 		newCtrl.Close()
-		return err
+		// Surfaces through ClearSession's Wails return; keep the holder's
+		// path/pid/writer id out of it.
+		return userFacingSessionLeaseError("", err)
 	}
 	newCtrl.SetSessionPath(path)
 
@@ -6952,9 +6970,13 @@ type sessionLeaseBusyError struct {
 }
 
 func (e *sessionLeaseBusyError) Error() string {
+	// The raw SessionLeaseError text carries the session path and the
+	// holder's host-pid-writer id; every user-facing surface must render
+	// this wrapper instead. An empty setting means the failure gated opening
+	// the session itself (startup bind), not changing a setting on it.
 	setting := strings.TrimSpace(e.setting)
 	if setting == "" {
-		setting = "this setting"
+		return "this session is already open in another Reasonix window or still running in the background; close the other window or open a copy"
 	}
 	return fmt.Sprintf("this session is already open in another Reasonix window or still running in the background; close the other window or open a copy before changing %s", setting)
 }
@@ -6997,10 +7019,16 @@ func (a *App) canReclaimCurrentProcessSessionLease(tab *WorkspaceTab, path strin
 		return false
 	}
 	var leaseErr *agent.SessionLeaseError
-	if !errors.As(err, &leaseErr) || leaseErr == nil || leaseErr.Info == nil {
+	if !errors.As(err, &leaseErr) || leaseErr == nil {
 		return false
 	}
-	if leaseErr.Info.PID != os.Getpid() || leaseErr.Info.WriterID != agent.SessionWriterID() {
+	// A readable info naming a foreign runtime is respected here; reclaim
+	// would refuse it anyway. A nil Info (lease.json deleted by the user,
+	// quarantined by AV, or torn by a crash) must still attempt the reclaim:
+	// the OS lock is the arbiter there, and refusing on missing metadata
+	// wedges a session nobody actually holds as permanently busy.
+	if leaseErr.Info != nil &&
+		(leaseErr.Info.PID != os.Getpid() || leaseErr.Info.WriterID != agent.SessionWriterID()) {
 		return false
 	}
 	a.mu.RLock()
