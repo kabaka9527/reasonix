@@ -100,7 +100,7 @@ func RunWindowsSandboxHelper(args []string, stdin *os.File, stdout *os.File, std
 		Stderr: stderr,
 	})
 	if err != nil {
-		fmt.Fprintln(stderr, "windows sandbox:", err)
+		fmt.Fprintln(stderr, WindowsSandboxFailureMarker(args[0]), "windows sandbox:", err)
 		return 126
 	}
 	return result.ExitCode

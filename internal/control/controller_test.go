@@ -19,6 +19,7 @@ import (
 	"reasonix/internal/event"
 	"reasonix/internal/guardian"
 	"reasonix/internal/hook"
+	"reasonix/internal/i18n"
 	"reasonix/internal/jobs"
 	"reasonix/internal/permission"
 	"reasonix/internal/plugin"
@@ -2124,6 +2125,77 @@ func TestPlanModeReadOnlyTrustApprovalPersistsBashCommandTrust(t *testing.T) {
 	}
 	if prompts != 1 {
 		t.Fatalf("approval prompts = %d, want 1", prompts)
+	}
+}
+
+func TestApprovalSubjectsUseChineseCatalog(t *testing.T) {
+	i18n.DetectLanguage("zh")
+	t.Cleanup(func() { i18n.DetectLanguage("en") })
+
+	rememberArgs := json.RawMessage(`{"name":"prefers-vitest","type":"user","description":"Preferred test framework","body":"Use Vitest for frontend tests."}`)
+	if got := approvalDisplaySubject(memoryRememberTool, "", rememberArgs); !strings.Contains(got, "保存/更新记忆") || !strings.Contains(got, "正文: Use Vitest") {
+		t.Fatalf("remember approval subject = %q, want Chinese labels", got)
+	}
+
+	forgetArgs := json.RawMessage(`{"name":"old-fact"}`)
+	if got := approvalDisplaySubject(memoryForgetTool, "", forgetArgs); got != `归档记忆 "old-fact"` {
+		t.Fatalf("forget approval subject = %q, want Chinese archive label", got)
+	}
+}
+
+func TestPlanModeReadOnlyTrustApprovalUsesChineseCatalog(t *testing.T) {
+	i18n.DetectLanguage("zh")
+	t.Cleanup(func() { i18n.DetectLanguage("en") })
+
+	approvalRequests := make(chan event.Approval, 1)
+	c := New(Options{
+		Sink: event.FuncSink(func(e event.Event) {
+			if e.Kind == event.ApprovalRequest {
+				approvalRequests <- e.Approval
+			}
+		}),
+	})
+	done := make(chan struct {
+		allow  bool
+		reason string
+		err    error
+	}, 1)
+	req := agent.PlanModeReadOnlyTrustRequest{
+		ToolName: agent.PlanModeReadOnlyCommandApprovalTool,
+		Command:  "gh issue view 5867 --json title",
+		Prefix:   "gh issue view",
+		Args:     json.RawMessage(`{"command":"gh issue view 5867 --json title"}`),
+	}
+	go func() {
+		allow, reason, err := planModeReadOnlyTrustApprover{c}.CheckPlanModeReadOnlyTrust(context.Background(), req)
+		done <- struct {
+			allow  bool
+			reason string
+			err    error
+		}{allow: allow, reason: reason, err: err}
+	}()
+
+	var approval event.Approval
+	select {
+	case approval = <-approvalRequests:
+	case <-time.After(2 * time.Second):
+		t.Fatal("plan-mode bash trust approval request was not emitted")
+	}
+	if !strings.Contains(approval.Subject, "在计划模式中信任") || !strings.Contains(approval.Subject, "gh issue view 5867") {
+		t.Fatalf("approval subject = %q, want Chinese plan-mode trust subject", approval.Subject)
+	}
+	if !strings.Contains(approval.Reason, "不在 Reasonix 内置只读集合中") {
+		t.Fatalf("approval reason = %q, want Chinese plan-mode trust reason", approval.Reason)
+	}
+
+	c.Approve(approval.ID, false, false, false)
+	select {
+	case got := <-done:
+		if got.err != nil || got.allow || !strings.Contains(got.reason, "用户拒绝") {
+			t.Fatalf("rejected trust result = %+v, want Chinese denial", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("plan-mode bash trust approval stayed blocked after rejection")
 	}
 }
 
