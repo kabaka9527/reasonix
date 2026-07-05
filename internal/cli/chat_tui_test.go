@@ -2351,6 +2351,64 @@ func TestApprovalToolDetailsShortensMCPNames(t *testing.T) {
 	}
 }
 
+func TestSandboxEscapeApprovalBannerUsesRealEnvironmentChoice(t *testing.T) {
+	i18n.DetectLanguage("zh")
+	t.Cleanup(func() { i18n.DetectLanguage("en") })
+
+	m := newTestChatTUI()
+	m.width = 120
+	m.pendingApproval = &event.Approval{
+		ID:      "approval-1",
+		Tool:    control.SandboxEscapeApprovalTool,
+		Subject: "仅本次不进沙箱运行：go test ./...",
+		Reason:  "Windows 沙箱启动这条命令时失败。",
+	}
+	banner := m.renderApprovalBanner()
+	if !strings.Contains(banner, "本会话使用真实环境") {
+		t.Fatalf("approval banner = %q, want real-environment session choice", banner)
+	}
+	if !strings.Contains(banner, "允许一次") {
+		t.Fatalf("approval banner = %q, want desktop-matching allow-once choice", banner)
+	}
+	if !strings.Contains(banner, "3. 拒绝") || strings.Contains(banner, "4. 拒绝") {
+		t.Fatalf("approval banner = %q, want conventional 1/2/3 sandbox choices", banner)
+	}
+	if strings.Contains(banner, "sandbox_escape") {
+		t.Fatalf("approval banner leaked raw tool grant: %q", banner)
+	}
+}
+
+func TestFreshApprovalBannerUsesConventionalDenyChoice(t *testing.T) {
+	i18n.DetectLanguage("zh")
+	t.Cleanup(func() { i18n.DetectLanguage("en") })
+
+	m := newTestChatTUI()
+	m.width = 120
+	m.pendingApproval = &event.Approval{
+		ID:      "approval-1",
+		Tool:    "remember",
+		Subject: "保存/更新记忆",
+	}
+	banner := m.renderApprovalBanner()
+	if !strings.Contains(banner, "1. 本次允许") || !strings.Contains(banner, "2. 拒绝") {
+		t.Fatalf("approval banner = %q, want conventional 1/2 fresh choices", banner)
+	}
+	if strings.Contains(banner, "4. 拒绝") {
+		t.Fatalf("approval banner = %q, must not show non-consecutive deny choice", banner)
+	}
+}
+
+func TestFreshApprovalSessionChoiceIsLimitedToSandboxEscape(t *testing.T) {
+	if !freshApprovalAllowsSession(control.SandboxEscapeApprovalTool) {
+		t.Fatal("sandbox escape should allow an explicit session choice")
+	}
+	for _, toolName := range []string{"remember", "forget", planApprovalTool, agent.PlanModeReadOnlyCommandApprovalTool} {
+		if freshApprovalAllowsSession(toolName) {
+			t.Fatalf("%s should not allow the sandbox escape session choice", toolName)
+		}
+	}
+}
+
 // TestSlashQuitExit verifies that /quit and /exit slash commands return tea.Quit,
 // providing an alternative to Ctrl+D and the bare "quit"/"exit" text commands.
 func TestSlashQuitExit(t *testing.T) {

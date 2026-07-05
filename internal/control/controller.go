@@ -604,6 +604,10 @@ func (c *Controller) SendWithRaw(input, raw string) {
 // desktop renders a plan card; the chat TUI a plan banner).
 const planApprovalTool = "exit_plan_mode"
 
+// SandboxEscapeApprovalTool is the internal Tool name used for one-shot approval
+// to rerun a shell command without the OS sandbox after the sandbox failed.
+const SandboxEscapeApprovalTool = "sandbox_escape"
+
 // planApprovedMessage is the follow-up turn sent once the user approves a plan —
 // the in-context nudge to execute and keep the (already-seeded) task list honest.
 const planApprovedMessage = "Plan approved — plan mode is off; you’re cleared to make the changes without asking again. Implement the plan now. Use this serial workflow: 1) mark the first sub-step in_progress with todo_write (this establishes the task list); 2) execute the sub-step; 3) call complete_step with evidence — the host then marks that sub-step completed and moves the next one to in_progress for you. Repeat 2–3 for each remaining sub-step. You don’t need another todo_write to mark steps completed; each complete_step advances the list. Sign off one sub-step at a time — never batch multiple completions."
@@ -1427,15 +1431,22 @@ func (c *Controller) Approve(id string, allow, session, persist bool) {
 // silent gate and a nil asker from setup.
 func (c *Controller) EnableInteractiveApproval() {
 	trustGate := planModeReadOnlyTrustApprover{c}
+	escapeApprover := sandboxEscapeApprover{c}
 	if c.executor != nil {
 		c.executor.SetGate(c.newInteractiveGate())
 		c.executor.SetPlanModeReadOnlyTrustGate(trustGate)
+		c.executor.SetSandboxEscapeApprover(escapeApprover)
 		c.executor.SetAsker(c)
 	}
 	if setter, ok := c.runner.(interface {
 		SetPlanModeReadOnlyTrustGate(agent.PlanModeReadOnlyTrustGate)
 	}); ok {
 		setter.SetPlanModeReadOnlyTrustGate(trustGate)
+	}
+	if setter, ok := c.runner.(interface {
+		SetSandboxEscapeApprover(sandbox.EscapeApprover)
+	}); ok {
+		setter.SetSandboxEscapeApprover(escapeApprover)
 	}
 }
 
@@ -3780,6 +3791,44 @@ func (g gateApprover) ApproveWithReason(ctx context.Context, tool, subject strin
 
 type planModeReadOnlyTrustApprover struct{ c *Controller }
 
+type sandboxEscapeApprover struct{ c *Controller }
+
+func (s sandboxEscapeApprover) ApproveSandboxEscape(ctx context.Context, req sandbox.EscapeRequest) (bool, string, error) {
+	subject := sandboxEscapeApprovalSubject(req.Command)
+	reason := sandboxEscapeApprovalReason(req.Reason)
+	reply, err := s.c.requestFreshApprovalDecision(ctx, SandboxEscapeApprovalTool, subject, req.Args, reason)
+	if err != nil {
+		return false, "approval aborted", err
+	}
+	if !reply.allow {
+		return false, i18n.M.SandboxEscapeDeclined, nil
+	}
+	if reply.session {
+		s.c.approval.grantSession(SandboxEscapeApprovalTool, subject)
+	}
+	return true, "", nil
+}
+
+func (s sandboxEscapeApprover) SandboxEscapeSessionAllowed(_ context.Context, req sandbox.EscapeRequest) bool {
+	return s.c.approval.preApprovedForDecision(SandboxEscapeApprovalTool, sandboxEscapeApprovalSubject(req.Command), true)
+}
+
+func sandboxEscapeApprovalSubject(command string) string {
+	subject := strings.TrimSpace(command)
+	if subject == "" {
+		return i18n.M.SandboxEscapeSubjectFallback
+	}
+	return i18n.M.SandboxEscapeSubjectPrefix + subject
+}
+
+func sandboxEscapeApprovalReason(reason string) string {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return i18n.M.SandboxEscapeRuntimeReason
+	}
+	return reason
+}
+
 func (p planModeReadOnlyTrustApprover) CheckPlanModeReadOnlyTrust(ctx context.Context, req agent.PlanModeReadOnlyTrustRequest) (bool, string, error) {
 	if prefix := normalizePlanModeReadOnlyCommandPrefix(req.Prefix); prefix != "" {
 		return p.checkBashReadOnlyCommandTrust(ctx, req, prefix)
@@ -3787,16 +3836,16 @@ func (p planModeReadOnlyTrustApprover) CheckPlanModeReadOnlyTrust(ctx context.Co
 	server := strings.TrimSpace(req.ServerName)
 	rawTool := strings.TrimSpace(req.RawToolName)
 	if server == "" || rawTool == "" {
-		return false, "this MCP tool did not expose enough metadata to remember a read-only trust decision.", nil
+		return false, i18n.M.PlanModeMCPTrustMetadataMissing, nil
 	}
-	subject := fmt.Sprintf("MCP %s/%s as read-only for planning and research", server, rawTool)
-	reason := "This MCP tool reports read-only, but external read-only hints need your confirmation before plan mode can use them. Choose always allow to remember this trust for future planning and read-only research."
+	subject := fmt.Sprintf(i18n.M.PlanModeMCPTrustSubjectFmt, server, rawTool)
+	reason := i18n.M.PlanModeMCPTrustReason
 	reply, err := p.c.requestFreshApprovalDecision(ctx, req.ToolName, subject, req.Args, reason)
 	if err != nil {
 		return false, "approval aborted", err
 	}
 	if !reply.allow {
-		return false, "the user declined to trust this MCP read-only hint — do not retry it; continue with other trusted read-only tools or ask how to proceed.", nil
+		return false, i18n.M.PlanModeMCPTrustDeclined, nil
 	}
 	if reply.session {
 		p.c.approval.grantSession(req.ToolName, subject)
@@ -3815,14 +3864,14 @@ func (p planModeReadOnlyTrustApprover) checkBashReadOnlyCommandTrust(ctx context
 	if command == "" {
 		command = strings.TrimSpace(string(req.Args))
 	}
-	subject := fmt.Sprintf("Trust %q as a read-only command prefix while planning\nCommand: %s", prefix, command)
-	reason := "This bash command is not in Reasonix's built-in read-only set. Confirm only if this exact prefix is read-only for planning and research. Auto/YOLO approval cannot answer this trust prompt."
+	subject := fmt.Sprintf(i18n.M.PlanModeBashTrustSubjectFmt, prefix, command)
+	reason := i18n.M.PlanModeBashTrustReason
 	reply, err := p.c.requestFreshApprovalDecision(ctx, agent.PlanModeReadOnlyCommandApprovalTool, subject, req.Args, reason)
 	if err != nil {
 		return false, "approval aborted", err
 	}
 	if !reply.allow {
-		return false, "the user declined to trust this bash command as read-only for plan mode — do not retry it; continue with other trusted read-only tools or ask how to proceed.", nil
+		return false, i18n.M.PlanModeBashTrustDeclined, nil
 	}
 	if reply.session {
 		p.c.approval.grantPlanModeReadOnlyCommand(prefix)
@@ -3884,7 +3933,8 @@ func rememberApprovalSubject(fallback string, args json.RawMessage) string {
 	typ := string(memory.NormalizeType(in.Type))
 
 	var b strings.Builder
-	b.WriteString("Save/update memory")
+	b.WriteString(i18n.M.MemoryApprovalSaveUpdate)
+	baseLen := b.Len()
 	if name != "" {
 		fmt.Fprintf(&b, " %q", name)
 	}
@@ -3901,10 +3951,11 @@ func rememberApprovalSubject(fallback string, args json.RawMessage) string {
 		} else {
 			b.WriteString(" | ")
 		}
-		b.WriteString("body: ")
+		b.WriteString(i18n.M.MemoryApprovalBodyLabel)
+		b.WriteString(": ")
 		b.WriteString(body)
 	}
-	if b.Len() == len("Save/update memory") && fallback != "" {
+	if b.Len() == baseLen && fallback != "" {
 		return fallback
 	}
 	return b.String()
@@ -3924,7 +3975,7 @@ func forgetApprovalSubject(fallback string, args json.RawMessage) string {
 	if name == "" {
 		return fallback
 	}
-	return fmt.Sprintf("Archive memory %q", name)
+	return fmt.Sprintf(i18n.M.MemoryApprovalArchiveFmt, name)
 }
 
 func firstNonEmpty(values ...string) string {

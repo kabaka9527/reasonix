@@ -14,12 +14,34 @@
 // built-ins is handled separately, in package tool/builtin.
 package sandbox
 
-import "runtime"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"runtime"
+)
 
 // WindowsHelperCommand is an internal CLI subcommand used only by the Windows
 // sandbox wrapper. It is intentionally obscure so it does not collide with
 // public commands.
 const WindowsHelperCommand = "__reasonix_windows_sandbox"
+
+const windowsSandboxFailureMarkerPrefix = "__reasonix_windows_sandbox_failure__:"
+
+// WindowsSandboxFailureMarker returns the helper-only marker printed when the
+// native Windows sandbox backend fails before starting the child command.
+func WindowsSandboxFailureMarker(payload string) string {
+	sum := sha256.Sum256([]byte(payload))
+	return windowsSandboxFailureMarkerPrefix + hex.EncodeToString(sum[:])
+}
+
+// WindowsSandboxFailureMarkerFromCommand extracts the marker expected from a
+// Windows sandbox helper argv produced by Command/CommandArgs.
+func WindowsSandboxFailureMarkerFromCommand(argv []string) (string, bool) {
+	if len(argv) < 4 || argv[1] != WindowsHelperCommand || argv[2] == "" || argv[3] != "--" {
+		return "", false
+	}
+	return WindowsSandboxFailureMarker(argv[2]), true
+}
 
 // Spec describes how to confine one command. The zero value (Mode == "") does
 // not enforce, so an unconfigured caller runs commands unchanged.
