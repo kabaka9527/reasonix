@@ -12,6 +12,9 @@
 
 可以设置 `REASONIX_HOME` 覆盖 Reasonix home，主要用于测试、CI 或便携安装。普通用户通常不需要设置。
 
+设置 `REASONIX_HOME` 后，运行时会变成完整自包含模式：配置、状态、缓存和数据都会位于该目录树下。
+Legacy 迁移、OS home 约定目录扫描以及其他 fallback 路径都会跳过，避免从系统级正式安装带入或写回数据。
+
 高级测试或便携安装可以设置 `REASONIX_STATE_HOME` 来移动 sessions、archive、memory 等运行状态。
 它不会移动全局配置或 provider 凭据；这些仍然位于 `REASONIX_HOME` 下。如果旧版本曾把 provider key
 写到 `REASONIX_STATE_HOME/.env`，Reasonix 会在 `<Reasonix home>/.env` 缺少对应 key 时非破坏性导入。
@@ -142,6 +145,8 @@ Provider 请求只会从这个全局 `.env` 解析 key。项目 `.env`、home `.
 缓存仍放在系统缓存目录，例如 macOS 的 `~/Library/Caches/reasonix`、
 Linux 的 `$XDG_CACHE_HOME/reasonix` 或 `~/.cache/reasonix`、Windows 的
 `%LOCALAPPDATA%\reasonix\cache`。可以设置 `REASONIX_CACHE_HOME` 覆盖缓存根目录。
+设置 `REASONIX_HOME` 后，缓存会放在 `$REASONIX_HOME/cache`；如果同时设置
+`REASONIX_CACHE_HOME`，后者优先。
 
 ## 配置优先级
 
