@@ -832,6 +832,12 @@ export function parseProviderExtraBody(raw: string, t?: ReturnType<typeof useT>)
   return out;
 }
 
+export function providerExtraBodyParseError(error: unknown, t: ReturnType<typeof useT>): string {
+  if (error instanceof SyntaxError) return t("settings.providerExtraBodyError");
+  const message = String((error as Error)?.message ?? error ?? "").trim();
+  return message || t("settings.providerExtraBodyError");
+}
+
 function providerModelFetchFallbackMessage(error: unknown, t: ReturnType<typeof useT>): string {
   const message = String((error as Error)?.message ?? error);
   if (/\bstatus\s+(401|403)\b/i.test(message)) {
@@ -5614,7 +5620,7 @@ function ProviderEditor({
     try {
       return { value: parseProviderExtraBody(extraBodyDraft, t), error: "" };
     } catch (e) {
-      return { value: {}, error: String((e as Error)?.message ?? e) || t("settings.providerExtraBodyError") };
+      return { value: {}, error: providerExtraBodyParseError(e, t) };
     }
   }, [extraBodyDraft, t]);
   const effectiveExtraBody = extraBodyParse.value;
