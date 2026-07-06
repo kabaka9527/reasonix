@@ -144,6 +144,127 @@ func TestSaveSnapshotAllowsAppendFromDiskPrefix(t *testing.T) {
 	}
 }
 
+// TestSaveSnapshotAppendsAcrossInterruptedToolCallTail is the mid-turn autosave
+// shape from the field: a snapshot lands between an assistant tool call and its
+// still-running result, so the transcript on disk ends with a dangling call
+// that LoadSession answers with a fabricated placeholder. The live session then
+// records the real result and keeps going. The next snapshot is a pure append
+// over the bytes on disk and must land as one — not collide with the
+// placeholder, misread the turn as divergence, and fork a recovery branch.
+func TestSaveSnapshotAppendsAcrossInterruptedToolCallTail(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	s := NewSession("sys")
+	s.Add(provider.Message{Role: provider.RoleUser, Content: "run the build"})
+	s.Add(provider.Message{
+		Role: provider.RoleAssistant, Content: "Running it.",
+		ToolCalls: []provider.ToolCall{{ID: "call_1", Name: "bash", Arguments: `{"cmd":"make"}`}},
+	})
+	if err := s.SaveSnapshot(path); err != nil {
+		t.Fatalf("mid-turn SaveSnapshot: %v", err)
+	}
+
+	s.Add(provider.Message{Role: provider.RoleTool, Name: "bash", ToolCallID: "call_1", Content: "ok"})
+	s.Add(provider.Message{Role: provider.RoleAssistant, Content: "Build passed."})
+	if err := s.SaveSnapshot(path); err != nil {
+		t.Fatalf("SaveSnapshot after tool result: %v", err)
+	}
+
+	replay, err := replaySessionEventLog(SessionEventLogPath(path))
+	if err != nil {
+		t.Fatalf("replay event log: %v", err)
+	}
+	if replay.damaged {
+		t.Fatal("event log damaged after appending over an interrupted tool tail")
+	}
+	if replay.records != 2 {
+		t.Fatalf("event log records = %d, want 2 (bootstrap replace + append)", replay.records)
+	}
+	loaded, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if got := len(loaded.Messages); got != 5 {
+		t.Fatalf("message count after append snapshot = %d, want 5", got)
+	}
+	if got := loaded.Messages[3].Content; got != "ok" {
+		t.Fatalf("tool result after round-trip = %q, want %q", got, "ok")
+	}
+	if loaded.normalizedDirty {
+		t.Fatal("transcript still needs repair after appending the real tool result")
+	}
+}
+
+// TestSaveSnapshotUnchangedInterruptedToolCallTailIsNoOp covers the turn that
+// stays interrupted (cancel, crash recovery with nothing new in memory):
+// re-snapshotting the exact bytes on disk must be a no-op, not a stale-prefix
+// conflict against the placeholder the load-time repair fabricated.
+func TestSaveSnapshotUnchangedInterruptedToolCallTailIsNoOp(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	s := NewSession("sys")
+	s.Add(provider.Message{Role: provider.RoleUser, Content: "run the build"})
+	s.Add(provider.Message{
+		Role: provider.RoleAssistant, Content: "Running it.",
+		ToolCalls: []provider.ToolCall{{ID: "call_1", Name: "bash", Arguments: `{"cmd":"make"}`}},
+	})
+	if err := s.SaveSnapshot(path); err != nil {
+		t.Fatalf("mid-turn SaveSnapshot: %v", err)
+	}
+	logBefore, err := os.ReadFile(SessionEventLogPath(path))
+	if err != nil {
+		t.Fatalf("ReadFile event log: %v", err)
+	}
+
+	if err := s.SaveSnapshot(path); err != nil {
+		t.Fatalf("SaveSnapshot unchanged: %v", err)
+	}
+	logAfter, err := os.ReadFile(SessionEventLogPath(path))
+	if err != nil {
+		t.Fatalf("ReadFile event log after no-op snapshot: %v", err)
+	}
+	if string(logBefore) != string(logAfter) {
+		t.Fatal("no-op snapshot rewrote the event log")
+	}
+	if revision, _, err := sessionContentRevision(path); err != nil || revision != 1 {
+		t.Fatalf("revision after no-op snapshot = %d (err %v), want 1", revision, err)
+	}
+}
+
+// TestSaveRewriteOwnedAcrossInterruptedToolCallTail: compaction rewrites the
+// in-memory history while the transcript on disk still ends with the dangling
+// call a mid-turn snapshot left behind. Ownership is anchored on the raw bytes
+// this session wrote; the placeholder fabricated on load must not revoke it.
+func TestSaveRewriteOwnedAcrossInterruptedToolCallTail(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	s := NewSession("sys")
+	s.Add(provider.Message{Role: provider.RoleUser, Content: "run the build"})
+	s.Add(provider.Message{
+		Role: provider.RoleAssistant, Content: "Running it.",
+		ToolCalls: []provider.ToolCall{{ID: "call_1", Name: "bash", Arguments: `{"cmd":"make"}`}},
+	})
+	if err := s.SaveSnapshot(path); err != nil {
+		t.Fatalf("mid-turn SaveSnapshot: %v", err)
+	}
+
+	s.Replace([]provider.Message{
+		{Role: provider.RoleSystem, Content: "sys"},
+		{Role: provider.RoleUser, Content: "[compacted] run the build"},
+	})
+	if err := s.SaveRewrite(path); err != nil {
+		t.Fatalf("SaveRewrite after compaction: %v", err)
+	}
+
+	loaded, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if got := len(loaded.Messages); got != 2 {
+		t.Fatalf("message count after owned rewrite = %d, want 2", got)
+	}
+	if got := loaded.Messages[1].Content; got != "[compacted] run the build" {
+		t.Fatalf("compacted message after round-trip = %q", got)
+	}
+}
+
 func TestSaveSnapshotAppendsWithoutReplacingPrefixFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.jsonl")
 	base := NewSession("sys")

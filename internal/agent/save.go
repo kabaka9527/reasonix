@@ -408,9 +408,40 @@ func (s *Session) checkSnapshotWrite(path string, next []provider.Message, nextD
 	if err != nil {
 		return snapshotWriteDecision{}, err
 	}
+	// raw is the transcript as stored, before load-time normalization repaired
+	// it; it equals existing when no repair ran. The prefix checks below must
+	// be able to fall back to it: a mid-turn snapshot legitimately cuts an
+	// assistant tool call from its still-running result, normalization then
+	// fabricates a placeholder answer on load, and the live session's real
+	// result collides with that placeholder — misreading a pure append as
+	// divergence (and forking a bogus recovery branch).
+	raw, rawDigest := existing, existingDigest
+	rawDiffers := current.normalizedDirty && len(current.rawMessages) > 0
+	if rawDiffers {
+		raw = current.rawMessages
+		if rawDigest, err = digestSessionMessages(raw); err != nil {
+			return snapshotWriteDecision{}, err
+		}
+	}
 	contentUnchanged := bytes.Equal(existingDigest[:], nextDigest[:])
 	exactAppend := messagesHavePrefix(next, existing)
-	if contentUnchanged || exactAppend || messagesHavePrefixWithCompatibleSystem(next, existing) {
+	appendShaped := contentUnchanged || exactAppend || messagesHavePrefixWithCompatibleSystem(next, existing)
+	repairPending := current.normalizedDirty
+	if !appendShaped && rawDiffers {
+		rawUnchanged := bytes.Equal(rawDigest[:], nextDigest[:])
+		rawAppend := messagesHavePrefix(next, raw)
+		if rawUnchanged || rawAppend || messagesHavePrefixWithCompatibleSystem(next, raw) {
+			existing = raw
+			contentUnchanged = rawUnchanged
+			exactAppend = rawAppend
+			appendShaped = true
+			// The snapshot supersedes the repaired view — appending it lands
+			// the real tool results where the placeholders were fabricated —
+			// so no load-time repair is left to force a rewrite.
+			repairPending = false
+		}
+	}
+	if appendShaped {
 		// An unknown-revision baseline (meta sidecar unreadable at load) cannot
 		// vouch for revision equality; the digest/prefix checks above already
 		// vouch for the content, so only a known baseline arms the CAS check.
@@ -433,7 +464,7 @@ func (s *Session) checkSnapshotWrite(path string, next []provider.Message, nextD
 		// replayable prefix already matches this snapshot.
 		decision := snapshotWriteDecision{
 			revision:  currentRevision,
-			upToDate:  contentUnchanged && !current.normalizedDirty && !current.eventLogDamaged,
+			upToDate:  contentUnchanged && !repairPending && !current.eventLogDamaged,
 			repairLog: current.eventLogDamaged,
 		}
 		// A ledger digest that describes different content than the transcript
@@ -451,10 +482,20 @@ func (s *Session) checkSnapshotWrite(path string, next []provider.Message, nextD
 		}
 		return decision, nil
 	}
-	if allowOwnedRewrite && s.ownsPersistedState(path, existingDigest, currentRevision, currentLedgerDigest, nextVersion) {
-		return snapshotWriteDecision{revision: currentRevision, repairLog: current.eventLogDamaged}, nil
+	if allowOwnedRewrite {
+		owned := s.ownsPersistedState(path, existingDigest, currentRevision, currentLedgerDigest, nextVersion)
+		if !owned && rawDiffers {
+			// The persisted baseline describes the bytes this session wrote, so
+			// a repaired view can never match it; ownership is judged against
+			// the raw transcript.
+			owned = s.ownsPersistedState(path, rawDigest, currentRevision, currentLedgerDigest, nextVersion)
+		}
+		if owned {
+			return snapshotWriteDecision{revision: currentRevision, repairLog: current.eventLogDamaged}, nil
+		}
 	}
-	if messagesHavePrefix(existing, next) || messagesHavePrefixWithCompatibleSystem(existing, next) {
+	if messagesHavePrefix(existing, next) || messagesHavePrefixWithCompatibleSystem(existing, next) ||
+		(rawDiffers && (messagesHavePrefix(raw, next) || messagesHavePrefixWithCompatibleSystem(raw, next))) {
 		return snapshotWriteDecision{}, &SessionSnapshotConflictError{
 			Path:             path,
 			Kind:             SessionSnapshotConflictStalePrefix,
@@ -1041,6 +1082,12 @@ func LoadSession(path string) (*Session, error) {
 	normalized := NormalizeSession(s.Messages)
 	if len(normalized) != len(s.Messages) || (len(s.Messages) > 0 && &normalized[0] != &s.Messages[0]) {
 		s.normalizedDirty = true
+		// Keep the pre-repair transcript: checkSnapshotWrite must be able to
+		// recognize a snapshot that extends the bytes actually on disk, which
+		// the repaired view no longer represents (an interrupted tool turn
+		// gets a placeholder result fabricated here that the live session
+		// answered for real).
+		s.rawMessages = msgs
 	}
 	s.Messages = normalized
 	if digest, err := digestSessionMessages(s.Messages); err == nil {

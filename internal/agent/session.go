@@ -29,6 +29,12 @@ type Session struct {
 	// or corrupt and returned the replayable prefix (or the .jsonl checkpoint).
 	// The next save heals the log with a rewrite-and-compact.
 	eventLogDamaged bool
+	// rawMessages preserves the pre-normalization transcript when the load-time
+	// repairs changed it (normalizedDirty). It is only meaningful on a freshly
+	// loaded Session: checkSnapshotWrite compares a pending snapshot against
+	// what is actually on disk, and the repaired view no longer represents
+	// those bytes — a session that kept running extends the raw transcript.
+	rawMessages []provider.Message
 }
 
 // NewSession initializes a session with an optional system prompt.
