@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 )
@@ -122,13 +123,15 @@ func TestWorkspaceGitBranchForMetaDoesNotBlockOnColdProbe(t *testing.T) {
 	origProbe := workspaceGitBranchForMetaProbe
 	started := make(chan struct{})
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseProbe := func() { releaseOnce.Do(func() { close(release) }) }
 	workspaceGitBranchForMetaProbe = func(string) string {
 		close(started)
 		<-release
 		return "feature/async"
 	}
 	defer func() {
-		close(release)
+		releaseProbe()
 		workspaceGitBranchForMetaProbe = origProbe
 	}()
 
@@ -145,8 +148,7 @@ func TestWorkspaceGitBranchForMetaDoesNotBlockOnColdProbe(t *testing.T) {
 		t.Fatal("background branch refresh did not start")
 	}
 
-	close(release)
-	release = make(chan struct{})
+	releaseProbe()
 	eventuallyBranchForMeta(t, "/tmp/reasonix-cold-probe", "feature/async")
 }
 
@@ -162,13 +164,15 @@ func TestWorkspaceGitBranchForMetaReturnsStaleDuringRefresh(t *testing.T) {
 	origProbe := workspaceGitBranchForMetaProbe
 	started := make(chan struct{})
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseProbe := func() { releaseOnce.Do(func() { close(release) }) }
 	workspaceGitBranchForMetaProbe = func(string) string {
 		close(started)
 		<-release
 		return "feature/fresh"
 	}
 	defer func() {
-		close(release)
+		releaseProbe()
 		workspaceGitBranchForMetaProbe = origProbe
 	}()
 
@@ -185,8 +189,7 @@ func TestWorkspaceGitBranchForMetaReturnsStaleDuringRefresh(t *testing.T) {
 		t.Fatal("background branch refresh did not start")
 	}
 
-	close(release)
-	release = make(chan struct{})
+	releaseProbe()
 	eventuallyBranchForMeta(t, "/tmp/reasonix-stale-probe", "feature/fresh")
 }
 
