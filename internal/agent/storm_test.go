@@ -113,6 +113,69 @@ func TestStormBreakerEscalatesRepeatedBlockedPermission(t *testing.T) {
 	}
 }
 
+// TestStormBreakerEscalatesAlternatingBlockedShapes: rotating between two
+// blocked tools defeats the signature detector (each turn resets the count),
+// but every turn is still a host refusal with zero progress. The blocked-turn
+// streak must trip the guard anyway.
+func TestStormBreakerEscalatesAlternatingBlockedShapes(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Add(fakeTool{name: "bash", readOnly: false})
+	reg.Add(fakeTool{name: "web_fetch", readOnly: false})
+	sink, notices := warnNoticeRecorder()
+	a := New(nil, reg, NewSession(""), Options{
+		Gate: &stubGate{deny: map[string]bool{"bash": true, "web_fetch": true}},
+	}, sink)
+
+	calls := []provider.ToolCall{
+		{Name: "bash", Arguments: `{"command":"go test ./..."}`},
+		{Name: "web_fetch", Arguments: `{"url":"https://example.com"}`},
+		{Name: "bash", Arguments: `{"command":"ls"}`},
+	}
+	var last string
+	for _, call := range calls {
+		last = a.executeBatch(context.Background(), []provider.ToolCall{call})[0]
+	}
+
+	if !strings.Contains(last, "[loop guard]") {
+		t.Fatalf("after %d all-blocked turns the guard should fire despite alternating tools, got: %q", stormBreakThreshold, last)
+	}
+	if !a.loopGuardArmed {
+		t.Fatal("streak guard should arm the final-readiness loop-guard pass")
+	}
+	if len(*notices) == 0 {
+		t.Errorf("streak loop guard should emit a warn notice to the user")
+	}
+}
+
+// TestStormBreakerBlockedStreakResetBySuccess: a turn that makes real progress
+// proves the model is not stuck, so the blocked-turn streak must start over.
+func TestStormBreakerBlockedStreakResetBySuccess(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Add(fakeTool{name: "bash", readOnly: false})
+	reg.Add(fakeTool{name: "read_file", readOnly: true})
+	a := New(nil, reg, NewSession(""), Options{
+		Gate: &stubGate{deny: map[string]bool{"bash": true}},
+	}, event.Discard)
+
+	calls := []provider.ToolCall{
+		{Name: "bash", Arguments: `{"command":"go test ./..."}`},
+		{Name: "bash", Arguments: `{"command":"ls"}`},
+		{Name: "read_file", Arguments: `{"path":"a.go"}`},
+		{Name: "bash", Arguments: `{"command":"pwd"}`},
+	}
+	var last string
+	for _, call := range calls {
+		last = a.executeBatch(context.Background(), []provider.ToolCall{call})[0]
+	}
+
+	if strings.Contains(last, "[loop guard]") {
+		t.Fatalf("a successful turn should reset the blocked streak, got: %q", last)
+	}
+	if a.blockedTurnStreak != 1 {
+		t.Fatalf("blockedTurnStreak = %d, want 1 after success reset plus one block", a.blockedTurnStreak)
+	}
+}
+
 // TestStormBreakerEscalatesRepeatedBatch: a multi-call batch that fails the same
 // way every round is just as much a death-spiral as a single call — once the whole
 // batch repeats stormBreakThreshold times, the guard must fire and name the batch.

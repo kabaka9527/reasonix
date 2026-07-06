@@ -458,6 +458,66 @@ func TestFinalReadinessPermissionLoopGuardAllowsBlockedFinal(t *testing.T) {
 	}
 }
 
+// TestFinalReadinessPermissionLoopGuardAllowsBlockedFinalForBatch pins the
+// multi-call variant: the guard text lands on the batch's FIRST result, so any
+// detection keyed to the latest tool message misses it. The loop-guard pass is
+// host state and must let the model report the blocker regardless of where in
+// the batch the guard text sits.
+func TestFinalReadinessPermissionLoopGuardAllowsBlockedFinalForBatch(t *testing.T) {
+	todoWrite, ok := tool.LookupBuiltin("todo_write")
+	if !ok {
+		t.Fatal("todo_write builtin not registered")
+	}
+	reg := tool.NewRegistry()
+	reg.Add(fakeTool{name: "write_file", readOnly: false})
+	reg.Add(fakeTool{name: "bash", readOnly: false})
+	reg.Add(todoWrite)
+	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
+		{
+			toolCallChunk("w1", "write_file", `{"path":"changed.go","content":"package main"}`),
+			toolCallChunk("t1", "todo_write", `{"todos":[{"content":"Edit code","status":"in_progress"}]}`),
+			{Type: provider.ChunkDone},
+		},
+		{{Type: provider.ChunkText, Text: "premature final"}, {Type: provider.ChunkDone}},
+		{
+			toolCallChunk("b1a", "bash", `{"command":"go test ./..."}`),
+			toolCallChunk("b1b", "bash", `{"command":"go vet ./..."}`),
+			{Type: provider.ChunkDone},
+		},
+		{
+			toolCallChunk("b2a", "bash", `{"command":"git status --short"}`),
+			toolCallChunk("b2b", "bash", `{"command":"git diff --stat"}`),
+			{Type: provider.ChunkDone},
+		},
+		{
+			toolCallChunk("b3a", "bash", `{"command":"ls -la"}`),
+			toolCallChunk("b3b", "bash", `{"command":"pwd"}`),
+			{Type: provider.ChunkDone},
+		},
+		{{Type: provider.ChunkText, Text: "blocked by permission"}, {Type: provider.ChunkDone}},
+	}}
+	a := New(prov, reg, NewSession(""), Options{
+		Gate: &stubGate{deny: map[string]bool{"bash": true}},
+	}, event.Discard)
+
+	if err := a.Run(context.Background(), "edit with todo, then hit batched bash permission blocks"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if prov.call != 6 {
+		t.Fatalf("provider calls = %d, want readiness retry, three blocked batches, then final", prov.call)
+	}
+	results := toolResults(a.session, "bash")
+	if len(results) != 2*stormBreakThreshold {
+		t.Fatalf("bash results = %d, want %d blocked attempts across three batches", len(results), 2*stormBreakThreshold)
+	}
+	if !strings.Contains(results[len(results)-2], "[loop guard]") {
+		t.Fatalf("first result of the guarded batch should carry the loop guard, got: %q", results[len(results)-2])
+	}
+	if strings.Contains(results[len(results)-1], "[loop guard]") {
+		t.Fatalf("last result of the guarded batch should stay untouched (the pass must not depend on it), got: %q", results[len(results)-1])
+	}
+}
+
 func TestTodoWriteOnlyTurnMayEndWithIncompleteTodos(t *testing.T) {
 	todoWrite, ok := tool.LookupBuiltin("todo_write")
 	if !ok {
