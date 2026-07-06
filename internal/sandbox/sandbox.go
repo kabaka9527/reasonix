@@ -42,8 +42,6 @@ var helperDispatchRegistered atomic.Bool
 // this; on Windows, enforce mode fails closed without it.
 func RegisterHelperDispatch() { helperDispatchRegistered.Store(true) }
 
-func helperDispatchAvailable() bool { return helperDispatchRegistered.Load() }
-
 const windowsSandboxFailureMarkerPrefix = "__reasonix_windows_sandbox_failure__:"
 
 // WindowsSandboxFailureMarker returns the helper-only marker printed when the

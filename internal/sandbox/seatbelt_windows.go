@@ -57,7 +57,7 @@ func windowsSandboxCommand(spec Spec, args []string, writable bool) ([]string, b
 // point must have registered its dispatch route (RegisterHelperDispatch);
 // without it the relaunch would not reach RunWindowsSandboxHelper at all.
 func Available() bool {
-	if !helperDispatchAvailable() {
+	if !helperDispatchRegistered.Load() {
 		return false
 	}
 	exe, err := os.Executable()

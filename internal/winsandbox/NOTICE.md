@@ -9,4 +9,3 @@ Local modifications since vendoring:
 - `lockWindowsRoots`/`acquireNamedMutex` take an optional notice writer and
   wait in slices, emitting a one-line message when a run queues behind another
   sandboxed command's per-root lock instead of blocking silently.
-
