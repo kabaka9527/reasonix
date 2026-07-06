@@ -1513,6 +1513,10 @@ func (a *App) NewSession() error {
 	// telemetry keeps the previous session's totals and the status bar 会话费用
 	// silently turns into an all-sessions running total (#5850).
 	tab.resetTelemetry(ctrl.SessionPath())
+	// Mirror the controller: NewSession cleared the active goal, and the tab's
+	// persisted copy must follow — otherwise the next rebuild/restart would
+	// re-seed the old goal into the fresh session via SetGoal(tab.goal).
+	a.clearTabGoal(tab)
 	a.assignFreshSessionTopic(tab)
 	a.persistTabSessionPath(tab, ctrl.SessionPath())
 	a.invalidatePromptHistoryCache()
@@ -1619,9 +1623,25 @@ func (a *App) ClearSession() error {
 		return userFacingSessionLeaseError("", err)
 	}
 	tab.resetTelemetry(ctrl.SessionPath())
+	// Mirror the controller: ClearSession cleared the active goal.
+	a.clearTabGoal(tab)
 	a.persistTabSessionPath(tab, ctrl.SessionPath())
 	a.invalidatePromptHistoryCache()
 	return nil
+}
+
+// clearTabGoal drops the tab's persisted goal copy so rebuilds and restarts
+// cannot re-seed a goal the controller has already cleared on session rotation.
+func (a *App) clearTabGoal(tab *WorkspaceTab) {
+	if tab == nil {
+		return
+	}
+	a.mu.Lock()
+	tab.goal = ""
+	if current := a.tabs[tab.ID]; current == tab {
+		a.saveTabsLocked()
+	}
+	a.mu.Unlock()
 }
 
 func (a *App) clearActiveSessionRuntime(tab *WorkspaceTab, oldCtrl control.SessionAPI) error {
@@ -1711,7 +1731,9 @@ func (a *App) clearActiveSessionRuntime(tab *WorkspaceTab, oldCtrl control.Sessi
 	newCtrl.EnableInteractiveApproval()
 	applyTabModeToController(newCtrl, snap.mode)
 	applyTabToolApprovalModeToController(newCtrl, snap.toolApprovalMode)
-	newCtrl.SetGoal(snap.goal)
+	// Clearing the session clears the active goal too (same contract as
+	// Controller.ClearSession): the snapshot's goal belongs to the destroyed
+	// conversation and must not seed the replacement.
 	path := agent.NewSessionPath(newCtrl.SessionDir(), newCtrl.Label())
 	if err := tab.ensureSessionLease(path); err != nil {
 		newCtrl.Close()
@@ -1739,6 +1761,7 @@ func (a *App) clearActiveSessionRuntime(tab *WorkspaceTab, oldCtrl control.Sessi
 	tab.Label = newCtrl.Label()
 	tab.Ready = true
 	tab.StartupErr = ""
+	tab.goal = ""
 	// Supersede any in-flight startup build: the session it was resuming
 	// was just destroyed, and finishing later would pass the generation
 	// check and overwrite this controller.

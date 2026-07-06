@@ -2126,6 +2126,12 @@ func (c *Controller) NewSession() error {
 	c.ResetPlannerSession()
 	c.rebindCheckpoints(c.SessionPath())
 	c.snapshotMu.Unlock()
+	// A new session starts with no active goal: without this, a running goal's
+	// text kept injecting into the fresh session's first turns. The old
+	// session's goal-state sidecar was persisted before the rotation and stays
+	// intact, so resuming it restores its goal; the cleared state below lands
+	// on the NEW path (rebindCheckpoints just moved it).
+	c.ClearGoal()
 	c.mu.Lock()
 	c.startedOnce = true // NewSession fires SessionStart itself; don't re-fire on the next turn
 	c.mu.Unlock()
@@ -2187,6 +2193,8 @@ func (c *Controller) ClearSession() error {
 	c.ResetPlannerSession()
 	c.rebindCheckpoints(c.SessionPath())
 	c.snapshotMu.Unlock()
+	// Same contract as NewSession: the fresh session starts with no active goal.
+	c.ClearGoal()
 	c.mu.Lock()
 	c.startedOnce = true
 	c.mu.Unlock()
