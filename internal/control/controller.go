@@ -59,6 +59,14 @@ import (
 // while one is already active in the same Controller.
 var ErrTurnRunning = errors.New("turn already running")
 
+// errTurnRunningRotation and errRotationInProgress are returned by the
+// session-rotation gate (beginRotation) when a rotation cannot proceed: a turn
+// is in flight, or another rotation already holds the gate.
+var (
+	errTurnRunningRotation = errors.New("cannot start a new session while a turn is running")
+	errRotationInProgress  = errors.New("cannot start a new session while another session change is in progress")
+)
+
 // errNoSessionPath is returned by snapshot when a session has content to persist
 // but no resolved session path — a misconfiguration (e.g. an unresolvable data
 // dir in a bot deployment) that previously dropped conversations silently
@@ -165,10 +173,18 @@ type Controller struct {
 
 	// mu guards the run state; every critical section under it is short and
 	// non-blocking.
-	mu          sync.Mutex
-	cancel      context.CancelFunc
-	running     bool
-	canceling   bool
+	mu        sync.Mutex
+	cancel    context.CancelFunc
+	running   bool
+	canceling bool
+	// rotating is set under mu while NewSession/ClearSession swap the executor
+	// session out. Checking running once and then swapping later leaves a
+	// TOCTOU window: a turn can start (running=false at check time) during the
+	// intervening Snapshot() and then have its live session replaced. running
+	// and rotating are mutually exclusive gates — a turn refuses to start while
+	// a rotation is in progress, and a rotation refuses to start while a turn
+	// runs — so the run loop's session reference cannot change under it.
+	rotating    bool
 	autosaveWG  sync.WaitGroup
 	planMode    bool
 	sessionPath string
@@ -558,7 +574,7 @@ func (c *Controller) beginCheckpoint(input string) {
 // turn is already in flight.
 func (c *Controller) runGuarded(body func(ctx context.Context) error) {
 	c.mu.Lock()
-	if c.running {
+	if c.running || c.rotating {
 		c.mu.Unlock()
 		return
 	}
@@ -643,7 +659,7 @@ func (c *Controller) runTurn(ctx context.Context, input string) error {
 func (c *Controller) RunTurn(ctx context.Context, input string) error {
 	ctx, cancel := context.WithCancel(ctx)
 	c.mu.Lock()
-	if c.running {
+	if c.running || c.rotating {
 		c.mu.Unlock()
 		cancel()
 		return ErrTurnRunning
@@ -1388,6 +1404,31 @@ func (c *Controller) Running() bool {
 	return c.running
 }
 
+// beginRotation claims the session-rotation gate. It fails if a turn is running
+// or another rotation is already in progress, so the caller holds exclusive
+// rights to swap the executor session from the check here through endRotation.
+// This closes the TOCTOU window that a bare `if c.running` check left open:
+// between that check and the actual SetSession, a turn could start and then be
+// yanked out from under the run loop.
+func (c *Controller) beginRotation() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.running {
+		return errTurnRunningRotation
+	}
+	if c.rotating {
+		return errRotationInProgress
+	}
+	c.rotating = true
+	return nil
+}
+
+func (c *Controller) endRotation() {
+	c.mu.Lock()
+	c.rotating = false
+	c.mu.Unlock()
+}
+
 // CancelRequested reports whether Cancel has been requested for the active turn.
 func (c *Controller) CancelRequested() bool {
 	c.mu.Lock()
@@ -2049,16 +2090,15 @@ func (c *Controller) NewSession() error {
 	if c.executor == nil {
 		return nil
 	}
-	// Same contract as ClearSession: rotating mid-turn swaps the session out
-	// from under the run loop's direct session reads and races the turn-end
-	// snapshot onto the fresh path. Submit ("/new") and the bot gateway call
-	// this asynchronously, so the guard is load-bearing, not defensive.
-	c.mu.Lock()
-	running := c.running
-	c.mu.Unlock()
-	if running {
-		return fmt.Errorf("cannot start a new session while a turn is running")
+	// Claim the rotation gate for the whole snapshot-then-swap sequence. A bare
+	// `if c.running` check released before Snapshot() left a window where a turn
+	// could start during the snapshot and then have its live session replaced by
+	// the SetSession below. Submit ("/new") and the bot gateway call this
+	// asynchronously, so the gate is load-bearing, not defensive.
+	if err := c.beginRotation(); err != nil {
+		return err
 	}
+	defer c.endRotation()
 	if err := c.Snapshot(); err != nil {
 		return err
 	}
@@ -2094,13 +2134,19 @@ func (c *Controller) ClearSession() error {
 	if c.executor == nil {
 		return nil
 	}
+	// Same rotation gate as NewSession: hold it across the whole
+	// destroy-then-swap so a turn cannot start during the sequence and have its
+	// live session replaced.
+	if err := c.beginRotation(); err != nil {
+		if errors.Is(err, errTurnRunningRotation) {
+			return fmt.Errorf("cannot clear while a turn is running")
+		}
+		return err
+	}
+	defer c.endRotation()
 	c.mu.Lock()
-	running := c.running
 	oldPath := c.sessionPath
 	c.mu.Unlock()
-	if running {
-		return fmt.Errorf("cannot clear while a turn is running")
-	}
 	preMarkedCleanup := c.hasUnfinishedSessionJobs(oldPath)
 	if preMarkedCleanup {
 		if err := agent.MarkCleanupPending(oldPath, "clear"); err != nil {

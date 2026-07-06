@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -1664,6 +1665,86 @@ func TestNewSessionRefusesWhileTurnRunning(t *testing.T) {
 	}
 	if c.SessionPath() == path {
 		t.Fatal("session path did not rotate once the turn stopped")
+	}
+}
+
+// TestNewSessionRefusesTurnStartedDuringSnapshot forces the TOCTOU interleaving
+// the running guard alone missed: a turn starts while NewSession is mid-Snapshot
+// (running was false at the entry check), and must be refused so the executor
+// session is not swapped out from under a live run loop.
+func TestNewSessionRefusesTurnStartedDuringSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+
+	// A diverged on-disk transcript makes Snapshot enter the recovery callback,
+	// where the test parks NewSession mid-rotation.
+	diskSess := agent.NewSession("sys")
+	diskSess.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	diskSess.Add(provider.Message{Role: provider.RoleAssistant, Content: "disk"})
+	if err := diskSess.Save(path); err != nil {
+		t.Fatalf("Save disk: %v", err)
+	}
+	localSess := agent.NewSession("sys")
+	localSess.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	localSess.Add(provider.Message{Role: provider.RoleAssistant, Content: "local"})
+	localExec := agent.New(nil, nil, localSess, agent.Options{}, event.Discard)
+
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	c := New(Options{
+		Executor:     localExec,
+		SystemPrompt: "sys",
+		SessionDir:   dir,
+		SessionPath:  path,
+		Label:        "test",
+		OnSessionRecovered: func(SessionRecoveryInfo) error {
+			entered <- struct{}{}
+			<-release
+			return nil
+		},
+	})
+
+	newSessionDone := make(chan error, 1)
+	go func() { newSessionDone <- c.NewSession() }()
+
+	// NewSession is now parked inside Snapshot, still holding the rotation gate.
+	<-entered
+
+	// A turn tries to start in exactly the window the bare running check left
+	// open. It must be refused rather than flip running=true and read the
+	// session NewSession is about to replace.
+	if err := c.RunTurn(context.Background(), "hello"); !errors.Is(err, ErrTurnRunning) {
+		close(release)
+		<-newSessionDone
+		t.Fatalf("RunTurn during rotation = %v, want ErrTurnRunning", err)
+	}
+	if c.Running() {
+		close(release)
+		<-newSessionDone
+		t.Fatal("RunTurn set running=true during a rotation")
+	}
+	// The live session must be untouched while the refused turn could have read
+	// it: NewSession has not swapped yet (still parked before the swap).
+	if snap := localExec.Session().Snapshot(); len(snap) != 3 {
+		close(release)
+		<-newSessionDone
+		t.Fatalf("session mutated during rotation window: %+v", snap)
+	}
+
+	close(release)
+	if err := <-newSessionDone; err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	// Rotation completed: a fresh session with only the system prompt, on a new
+	// path, and a turn may start again.
+	if c.SessionPath() == path {
+		t.Fatal("session path did not rotate")
+	}
+	if snap := localExec.Session().Snapshot(); len(snap) != 1 || snap[0].Role != provider.RoleSystem {
+		t.Fatalf("post-rotation session = %+v, want only system prompt", snap)
+	}
+	if c.Running() {
+		t.Fatal("rotation gate leaked: controller still marked running")
 	}
 }
 
