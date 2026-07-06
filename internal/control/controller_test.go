@@ -754,6 +754,91 @@ func TestSnapshotConflictRecoveryTransplantsInFlightTurnMarker(t *testing.T) {
 	}
 }
 
+// TestRecoverInterruptedTurnSparesTurnContinuedOnRecoveryBranch covers the
+// legacy leftovers of the marker transplant: runtimes predating it forked a
+// recovery branch mid-turn and left the in-flight marker on the original
+// branch. Opening the original must clear the stale marker without stripping
+// a turn that in fact kept running on the recovery branch.
+func TestRecoverInterruptedTurnSparesTurnContinuedOnRecoveryBranch(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+
+	orig := agent.NewSession("sys")
+	orig.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	orig.Add(provider.Message{Role: provider.RoleAssistant, Content: "partial"})
+	if err := orig.Save(path); err != nil {
+		t.Fatalf("Save original: %v", err)
+	}
+	if err := agent.MarkSessionInFlightTurn(path, 1, true); err != nil {
+		t.Fatalf("MarkSessionInFlightTurn: %v", err)
+	}
+	// A legacy runtime forked the running turn onto a recovery branch and
+	// left the marker behind on the original.
+	forked := agent.NewSession("sys")
+	forked.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	forked.Add(provider.Message{Role: provider.RoleAssistant, Content: "continued elsewhere"})
+	if _, err := forked.SaveRecoveryBranch(agent.RecoveryBranchOptions{OriginalPath: path}); err != nil {
+		t.Fatalf("SaveRecoveryBranch: %v", err)
+	}
+
+	loaded, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	exec := agent.New(nil, nil, loaded, agent.Options{}, event.Discard)
+	c := New(Options{Executor: exec, SessionDir: dir, SessionPath: path, Label: "test"})
+	c.recoverInterruptedTurn(path)
+
+	if got := c.executor.Session().Len(); got != 3 {
+		t.Fatalf("message count after reopening forked-from branch = %d, want 3 (turn stripped despite recovery child)", got)
+	}
+	meta, ok, err := agent.LoadBranchMeta(path)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta ok=%v err=%v", ok, err)
+	}
+	if meta.InFlightTurn != nil {
+		t.Fatal("fork-orphaned in-flight marker not cleared")
+	}
+}
+
+// TestRecoverInterruptedTurnStripsGenuineCrash pins the crash-recovery
+// behavior the recovery-child guard must not swallow: with no recovery branch
+// in sight, an in-flight marker means the runtime died mid-turn and the
+// partial tail is stripped (preserving the user prompt).
+func TestRecoverInterruptedTurnStripsGenuineCrash(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+
+	orig := agent.NewSession("sys")
+	orig.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	orig.Add(provider.Message{Role: provider.RoleAssistant, Content: "partial"})
+	if err := orig.Save(path); err != nil {
+		t.Fatalf("Save original: %v", err)
+	}
+	if err := agent.MarkSessionInFlightTurn(path, 1, true); err != nil {
+		t.Fatalf("MarkSessionInFlightTurn: %v", err)
+	}
+
+	loaded, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	exec := agent.New(nil, nil, loaded, agent.Options{}, event.Discard)
+	c := New(Options{Executor: exec, SessionDir: dir, SessionPath: path, Label: "test"})
+	c.recoverInterruptedTurn(path)
+
+	if got := c.executor.Session().Len(); got != 2 {
+		t.Fatalf("message count after crash recovery = %d, want 2 (sys + preserved user prompt)", got)
+	}
+	meta, ok, err := agent.LoadBranchMeta(path)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta ok=%v err=%v", ok, err)
+	}
+	if meta.InFlightTurn != nil {
+		t.Fatal("in-flight marker not cleared after crash recovery")
+	}
+}
+
 func TestSnapshotRewriteRecoversStaleControllerTranscript(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")
