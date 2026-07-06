@@ -3046,6 +3046,14 @@ func (c *Controller) stripCancelledVisibleTurnMessagesAfter(idx int) {
 }
 
 func (c *Controller) replaceSessionAfterCancel(msgs []provider.Message) {
+	// The whole cleanup is a save/recovery handoff like snapshot's: hold
+	// snapshotMu from the in-memory truncation onward. Truncating outside the
+	// lock would let an in-flight save capture the shortened transcript, read
+	// the longer partial autosave on disk as a stale-prefix conflict, and
+	// adopt it back into the executor — silently undoing the cancel cleanup
+	// before the flush below could persist it.
+	c.snapshotMu.Lock()
+	defer c.snapshotMu.Unlock()
 	c.executor.Session().Replace(append([]provider.Message(nil), msgs...))
 	// Rebuild canonical todo state from the truncated transcript so
 	// Controller.Todos(), goal readiness, and the task panel no longer see
@@ -3056,13 +3064,8 @@ func (c *Controller) replaceSessionAfterCancel(msgs []provider.Message) {
 	// returns to startMessages, so flush the cleaned transcript here. SaveRewrite
 	// still checks that this controller owns the current on-disk baseline before
 	// overwriting it, and also covers the edge case where the strip leaves only a
-	// system message (HasContent() == false).
-	//
-	// This flush is a save/recovery handoff like snapshot's: hold snapshotMu so
-	// it cannot interleave with a concurrent snapshot's recovery, and read the
-	// path under the lock so an in-flight recovery retarget cannot go stale.
-	c.snapshotMu.Lock()
-	defer c.snapshotMu.Unlock()
+	// system message (HasContent() == false). The path is read under the lock so
+	// an in-flight recovery retarget cannot leave it stale.
 	c.mu.Lock()
 	path := c.sessionPath
 	c.mu.Unlock()

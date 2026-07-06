@@ -1037,6 +1037,10 @@ func TestSessionSwapWaitsForRecoveryHandoff(t *testing.T) {
 	cases := []struct {
 		name string
 		run  func(t *testing.T, h *blockedRecoveryHandoff) (done chan struct{}, wantPath string)
+		// during runs while the handoff is still blocked; verify after the
+		// racing operation completed.
+		during func(t *testing.T, h *blockedRecoveryHandoff)
+		verify func(t *testing.T, h *blockedRecoveryHandoff)
 	}{
 		{name: "SetSessionPath", run: func(t *testing.T, h *blockedRecoveryHandoff) (chan struct{}, string) {
 			other := filepath.Join(h.dir, "other.jsonl")
@@ -1055,15 +1059,41 @@ func TestSessionSwapWaitsForRecoveryHandoff(t *testing.T) {
 			go func() { h.c.Resume(sess, other); close(done) }()
 			return done, other
 		}},
-		{name: "CancelFlush", run: func(t *testing.T, h *blockedRecoveryHandoff) (chan struct{}, string) {
-			// Flush the content the session already holds: once the handoff
-			// commits, the flush lands on the recovery branch as an up-to-date
-			// no-op instead of deriving a second recovery.
-			msgs := h.local.Snapshot()
-			done := make(chan struct{})
-			go func() { h.c.replaceSessionAfterCancel(msgs); close(done) }()
-			return done, h.first.recoveryPath
-		}},
+		{
+			name: "CancelFlush",
+			run: func(t *testing.T, h *blockedRecoveryHandoff) (chan struct{}, string) {
+				// Truncate the cancelled turn: drop the assistant reply, the
+				// same shape stripTurnMessagesAfter feeds this helper.
+				truncated := []provider.Message{
+					{Role: provider.RoleSystem, Content: "sys"},
+					{Role: provider.RoleUser, Content: "first"},
+				}
+				done := make(chan struct{})
+				go func() { h.c.replaceSessionAfterCancel(truncated); close(done) }()
+				return done, h.first.recoveryPath
+			},
+			during: func(t *testing.T, h *blockedRecoveryHandoff) {
+				// The in-memory truncation itself must wait for the handoff: an
+				// early Replace would let the blocked save capture the shortened
+				// transcript, read the longer on-disk partial as a stale-prefix
+				// conflict, and adopt it back over the cancel cleanup.
+				if got := len(h.local.Snapshot()); got != 3 {
+					t.Fatalf("session truncated to %d messages while the handoff was still in flight, want 3", got)
+				}
+			},
+			verify: func(t *testing.T, h *blockedRecoveryHandoff) {
+				if got := len(h.local.Snapshot()); got != 2 {
+					t.Fatalf("session = %d messages after cancel flush, want 2", got)
+				}
+				loaded, err := agent.LoadSession(h.first.recoveryPath)
+				if err != nil {
+					t.Fatalf("LoadSession recovery: %v", err)
+				}
+				if got := len(loaded.Messages); got != 2 {
+					t.Fatalf("recovery transcript = %d messages after cancel flush, want 2", got)
+				}
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1073,6 +1103,9 @@ func TestSessionSwapWaitsForRecoveryHandoff(t *testing.T) {
 			case <-done:
 				t.Fatal("session state moved while the recovery handoff was still in flight")
 			case <-time.After(100 * time.Millisecond):
+			}
+			if tc.during != nil {
+				tc.during(t, h)
 			}
 			close(h.release)
 			if err := <-h.firstDone; err != nil {
@@ -1093,6 +1126,9 @@ func TestSessionSwapWaitsForRecoveryHandoff(t *testing.T) {
 			recoveries := recoveryTranscriptPaths(matches)
 			if len(recoveries) != 1 || recoveries[0] != h.first.recoveryPath {
 				t.Fatalf("recovery branches = %v, want only %q", matches, h.first.recoveryPath)
+			}
+			if tc.verify != nil {
+				tc.verify(t, h)
 			}
 		})
 	}
