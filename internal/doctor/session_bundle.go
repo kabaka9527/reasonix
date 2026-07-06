@@ -410,9 +410,8 @@ func addBundleFile(zw *zip.Writer, name, path string, info os.FileInfo) error {
 }
 
 func addBundleBytes(zw *zip.Writer, name string, data []byte, modTime time.Time) error {
-	h := &zip.FileHeader{Name: name, Method: zip.Deflate}
+	h := &zip.FileHeader{Name: name, Method: zip.Deflate, Modified: modTime}
 	h.SetMode(0o644)
-	h.SetModTime(modTime)
 	w, err := zw.CreateHeader(h)
 	if err != nil {
 		return err

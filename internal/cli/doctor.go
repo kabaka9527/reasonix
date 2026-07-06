@@ -42,6 +42,10 @@ func doctorSessionCommand(args []string, version string) int {
 		switch arg {
 		case "-h", "--help":
 			fmt.Fprintln(os.Stdout, "usage: reasonix doctor session <branch-id-or-path> [--zip] [--out PATH]")
+			fmt.Fprintln(os.Stdout, "")
+			fmt.Fprintln(os.Stdout, "Bundles the session transcript, persistence sidecars, conflict diagnostics,")
+			fmt.Fprintln(os.Stdout, "and the recovery parent chain into a zip for support. Unlike `reasonix doctor`,")
+			fmt.Fprintln(os.Stdout, "bundled transcripts are NOT redacted; share only with a trusted support channel.")
 			return 0
 		case "--zip":
 			// The subcommand currently writes a zip by default. Keep --zip as an
@@ -80,5 +84,6 @@ func doctorSessionCommand(args []string, version string) int {
 		return 1
 	}
 	fmt.Println(result.Path)
+	fmt.Fprintln(os.Stderr, "note: the bundle contains full session transcripts without redaction; share it only with a trusted support channel")
 	return 0
 }
