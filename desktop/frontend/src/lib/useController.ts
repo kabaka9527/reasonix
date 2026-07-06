@@ -10,7 +10,7 @@ import { app, onEvent, onReady } from "./bridge";
 import { invalidateCache } from "./composerHistory";
 import { formatGuardianAssessmentNotice } from "./guardianEvents";
 import { createRafBatch } from "./rafBatch";
-import { t } from "./i18n";
+import { t, type DictKey } from "./i18n";
 import { fileDiffFromWire, summarize, summarizeFileDiff, type ToolFileDiff } from "./tools";
 import { modeHasAutoApproveTools, normalizeMode, normalizeToolApprovalMode } from "./types";
 import type {
@@ -394,7 +394,7 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
     }
     if (m.role === "notice") {
       if (m.content.trim() !== "") {
-        items.push({ kind: "notice", id: `${idPrefix}${seq}`, level: m.level === "warn" ? "warn" : "info", text: m.content });
+        items.push({ kind: "notice", id: `${idPrefix}${seq}`, level: m.level === "warn" ? "warn" : "info", text: localizedBackendNoticeText(m.content) });
         seq++;
       }
       continue;
@@ -725,7 +725,7 @@ function applyEvent(s: State, e: WireEvent): State {
       return { ...s, usage, context: { ...s.context, used, sessionTokens }, turnTokens, turnTotalTokens, turnCost, sessionTokens, sessionCost, sessionCurrency };
     }
     case "notice":
-      return { ...s, running: s.turnActive ? s.running : false, seq: s.seq + 1, items: [...s.items, { kind: "notice", id: `n${s.seq}`, level: e.level ?? "info", text: e.text ?? "" }] };
+      return { ...s, running: s.turnActive ? s.running : false, seq: s.seq + 1, items: [...s.items, { kind: "notice", id: `n${s.seq}`, level: e.level ?? "info", text: localizedBackendNoticeText(e.text ?? "") }] };
     case "phase":
       return { ...s, seq: s.seq + 1, items: [...s.items, { kind: "phase", id: `p${s.seq}`, text: e.text ?? "" }] };
     case "compaction_started":
@@ -954,24 +954,115 @@ function errorMessage(err: unknown): string {
 }
 
 export function effortSwitchNoticeText(err: unknown): string {
+  return settingSwitchNoticeText(err, "effort", {
+    busy: "status.effortSwitchBusy",
+    leaseHeld: "status.effortSwitchLeaseHeld",
+    starting: "status.effortSwitchStarting",
+    startupFailed: "status.effortSwitchStartupFailed",
+    retry: "status.effortSwitchRetry",
+    failed: "status.effortSwitchFailed",
+  });
+}
+
+export function modelSwitchNoticeText(err: unknown): string {
+  const msg = errorMessage(err).trim() || "unknown error";
+  const unknownModel = /^unknown model (.+)$/i.exec(msg);
+  if (unknownModel) {
+    return t("status.modelSwitchUnknown", { model: unknownModel[1] });
+  }
+  const unavailable = /^model (.+) is not available because provider (.+) is not added$/i.exec(msg);
+  if (unavailable) {
+    return t("status.modelSwitchProviderUnavailable", { model: unavailable[1], provider: unavailable[2] });
+  }
+  return settingSwitchNoticeText(msg, "model", {
+    busy: "status.modelSwitchBusy",
+    leaseHeld: "status.modelSwitchLeaseHeld",
+    starting: "status.modelSwitchStarting",
+    startupFailed: "status.modelSwitchStartupFailed",
+    retry: "status.modelSwitchRetry",
+    failed: "status.modelSwitchFailed",
+  });
+}
+
+export function tokenModeSwitchNoticeText(err: unknown): string {
+  return settingSwitchNoticeText(err, "token mode", {
+    busy: "status.tokenModeSwitchBusy",
+    leaseHeld: "status.tokenModeSwitchLeaseHeld",
+    starting: "status.tokenModeSwitchStarting",
+    startupFailed: "status.tokenModeSwitchStartupFailed",
+    retry: "status.tokenModeSwitchRetry",
+    failed: "status.tokenModeSwitchFailed",
+  });
+}
+
+export function localizedBackendNoticeText(text: string): string {
+  const msg = text.trim();
+  const autosave = /^Session autosave failed: (.+)$/s.exec(msg);
+  if (autosave) {
+    return t("status.sessionAutosaveFailed", { err: autosave[1] });
+  }
+  const saveBefore = /^Session save failed before (.+?): (.+)$/s.exec(msg);
+  if (saveBefore) {
+    return t("status.sessionSaveFailedBefore", { action: localizedSessionAction(saveBefore[1]), err: saveBefore[2] });
+  }
+  const modelFallback = /^model (.+) is no longer available; switched to (.+)$/s.exec(msg);
+  if (modelFallback) {
+    return t("status.modelFallbackSwitched", { model: modelFallback[1], fallback: modelFallback[2] });
+  }
+  return msg;
+}
+
+function localizedSessionAction(action: string): string {
+  switch (action.trim()) {
+    case "changing model":
+      return t("status.actionChangingModel");
+    case "changing effort":
+      return t("status.actionChangingEffort");
+    case "changing token mode":
+      return t("status.actionChangingTokenMode");
+    case "rebuilding settings":
+      return t("status.actionRebuildingSettings");
+    case "switching sessions":
+      return t("status.actionSwitchingSessions");
+    case "switching tabs":
+      return t("status.actionSwitchingTabs");
+    case "autosave":
+      return t("status.actionAutosave");
+    default:
+      return action.trim() || t("status.actionCurrentSession");
+  }
+}
+
+function settingSwitchNoticeText(
+  err: unknown,
+  setting: "effort" | "model" | "token mode",
+  keys: {
+    busy: DictKey;
+    leaseHeld: DictKey;
+    starting: DictKey;
+    startupFailed: DictKey;
+    retry: DictKey;
+    failed: DictKey;
+  },
+): string {
   const msg = errorMessage(err).trim() || "unknown error";
   const lower = msg.toLowerCase();
-  if (lower.includes("finish or cancel") && lower.includes("before changing effort")) {
-    return t("status.effortSwitchBusy");
+  if (lower.includes("finish or cancel") && lower.includes(`before changing ${setting}`)) {
+    return t(keys.busy);
   }
   if (lower.includes("already open in another reasonix window") || lower.includes("session lease held")) {
-    return t("status.effortSwitchLeaseHeld");
+    return t(keys.leaseHeld);
   }
   if (lower.includes("workspace is still starting")) {
-    return t("status.effortSwitchStarting");
+    return t(keys.starting);
   }
   if (lower.startsWith("workspace failed to start")) {
-    return t("status.effortSwitchStartupFailed", { err: msg });
+    return t(keys.startupFailed, { err: msg });
   }
-  if (lower.includes("changed while switching effort") || (lower.includes("tab ") && lower.includes("not found"))) {
-    return t("status.effortSwitchRetry");
+  if (lower.includes(`changed while switching ${setting}`) || (lower.includes("tab ") && lower.includes("not found"))) {
+    return t(keys.retry);
   }
-  return t("status.effortSwitchFailed", { err: msg });
+  return t(keys.failed, { err: msg });
 }
 
 async function refreshMetaForTab(tabId: string, dispatchTo: (tabId: string, action: Action) => void): Promise<void> {
@@ -1448,7 +1539,7 @@ export function useController() {
   }, [activeTabId]);
 
   const sendToTab = useCallback(async (tabId: string, displayText: string, submitText = displayText, originalText?: string) => {
-    if (!tabId) throw new Error("workspace is still starting");
+    if (!tabId) throw new Error(t("composer.workspaceStarting"));
     const seq = getOrCreateState(statesRef.current, tabId).seq;
     const display = displayText.trim();
     const submit = submitText.trim();
@@ -1474,7 +1565,7 @@ export function useController() {
       return sendToTab(tabId, displayText, submitText);
     }
     return activeTabFromBackend().then((active) => {
-      if (!active?.id) throw new Error("workspace is still starting");
+      if (!active?.id) throw new Error(t("composer.workspaceStarting"));
       setActiveTabId(active.id);
       activeTabIdRef.current = active.id;
       confirmBackendActiveTab(active.id);
@@ -1484,7 +1575,7 @@ export function useController() {
   }, [activeTabFromBackend, activeTabId, confirmBackendActiveTab, dispatchRuntimeStatusForTab, sendToTab]);
 
   const runShell = useCallback(async (command: string) => {
-    if (!activeTabId) throw new Error("workspace is still starting");
+    if (!activeTabId) throw new Error(t("composer.workspaceStarting"));
     dispatchTo(activeTabId, { type: "user", text: `!${command}`, seq: getOrCreateState(statesRef.current, activeTabId).seq });
     try {
       await app.RunShellForTab(activeTabId, command);
@@ -1495,7 +1586,7 @@ export function useController() {
   }, [activeTabId, dispatchTo]);
 
   const steer = useCallback(async (text: string) => {
-    if (!activeTabId) throw new Error("workspace is still starting");
+    if (!activeTabId) throw new Error(t("composer.workspaceStarting"));
     // No optimistic user bubble: rewind/fork map turns by counting user items,
     // and a steer is not a backend turn — the Steer event's ↪ notice is the
     // visible confirmation (#3660).
@@ -1733,7 +1824,7 @@ export function useController() {
     try {
       await app.SetModelForTab(activeTabId, name);
     } catch (err) {
-      dispatchTo(activeTabId, { type: "local_notice", level: "warn", text: t("status.modelSwitchFailed", { err: errorMessage(err) }) });
+      dispatchTo(activeTabId, { type: "local_notice", level: "warn", text: modelSwitchNoticeText(err) });
       return;
     }
     try {
@@ -1763,7 +1854,7 @@ export function useController() {
     try {
       await app.SetTokenModeForTab(activeTabId, mode);
     } catch (err) {
-      dispatchTo(activeTabId, { type: "local_notice", level: "warn", text: t("status.tokenModeSwitchFailed", { err: errorMessage(err) }) });
+      dispatchTo(activeTabId, { type: "local_notice", level: "warn", text: tokenModeSwitchNoticeText(err) });
       return;
     }
     try {

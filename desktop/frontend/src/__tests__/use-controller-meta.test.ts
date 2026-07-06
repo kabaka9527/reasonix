@@ -1,6 +1,6 @@
 // Run: tsx src/__tests__/use-controller-meta.test.ts
 
-import { effortSwitchNoticeText, foregroundRunningFromRuntimeMeta, initialState, metaFromTab, reducer, sameMeta, shouldReconcileStaleTurn } from "../lib/useController";
+import { effortSwitchNoticeText, foregroundRunningFromRuntimeMeta, initialState, localizedBackendNoticeText, metaFromTab, modelSwitchNoticeText, reducer, sameMeta, shouldReconcileStaleTurn, tokenModeSwitchNoticeText } from "../lib/useController";
 import type { Meta, TabMeta, WireUsage } from "../lib/types";
 
 type LooseTabMeta = Omit<TabMeta, "toolApprovalMode"> & { toolApprovalMode?: TabMeta["toolApprovalMode"] | "" };
@@ -84,6 +84,39 @@ console.log("\nuse controller meta");
 
 {
   eq(
+    modelSwitchNoticeText("finish or cancel the current turn, answer pending prompts, and stop background jobs before changing model"),
+    "The model cannot change yet. Stop the current answer, handle pending prompts, or wait for background jobs to finish.",
+    "model busy guard is localized",
+  );
+  eq(
+    modelSwitchNoticeText("this session is already open in another Reasonix window or still running in the background; close the other window or open a copy before changing model"),
+    "This session is open in another Reasonix window or still running in the background. Close that window, stop the background run, or open a copy before changing models.",
+    "model lease conflict explains the safe path",
+  );
+  eq(
+    modelSwitchNoticeText("workspace is still starting"),
+    "This session is still starting. Try changing models again in a moment.",
+    "model startup race asks the user to retry later",
+  );
+  eq(
+    modelSwitchNoticeText('tab "tab-a" changed while switching model; retry'),
+    "The current session changed while switching models. Try once more.",
+    "model tab race asks the user to retry",
+  );
+  eq(
+    modelSwitchNoticeText('unknown model "missing"'),
+    'Unknown model "missing".',
+    "model unknown error is localized",
+  );
+  eq(
+    modelSwitchNoticeText('model "other/other-model" is not available because provider "other" is not added'),
+    'Model "other/other-model" is unavailable because provider "other" is not added.',
+    "model provider access error is localized",
+  );
+}
+
+{
+  eq(
     effortSwitchNoticeText("finish or cancel the current turn, answer pending prompts, and stop background jobs before changing effort"),
     "Reasoning effort cannot change yet. Stop the current answer, handle pending prompts, or wait for background jobs to finish.",
     "effort busy guard is worded as temporary",
@@ -107,6 +140,37 @@ console.log("\nuse controller meta");
     effortSwitchNoticeText("unknown model \"missing\""),
     "Reasoning effort switch failed: unknown model \"missing\"",
     "effort true failure keeps the underlying error",
+  );
+}
+
+{
+  eq(
+    tokenModeSwitchNoticeText("finish or cancel the current turn, answer pending prompts, and stop background jobs before changing token mode"),
+    "Token saver cannot change yet. Stop the current answer, handle pending prompts, or wait for background jobs to finish.",
+    "token mode busy guard is localized",
+  );
+  eq(
+    tokenModeSwitchNoticeText('tab "tab-a" changed while switching token mode; retry'),
+    "The current session changed while switching token saver. Try once more.",
+    "token mode tab race asks the user to retry",
+  );
+}
+
+{
+  eq(
+    localizedBackendNoticeText("Session autosave failed: disk full"),
+    "Session autosave failed: disk full",
+    "backend autosave notice is localized through the active dictionary",
+  );
+  eq(
+    localizedBackendNoticeText("Session save failed before changing model: disk full"),
+    "Session save failed before changing models: disk full",
+    "backend save-before-action notice localizes the action",
+  );
+  eq(
+    localizedBackendNoticeText('model "old/model" is no longer available; switched to new/model'),
+    'Model "old/model" is no longer available; switched to new/model.',
+    "backend model fallback notice is localized",
   );
 }
 
