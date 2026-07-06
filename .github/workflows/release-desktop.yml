@@ -412,6 +412,53 @@ jobs:
             aws s3api head-object --bucket "$R2_BUCKET" --key "$key" --endpoint-url "$ENDPOINT" >/dev/null
           done
 
+      # Best-effort probe of the release gateway — the updater's second
+      # manifest source — over the same public edge and Go client UA end users
+      # hit. A 403 here is the known Cloudflare bot-protection gap (#6005:
+      # datacenter/proxy egress gets blocked before the worker runs) and must
+      # not fail the release until a WAF skip rule for /v1/desktop/releases/*
+      # lands; it is surfaced as a warning so the run shows whether the edge
+      # is open. Anything else unexpected (404, 5xx, wrong version) means the
+      # gateway route or pointer regressed and fails hard.
+      - name: Probe public release gateway
+        if: env.HAS_R2 == 'true'
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          CHANNEL: ${{ steps.ver.outputs.channel }}
+          PRERELEASE: ${{ steps.ver.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          if [ "$PRERELEASE" = "true" ]; then
+            echo "prerelease — no pointer moved; skipping gateway probe"
+            exit 0
+          fi
+          chan="stable"
+          [ "$CHANNEL" = "canary" ] && chan="canary"
+          url="https://crash.reasonix.io/v1/desktop/releases/${chan}/latest.json"
+          # curl already prints 000 for a transport failure; || true keeps -e
+          # from killing the step so the case below can route it.
+          code="$(curl -sS -A "Go-http-client/2.0" -o /tmp/gateway-latest.json -w '%{http_code}' "$url" || true)"
+          case "$code" in
+            200)
+              if jq -e --arg version "$VERSION" '.version == $version' /tmp/gateway-latest.json >/dev/null; then
+                echo "gateway serves $VERSION on $chan"
+              else
+                echo "::error::gateway responded 200 but serves $(jq -r '.version // "<none>"' /tmp/gateway-latest.json), want $VERSION — stale or wrong pointer"
+                exit 1
+              fi
+              ;;
+            403)
+              echo "::warning::gateway returned 403 to CI egress — known bot-protection gap (#6005), not failing the release"
+              ;;
+            000|"")
+              echo "::warning::gateway unreachable from CI (transport error), not failing the release"
+              ;;
+            *)
+              echo "::error::gateway returned $code for $url — route or pointer regression"
+              exit 1
+              ;;
+          esac
+
       - name: Attach desktop manifest to matching CLI release
         if: env.HAS_R2 == 'true' && steps.ver.outputs.channel != 'canary' && steps.ver.outputs.prerelease != 'true'
         env:
