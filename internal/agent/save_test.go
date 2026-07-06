@@ -797,7 +797,7 @@ func TestSaveSnapshotAllowsExactAppendFromStaleRevisionBaseline(t *testing.T) {
 	}
 
 	s.Add(provider.Message{Role: provider.RoleUser, Content: "two"})
-	s.setPersistedBaseline(path, staleBaseline.digest, staleBaseline.version, staleBaseline.revision, true)
+	s.setPersistedBaseline(path, staleBaseline.digest, staleBaseline.version, staleBaseline.revision, true, 0)
 	if err := s.SaveSnapshot(path); err != nil {
 		t.Fatalf("SaveSnapshot exact append from stale revision baseline: %v", err)
 	}
@@ -845,7 +845,7 @@ func TestSaveSnapshotAllowsCompatibleSystemAppendFromStaleRevisionBaseline(t *te
 	msgs[0] = provider.Message{Role: provider.RoleSystem, Content: "sys v2"}
 	msgs = append(msgs, provider.Message{Role: provider.RoleUser, Content: "two"})
 	s.Replace(msgs)
-	s.setPersistedBaseline(path, staleBaseline.digest, staleBaseline.version, staleBaseline.revision, true)
+	s.setPersistedBaseline(path, staleBaseline.digest, staleBaseline.version, staleBaseline.revision, true, 0)
 	if err := s.SaveSnapshot(path); err != nil {
 		t.Fatalf("SaveSnapshot compatible-system append from stale baseline: %v", err)
 	}

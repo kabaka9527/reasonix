@@ -200,7 +200,7 @@ func (s *Session) save(path string, mode sessionSaveMode) error {
 	// snapshot) that captured before locking could land out of order: the
 	// stalest capture written last would then read the newer transcript it
 	// lost the race to as a bogus stale-prefix conflict.
-	msgs, version := s.snapshotWithVersion()
+	msgs, version, rewriteVersion := s.snapshotWithVersion()
 	digest, contentBytes, err := digestAndSizeSessionMessages(msgs)
 	if err != nil {
 		return err
@@ -249,10 +249,10 @@ func (s *Session) save(path string, mode sessionSaveMode) error {
 						slog.Warn("session: keeping save after event index write failure", "path", path, "err", err)
 					}
 				}
-				s.markPersisted(path, digest, version, revision)
+				s.markPersisted(path, digest, version, revision, rewriteVersion)
 				return nil
 			}
-			s.markPersisted(path, digest, version, decision.revision)
+			s.markPersisted(path, digest, version, decision.revision, rewriteVersion)
 			return nil
 		}
 		if decision.appendOnly && probe.native {
@@ -289,7 +289,7 @@ func (s *Session) save(path string, mode sessionSaveMode) error {
 				// as a stale-runtime conflict.
 				slog.Warn("session: keeping save after event index write failure", "path", path, "err", err)
 			}
-			s.markPersisted(path, digest, version, revision)
+			s.markPersisted(path, digest, version, revision, rewriteVersion)
 			return nil
 		}
 		baseRevision = decision.revision
@@ -351,7 +351,7 @@ func (s *Session) save(path string, mode sessionSaveMode) error {
 			slog.Warn("session: keeping save after event index write failure", "path", path, "err", err)
 		}
 	}
-	s.markPersisted(path, digest, version, revision)
+	s.markPersisted(path, digest, version, revision, rewriteVersion)
 	return nil
 }
 
@@ -540,7 +540,7 @@ func (s *Session) SaveRecoveryBranch(opts RecoveryBranchOptions) (RecoveryBranch
 	if originalPath == "" {
 		return RecoveryBranchInfo{}, fmt.Errorf("empty original session path")
 	}
-	msgs, version := s.snapshotWithVersion()
+	msgs, version, rewriteVersion := s.snapshotWithVersion()
 	preview, turns := SessionPreviewFromMessages(msgs)
 	if turns == 0 {
 		return RecoveryBranchInfo{}, ErrSessionRecoveryNotNeeded
@@ -626,7 +626,7 @@ func (s *Session) SaveRecoveryBranch(opts RecoveryBranchOptions) (RecoveryBranch
 			if err != nil {
 				return RecoveryBranchInfo{}, err
 			}
-			s.markPersisted(recoveryPath, digest, version, meta.Revision)
+			s.markPersisted(recoveryPath, digest, version, meta.Revision, rewriteVersion)
 			return RecoveryBranchInfo{Path: recoveryPath, Digest: digestText, Existing: true, Meta: meta, Preview: preview, Turns: turns}, nil
 		}
 	} else if loadErr != nil && !os.IsNotExist(loadErr) {
@@ -663,7 +663,7 @@ func (s *Session) SaveRecoveryBranch(opts RecoveryBranchOptions) (RecoveryBranch
 		slog.Warn("session: keeping recovery branch after event index write failure",
 			"path", recoveryPath, "err", err)
 	}
-	s.markPersisted(recoveryPath, digest, version, meta.Revision)
+	s.markPersisted(recoveryPath, digest, version, meta.Revision, rewriteVersion)
 	return RecoveryBranchInfo{Path: recoveryPath, Digest: digestText, Meta: meta, Preview: preview, Turns: turns}, nil
 }
 
@@ -808,19 +808,19 @@ func (s *Session) persistState(path string) sessionPersistState {
 	return sessionPersistState{}
 }
 
-func (s *Session) markPersisted(path string, digest [sha256.Size]byte, version uint64, revision int64) {
-	s.setPersistedBaseline(path, digest, version, revision, true)
+func (s *Session) markPersisted(path string, digest [sha256.Size]byte, version uint64, revision int64, rewriteVersion int) {
+	s.setPersistedBaseline(path, digest, version, revision, true, rewriteVersion)
 }
 
 // markPersistedRevisionUnknown records a baseline whose ledger revision could
 // not be learned because the meta sidecar was unreadable. The digest and
 // version still anchor ownership checks; revision-based CAS stays disarmed
 // until a successful save records the real revision via markPersisted.
-func (s *Session) markPersistedRevisionUnknown(path string, digest [sha256.Size]byte, version uint64) {
-	s.setPersistedBaseline(path, digest, version, 0, false)
+func (s *Session) markPersistedRevisionUnknown(path string, digest [sha256.Size]byte, version uint64, rewriteVersion int) {
+	s.setPersistedBaseline(path, digest, version, 0, false, rewriteVersion)
 }
 
-func (s *Session) setPersistedBaseline(path string, digest [sha256.Size]byte, version uint64, revision int64, revisionKnown bool) {
+func (s *Session) setPersistedBaseline(path string, digest [sha256.Size]byte, version uint64, revision int64, revisionKnown bool, rewriteVersion int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.persisted = sessionPersistState{
@@ -830,6 +830,12 @@ func (s *Session) setPersistedBaseline(path string, digest [sha256.Size]byte, ve
 		revision:      revision,
 		revisionKnown: revisionKnown,
 		ok:            true,
+	}
+	// rewriteVersion was captured together with the persisted snapshot; only
+	// move forward so a slower save that captured earlier cannot roll the
+	// baseline back below a rewrite a faster save already persisted.
+	if rewriteVersion > s.persistedRewriteVersion {
+		s.persistedRewriteVersion = rewriteVersion
 	}
 }
 
@@ -1119,13 +1125,13 @@ func LoadSession(path string) (*Session, error) {
 			// on-disk revision as another runtime's write and fork a recovery
 			// branch. Anchor the baseline on digest+version only until a
 			// successful save re-learns the revision.
-			s.markPersistedRevisionUnknown(path, digest, s.version)
+			s.markPersistedRevisionUnknown(path, digest, s.version, s.rewriteVersion)
 		} else {
 			revision := int64(0)
 			if ok {
 				revision = meta.Revision
 			}
-			s.markPersisted(path, digest, s.version, revision)
+			s.markPersisted(path, digest, s.version, revision, s.rewriteVersion)
 		}
 	}
 	return s, nil

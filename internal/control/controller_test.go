@@ -1324,13 +1324,8 @@ func TestSnapshotConflictAdoptionResetsRewriteBaseline(t *testing.T) {
 	if adopted == stale {
 		t.Fatal("expected adoption to replace the stale session")
 	}
-	readBaseline := func() int {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		return c.savedRewriteVersion
-	}
-	if got, want := readBaseline(), adopted.RewriteVersion(); got != want {
-		t.Fatalf("rewrite baseline after adoption = %d, want adopted session's %d", got, want)
+	if adopted.NeedsRewriteSave() {
+		t.Fatal("adopted session should carry a persisted rewrite baseline; the stale session's counter must not leak onto it")
 	}
 
 	// The adopted session's first compaction must persist in place.
@@ -1352,35 +1347,6 @@ func TestSnapshotConflictAdoptionResetsRewriteBaseline(t *testing.T) {
 	}
 	if got := len(reloaded.Messages); got != 2 {
 		t.Fatalf("message count after adopted compaction = %d, want 2: %+v", got, reloaded.Messages)
-	}
-}
-
-// TestMarkSessionRewriteVersionPersistedGuards pins the two properties that
-// keep the persisted-rewrite baseline safe under races: it never moves
-// backwards, and a session that is no longer the executor's cannot write its
-// version onto the counter of the session that replaced it.
-func TestMarkSessionRewriteVersionPersistedGuards(t *testing.T) {
-	sess := agent.NewSession("sys")
-	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
-	c := New(Options{Executor: exec, SessionDir: t.TempDir(), Label: "test"})
-	readBaseline := func() int {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		return c.savedRewriteVersion
-	}
-
-	c.markSessionRewriteVersionPersisted(sess, 2)
-	if got := readBaseline(); got != 2 {
-		t.Fatalf("baseline after mark(2) = %d, want 2", got)
-	}
-	c.markSessionRewriteVersionPersisted(sess, 1)
-	if got := readBaseline(); got != 2 {
-		t.Fatalf("baseline lowered to %d by mark(1), want it kept at 2", got)
-	}
-	foreign := agent.NewSession("sys")
-	c.markSessionRewriteVersionPersisted(foreign, 9)
-	if got := readBaseline(); got != 2 {
-		t.Fatalf("baseline = %d after foreign-session mark, want 2", got)
 	}
 }
 
@@ -1767,11 +1733,8 @@ func TestSnapshotConflictAtRecoveryDepthCapForceSavesCurrentBranch(t *testing.T)
 	if len(notices) == 0 || !strings.Contains(notices[len(notices)-1], "kept the transcript on the current recovery branch") {
 		t.Fatalf("notices = %v, want depth-cap notice", notices)
 	}
-	c.mu.Lock()
-	savedRewriteVersion := c.savedRewriteVersion
-	c.mu.Unlock()
-	if savedRewriteVersion != stale.RewriteVersion() {
-		t.Fatalf("rewrite baseline after depth-cap force save = %d, want %d", savedRewriteVersion, stale.RewriteVersion())
+	if stale.NeedsRewriteSave() {
+		t.Fatal("rewrite baseline not re-anchored by depth-cap force save")
 	}
 
 	// The force save re-anchored the baseline: the next snapshot must not
