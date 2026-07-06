@@ -2639,9 +2639,17 @@ func (c *Controller) summarizeAt(ctx context.Context, turn int, from bool) error
 	if c.executor == nil {
 		return c.rewindFail(fmt.Errorf("checkpoints unavailable"))
 	}
-	if c.Running() {
-		return c.rewindFail(fmt.Errorf("cannot summarize while a turn is running"))
+	// Summarize rewrites the live session AFTER a provider round-trip, so the
+	// bare Running() check left a seconds-wide window for a turn to start and
+	// then have the log replaced under it. Hold the rotation gate from the
+	// boundary read through the post-rewrite snapshot.
+	if err := c.beginRotation(); err != nil {
+		if errors.Is(err, errTurnRunningRotation) {
+			return c.rewindFail(fmt.Errorf("cannot summarize while a turn is running"))
+		}
+		return c.rewindFail(err)
 	}
+	defer c.endRotation()
 	boundary, hasBound := c.checkpoints.boundary(turn)
 	if !hasBound {
 		return c.rewindFail(fmt.Errorf("summarize unavailable for turn %d (resumed session)", turn))

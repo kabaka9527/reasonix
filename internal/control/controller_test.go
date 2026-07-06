@@ -1774,20 +1774,26 @@ func TestSessionMutationsRefuseWhileRotating(t *testing.T) {
 	if err := c.ClearSession(); !errors.Is(err, errRotationInProgress) {
 		t.Fatalf("ClearSession while rotating = %v, want errRotationInProgress", err)
 	}
-	if _, err := c.Branch("x"); err == nil {
-		t.Fatal("Branch while rotating = nil, want refusal")
+	if _, err := c.Branch("x"); !errors.Is(err, errRotationInProgress) {
+		t.Fatalf("Branch while rotating = %v, want errRotationInProgress", err)
 	}
-	if _, err := c.ForkNamed(1, "x"); err == nil {
-		t.Fatal("ForkNamed while rotating = nil, want refusal")
+	if _, err := c.ForkNamed(1, "x"); !errors.Is(err, errRotationInProgress) {
+		t.Fatalf("ForkNamed while rotating = %v, want errRotationInProgress", err)
 	}
-	if _, err := c.SwitchBranch("x"); err == nil {
-		t.Fatal("SwitchBranch while rotating = nil, want refusal")
+	if _, err := c.SwitchBranch("x"); !errors.Is(err, errRotationInProgress) {
+		t.Fatalf("SwitchBranch while rotating = %v, want errRotationInProgress", err)
 	}
-	if err := c.Compact(context.Background(), ""); err == nil {
-		t.Fatal("Compact while rotating = nil, want refusal")
+	if err := c.Compact(context.Background(), ""); !errors.Is(err, errRotationInProgress) {
+		t.Fatalf("Compact while rotating = %v, want errRotationInProgress", err)
 	}
-	if err := c.Rewind(0, RewindConversation); err == nil {
-		t.Fatal("Rewind while rotating = nil, want refusal")
+	if err := c.Rewind(0, RewindConversation); !errors.Is(err, errRotationInProgress) {
+		t.Fatalf("Rewind while rotating = %v, want errRotationInProgress", err)
+	}
+	if err := c.SummarizeFrom(context.Background(), 1); !errors.Is(err, errRotationInProgress) {
+		t.Fatalf("SummarizeFrom while rotating = %v, want errRotationInProgress", err)
+	}
+	if err := c.SummarizeUpTo(context.Background(), 1); !errors.Is(err, errRotationInProgress) {
+		t.Fatalf("SummarizeUpTo while rotating = %v, want errRotationInProgress", err)
 	}
 	// A turn must not start while a rotation holds the gate.
 	if err := c.RunTurn(context.Background(), "hello"); !errors.Is(err, ErrTurnRunning) {
@@ -1813,6 +1819,9 @@ func TestSessionMutationsRefuseWhileRotating(t *testing.T) {
 	}
 	if err := c.Rewind(0, RewindConversation); err == nil || !strings.Contains(err.Error(), "cannot rewind while a turn is running") {
 		t.Fatalf("Rewind while running = %v, want 'cannot rewind' message", err)
+	}
+	if err := c.SummarizeFrom(context.Background(), 1); err == nil || !strings.Contains(err.Error(), "cannot summarize while a turn is running") {
+		t.Fatalf("SummarizeFrom while running = %v, want 'cannot summarize' message", err)
 	}
 }
 
