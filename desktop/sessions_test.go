@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -967,6 +968,59 @@ func TestCopyFallbackTreatsMissingSourceAsAlreadyMoved(t *testing.T) {
 	}
 	if _, err := os.Stat(dstDir); !os.IsNotExist(err) {
 		t.Fatalf("copy missing dir should not leave an empty target, stat err = %v", err)
+	}
+}
+
+func TestCopyFallbackRemovesPartialTargetWhenSourceVanishesMidCopy(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.txt")
+	dst := filepath.Join(dir, "dst.txt")
+	if err := os.WriteFile(src, []byte("session transcript"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	restore := copyPathFn
+	copyPathFn = func(copySrc, copyDst string) error {
+		// Simulate the source vanishing mid-copy: a truncated destination has
+		// already been written when the copy fails.
+		if err := os.WriteFile(copyDst, []byte("session tra"), 0o644); err != nil {
+			t.Fatalf("write partial destination: %v", err)
+		}
+		if err := os.Remove(copySrc); err != nil {
+			t.Fatalf("remove source: %v", err)
+		}
+		return errors.New("simulated read failure")
+	}
+	t.Cleanup(func() { copyPathFn = restore })
+
+	if err := copyAndRemove(src, dst); err != nil {
+		t.Fatalf("copyAndRemove should treat vanished source as already moved: %v", err)
+	}
+	if _, err := os.Stat(dst); !os.IsNotExist(err) {
+		t.Fatalf("partial destination should be removed, stat err = %v", err)
+	}
+}
+
+func TestCopyFallbackKeepsErrorWhenSourceStillExists(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.txt")
+	dst := filepath.Join(dir, "dst.txt")
+	if err := os.WriteFile(src, []byte("session transcript"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	restore := copyPathFn
+	simulated := errors.New("simulated copy failure")
+	copyPathFn = func(copySrc, copyDst string) error {
+		return simulated
+	}
+	t.Cleanup(func() { copyPathFn = restore })
+
+	if err := copyAndRemove(src, dst); !errors.Is(err, simulated) {
+		t.Fatalf("copyAndRemove error = %v, want simulated copy failure", err)
+	}
+	if _, err := os.Stat(src); err != nil {
+		t.Fatalf("source should be untouched on real copy failure: %v", err)
 	}
 }
 

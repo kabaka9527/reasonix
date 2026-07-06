@@ -650,11 +650,18 @@ func sourcePathMissing(src string) bool {
 	return os.IsNotExist(err)
 }
 
+// copyPathFn is a seam for tests to simulate a source vanishing mid-copy.
+var copyPathFn = copyPath
+
 // copyAndRemove recursively copies src to dst, then removes src. Used as a
 // fallback when os.Rename fails (cross-device or Windows file-lock races).
 func copyAndRemove(src, dst string) error {
-	if err := copyPath(src, dst); err != nil {
+	if err := copyPathFn(src, dst); err != nil {
 		if sourcePathMissing(src) {
+			// The source vanished mid-copy; drop the partial destination so
+			// the trash never keeps a truncated artifact that a later restore
+			// would resurrect as a corrupted transcript.
+			_ = os.RemoveAll(dst)
 			return nil
 		}
 		return err
