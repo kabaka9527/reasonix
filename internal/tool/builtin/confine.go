@@ -13,13 +13,15 @@ import (
 
 // ConfineBash returns the bash built-in bound to an OS-sandbox spec, overriding
 // the unconfined instance registered at init. When the spec enforces, bash runs
-// each command through the sandbox (see package sandbox).
-func ConfineBash(spec sandbox.Spec, timeout ...time.Duration) tool.Tool {
+// each command through the sandbox (see package sandbox). guard appends a
+// warning to command output when the command references Reasonix's own session
+// stores (see SessionDataGuard).
+func ConfineBash(spec sandbox.Spec, guard SessionDataGuard, timeout ...time.Duration) tool.Tool {
 	shell := spec.Shell
 	if shell.Path == "" {
 		shell = sandbox.ResolveShell("", "", nil)
 	}
-	b := bash{sb: spec, shell: shell}
+	b := bash{sb: spec, shell: shell, guard: guard}
 	if len(timeout) > 0 {
 		b.timeout = timeout[0]
 	}
@@ -38,16 +40,18 @@ func ConfineWebFetch(proxySpec netclient.ProxySpec) tool.Tool {
 // the unconfined instances registered at init time, so writes stay inside the
 // workspace by default. roots may be relative; they are resolved to absolute,
 // symlink-free paths once here. An empty roots slice yields unconfined writers.
-func ConfineWriters(roots []string) []tool.Tool {
+// guard additionally rejects writes into Reasonix's own session stores even
+// when the roots would allow them (see SessionDataGuard).
+func ConfineWriters(roots []string, guard SessionDataGuard) []tool.Tool {
 	rs := realRoots(roots)
 	return []tool.Tool{
-		writeFile{roots: rs},
-		editFile{roots: rs},
-		multiEdit{roots: rs},
-		moveFile{roots: rs},
-		notebookEdit{roots: rs},
-		deleteRange{roots: rs},
-		deleteSymbol{roots: rs},
+		writeFile{roots: rs, guard: guard},
+		editFile{roots: rs, guard: guard},
+		multiEdit{roots: rs, guard: guard},
+		moveFile{roots: rs, guard: guard},
+		notebookEdit{roots: rs, guard: guard},
+		deleteRange{roots: rs, guard: guard},
+		deleteSymbol{roots: rs, guard: guard},
 	}
 }
 
@@ -119,6 +123,17 @@ func confine(roots []string, target string) error {
 	return fmt.Errorf("path %q is outside the writable roots (writes are confined to %s); "+
 		"write inside the workspace or a configured allow_write root, or widen [sandbox] workspace_root / allow_write in reasonix.toml",
 		target, strings.Join(roots, ", "))
+}
+
+// confineWrite is the write-tool boundary check: workspace confinement first,
+// then the session-data guard, so a write can be inside the roots (e.g. a
+// home-directory workspace covering the state root) and still be refused when
+// it targets Reasonix's own session stores.
+func confineWrite(roots []string, guard SessionDataGuard, target string) error {
+	if err := confine(roots, target); err != nil {
+		return err
+	}
+	return guard.Check(target)
 }
 
 // realPath resolves path to an absolute, symlink-free form. Because a write

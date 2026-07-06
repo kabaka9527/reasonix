@@ -3042,7 +3042,7 @@ func (c *Controller) recoverSnapshotConflict(path string, saveErr error, forceRe
 			appendSnapshotConflictDiagnostic(path, mode, "recovery_depth_cap_force_saved", saveErr, path, false)
 			slog.Warn("controller: snapshot conflict; recovery depth cap reached, force-saved onto current branch", logAttrs...)
 			c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
-				Text: "session conflicts kept recurring; kept the transcript on the current recovery branch"})
+				Text: "repeated save conflicts were detected; saved the current conflict copy in place"})
 			return path, conflictForceSavedBranch, nil
 		}
 		if errors.Is(err, agent.ErrSessionRecoveryNotNeeded) {
@@ -3085,7 +3085,7 @@ func (c *Controller) recoverSnapshotConflict(path string, saveErr error, forceRe
 	slog.Warn("controller: snapshot conflict; forked recovery branch",
 		append(logAttrs, "recovery", info.Path, "existing", info.Existing)...)
 	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
-		Text: fmt.Sprintf("session changed on disk; unsaved local transcript was saved as recovery branch %s", agent.BranchID(info.Path))})
+		Text: "session changed on disk; unsaved local transcript was saved as a conflict copy"})
 	return info.Path, conflictForkedBranch, nil
 }
 

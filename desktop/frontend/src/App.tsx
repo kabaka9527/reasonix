@@ -2884,13 +2884,6 @@ export default function App() {
     : [topicbarWorkspacePath || topicbarWorkspaceLabel, topicbarImSourceLabel].filter(Boolean).join(" · ");
   const topicbarCanRename = !sidebarImDetailConnection && Boolean(activeTab?.topicId);
   const topicbarTitleEditSize = Math.min(56, Math.max(4, topicTitleDraft.length || topicbarTitle.length || 1));
-  const recoveryBannerTitle = activeTab?.recovered
-    ? [
-        activeTab.recoveryReason ? t("recovery.reason", { reason: activeTab.recoveryReason }) : "",
-        activeTab.recoveryDigest ? t("recovery.digest", { digest: activeTab.recoveryDigest.slice(0, 12) }) : "",
-        activeTab.recoveryParentId ? t("recovery.parent", { parent: activeTab.recoveryParentId }) : "",
-      ].filter(Boolean).join(" · ")
-    : "";
   const sidebarWorkbench = desktopLayoutStyle === "workbench";
   const windowsFramelessChrome = desktopPlatform === "windows";
   const handleWindowsTitlebarDoubleClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
@@ -3443,7 +3436,7 @@ export default function App() {
           )}
 
           {activeTab?.recovered && !sidebarImDetailConnection && (
-            <div className="banner banner--recovery" title={recoveryBannerTitle || undefined}>
+            <div className="banner banner--recovery">
               <span className="banner__badge">{t("recovery.branch")}</span>
               <span>{t("recovery.banner")}</span>
             </div>

@@ -1009,6 +1009,24 @@ export function localizedBackendNoticeText(text: string): string {
   if (modelFallback) {
     return t("status.modelFallbackSwitched", { model: modelFallback[1], fallback: modelFallback[2] });
   }
+  if (
+    /^session changed on disk; unsaved local transcript was saved as a conflict copy$/i.test(msg) ||
+    /^session changed on disk; unsaved local transcript was saved as recovery branch\b/i.test(msg)
+  ) {
+    return t("recovery.noticeSavedCopy");
+  }
+  if (
+    /^repeated save conflicts were detected; saved the current conflict copy in place$/i.test(msg) ||
+    /^session conflicts kept recurring; kept the transcript on the current recovery branch$/i.test(msg)
+  ) {
+    return t("recovery.noticeKeptCurrent");
+  }
+  if (/^session changed on disk; adopted the newer transcript \(local changes already covered\)$/i.test(msg)) {
+    return t("recovery.noticeAdoptedCovered");
+  }
+  if (/^session changed on disk; adopted the newer transcript$/i.test(msg)) {
+    return t("recovery.noticeAdopted");
+  }
   return msg;
 }
 
@@ -1482,11 +1500,9 @@ export function useController() {
         addBreadcrumb("tab.hydrate", `ready ignored ${readyTabId}`);
         return;
       }
-      if (activeId) {
-        void loadSessionDataForTab(activeId, false, "startup", { preserveCachedHistory: true });
-        return;
-      }
-      void syncActiveTabFromBackend(false, true);
+      // A ready event can race the initial hydrate. Refresh the tab metadata
+      // first so a stale ready=false snapshot does not keep the composer locked.
+      void syncActiveTabFromBackend(false, true, { preserveCachedHistory: true });
     });
 
     void syncActiveTabFromBackend(false, true);

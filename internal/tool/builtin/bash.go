@@ -80,10 +80,12 @@ func cachedBashShellPATH(ctx context.Context) string {
 // workDir, when non-empty, is the directory the command runs in (cmd.Dir);
 // empty uses the process cwd. timeout optionally caps foreground commands;
 // zero or negative means no tool-local cap, while parent context cancellation
-// still kills the process tree.
+// still kills the process tree. guard appends a warning to the output of
+// commands that reference Reasonix's own session stores (see SessionDataGuard).
 type bash struct {
 	sb      sandbox.Spec
 	shell   sandbox.Shell
+	guard   SessionDataGuard
 	workDir string
 	timeout time.Duration
 }
@@ -211,7 +213,8 @@ func (b bash) Execute(ctx context.Context, args json.RawMessage) (string, error)
 			}
 			return "", normalizeBashRunError(jobCtx, runErr, p.PreserveBackgroundProcesses)
 		})
-		return fmt.Sprintf("Started background job %q. It keeps running across turns; read new output with bash_output(job_id=%q), wait for it with wait, or stop it with kill_shell(job_id=%q).", job.ID, job.ID, job.ID), nil
+		msg := fmt.Sprintf("Started background job %q. It keeps running across turns; read new output with bash_output(job_id=%q), wait for it with wait, or stop it with kill_shell(job_id=%q).", job.ID, job.ID, job.ID)
+		return appendSessionDataHint(msg, b.guard.CommandHint(p.Command)), nil
 	}
 
 	out, err := b.runForeground(ctx, p, sh, argv, wrapped, cmdEnv)
@@ -226,9 +229,21 @@ func (b bash) Execute(ctx context.Context, args json.RawMessage) (string, error)
 			}
 			return out, err
 		}
-		return b.runForeground(ctx, p, sh, unconfinedShellArgv(sh, p.Command), false, cmdEnv)
+		out, err = b.runForeground(ctx, p, sh, unconfinedShellArgv(sh, p.Command), false, cmdEnv)
 	}
-	return out, err
+	return appendSessionDataHint(out, b.guard.CommandHint(p.Command)), err
+}
+
+// appendSessionDataHint appends the session-data guard warning to command
+// output; with no output the hint stands alone. An empty hint is a no-op.
+func appendSessionDataHint(out, hint string) string {
+	if hint == "" {
+		return out
+	}
+	if strings.TrimSpace(out) == "" {
+		return hint
+	}
+	return out + "\n\n" + hint
 }
 
 func unconfinedShellArgv(sh sandbox.Shell, command string) []string {

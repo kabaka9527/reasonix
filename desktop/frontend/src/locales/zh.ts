@@ -794,9 +794,10 @@ export const zh: Record<DictKey, string> = {
   "recovery.failedLease": "冲突副本被另一个运行时占用，未切换过去。",
   "recovery.failedUnavailable": "无法打开冲突副本，当前标签仍停留在原会话。",
   "recovery.banner": "当前会话是保存冲突副本。继续前建议与原会话对比。",
-  "recovery.reason": "原因：{reason}",
-  "recovery.digest": "摘要：{digest}",
-  "recovery.parent": "父会话：{parent}",
+  "recovery.noticeSavedCopy": "检测到会话在磁盘上发生变化，未保存的本地记录已保留为冲突副本。",
+  "recovery.noticeKeptCurrent": "检测到重复保存冲突，当前冲突副本已继续保存。",
+  "recovery.noticeAdopted": "检测到会话在磁盘上发生变化，已采用较新的记录。",
+  "recovery.noticeAdoptedCovered": "检测到会话在磁盘上发生变化，已采用较新的记录；本地改动已包含其中。",
 
   // 项目树
   "projectTree.workspaceTitle": "项目",

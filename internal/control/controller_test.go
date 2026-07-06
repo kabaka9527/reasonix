@@ -966,7 +966,8 @@ func TestRecoveryBranchPersistsLaterOwnedCompactionRewrite(t *testing.T) {
 	localSess.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
 	localSess.Add(provider.Message{Role: provider.RoleAssistant, Content: "local"})
 	localExec := agent.New(nil, nil, localSess, agent.Options{}, event.Discard)
-	c := New(Options{Executor: localExec, SessionDir: dir, SessionPath: path, Label: "test"})
+	sink := &noticeSink{}
+	c := New(Options{Executor: localExec, SessionDir: dir, SessionPath: path, Label: "test", Sink: sink})
 
 	if err := c.Snapshot(); err != nil {
 		t.Fatalf("Snapshot initial recovery: %v", err)
@@ -974,6 +975,13 @@ func TestRecoveryBranchPersistsLaterOwnedCompactionRewrite(t *testing.T) {
 	recoveryPath := c.SessionPath()
 	if recoveryPath == "" || recoveryPath == path {
 		t.Fatalf("recovery path = %q, want distinct path", recoveryPath)
+	}
+	notices := sink.notices()
+	if len(notices) == 0 {
+		t.Fatal("initial recovery emitted no user notice")
+	}
+	if got := notices[len(notices)-1]; strings.Contains(got, agent.BranchID(recoveryPath)) || strings.Contains(got, "recovery branch") {
+		t.Fatalf("initial recovery notice exposed internal branch detail: %q", got)
 	}
 
 	localSess.Add(provider.Message{Role: provider.RoleUser, Content: "continue"})
@@ -1730,7 +1738,7 @@ func TestSnapshotConflictAtRecoveryDepthCapForceSavesCurrentBranch(t *testing.T)
 		t.Fatalf("disk tail = %q, want force-saved local transcript", got)
 	}
 	notices := sink.notices()
-	if len(notices) == 0 || !strings.Contains(notices[len(notices)-1], "kept the transcript on the current recovery branch") {
+	if len(notices) == 0 || !strings.Contains(notices[len(notices)-1], "saved the current conflict copy in place") {
 		t.Fatalf("notices = %v, want depth-cap notice", notices)
 	}
 	if stale.NeedsRewriteSave() {
