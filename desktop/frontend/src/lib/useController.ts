@@ -379,7 +379,7 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
   const positionalResults = positionalToolResults(messages);
   const consumedPositionalToolIndexes = new Set(Array.from(positionalResults.values(), (result) => result.index));
 
-  const items: Item[] = [];
+  let items: Item[] = [];
   let seq = startSeq;
   const consumedToolIDs = new Set<string>();
   for (let messageIndex = 0; messageIndex < messages.length; messageIndex += 1) {
@@ -394,8 +394,9 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
     }
     if (m.role === "notice") {
       if (m.content.trim() !== "") {
-        items.push({ kind: "notice", id: `${idPrefix}${seq}`, level: m.level === "warn" ? "warn" : "info", text: localizedBackendNoticeText(m.content) });
-        seq++;
+        const next = appendNoticeItem(items, seq, `${idPrefix}${seq}`, m.level === "warn" ? "warn" : "info", m.content);
+        items = next.items;
+        seq = next.seq;
       }
       continue;
     }
@@ -725,7 +726,7 @@ function applyEvent(s: State, e: WireEvent): State {
       return { ...s, usage, context: { ...s.context, used, sessionTokens }, turnTokens, turnTotalTokens, turnCost, sessionTokens, sessionCost, sessionCurrency };
     }
     case "notice":
-      return { ...s, running: s.turnActive ? s.running : false, seq: s.seq + 1, items: [...s.items, { kind: "notice", id: `n${s.seq}`, level: e.level ?? "info", text: localizedBackendNoticeText(e.text ?? "") }] };
+      return appendNoticeToState(s, e.level ?? "info", e.text ?? "");
     case "phase":
       return { ...s, seq: s.seq + 1, items: [...s.items, { kind: "phase", id: `p${s.seq}`, text: e.text ?? "" }] };
     case "compaction_started":
@@ -1028,6 +1029,51 @@ export function localizedBackendNoticeText(text: string): string {
     return t("recovery.noticeAdopted");
   }
   return msg;
+}
+
+function recoveryNoticeDedupeKey(text: string): string {
+  const msg = text.trim();
+  if (
+    /^session changed on disk; unsaved local transcript was saved as a conflict copy$/i.test(msg) ||
+    /^session changed on disk; unsaved local transcript was saved as recovery branch\b/i.test(msg) ||
+    msg === t("recovery.noticeSavedCopy")
+  ) {
+    return "recovery:saved-copy";
+  }
+  if (
+    /^repeated save conflicts were detected; saved the current conflict copy in place$/i.test(msg) ||
+    /^session conflicts kept recurring; kept the transcript on the current recovery branch$/i.test(msg) ||
+    msg === t("recovery.noticeKeptCurrent")
+  ) {
+    return "recovery:kept-current";
+  }
+  if (
+    /^session changed on disk; adopted the newer transcript \(local changes already covered\)$/i.test(msg) ||
+    msg === t("recovery.noticeAdoptedCovered")
+  ) {
+    return "recovery:adopted-covered";
+  }
+  if (
+    /^session changed on disk; adopted the newer transcript$/i.test(msg) ||
+    msg === t("recovery.noticeAdopted")
+  ) {
+    return "recovery:adopted";
+  }
+  return "";
+}
+
+function appendNoticeItem(items: Item[], seq: number, id: string, level: "info" | "warn", rawText: string): { items: Item[]; seq: number } {
+  const text = localizedBackendNoticeText(rawText);
+  const key = recoveryNoticeDedupeKey(rawText) || recoveryNoticeDedupeKey(text);
+  if (key && items.some((item) => item.kind === "notice" && recoveryNoticeDedupeKey(item.text) === key)) {
+    return { items, seq };
+  }
+  return { items: [...items, { kind: "notice", id, level, text }], seq: seq + 1 };
+}
+
+function appendNoticeToState(s: State, level: "info" | "warn", text: string): State {
+  const next = appendNoticeItem(s.items, s.seq, `n${s.seq}`, level, text);
+  return { ...s, running: s.turnActive ? s.running : false, seq: next.seq, items: next.items };
 }
 
 function localizedSessionAction(action: string): string {

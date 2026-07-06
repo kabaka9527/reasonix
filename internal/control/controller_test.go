@@ -1745,6 +1745,29 @@ func TestSnapshotConflictAtRecoveryDepthCapForceSavesCurrentBranch(t *testing.T)
 		t.Fatal("rewrite baseline not re-anchored by depth-cap force save")
 	}
 
+	foreign := agent.NewSession("sys")
+	foreign.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	foreign.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	foreign.Add(provider.Message{Role: provider.RoleUser, Content: "foreign second"})
+	if err := foreign.Save(path); err != nil {
+		t.Fatalf("Save foreign: %v", err)
+	}
+	meta, ok, err = agent.LoadBranchMeta(path)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta foreign ok=%v err=%v", ok, err)
+	}
+	meta.Recovered = true
+	meta.RecoveryDepth = agent.SessionRecoveryMaxDepth
+	if err := agent.SaveBranchMeta(path, meta); err != nil {
+		t.Fatalf("SaveBranchMeta foreign: %v", err)
+	}
+	if err := c.Snapshot(); err != nil {
+		t.Fatalf("repeated depth-cap Snapshot: %v", err)
+	}
+	if got := sink.notices(); len(got) != len(notices) {
+		t.Fatalf("repeated depth-cap snapshot emitted duplicate notice: %v", got)
+	}
+
 	// The force save re-anchored the baseline: the next snapshot must not
 	// conflict again.
 	stale.Add(provider.Message{Role: provider.RoleAssistant, Content: "answer"})
