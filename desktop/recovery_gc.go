@@ -13,10 +13,19 @@ import (
 // so a low frequency is plenty and keeps the disk scan off the hot path.
 const recoveryGCInterval = 6 * time.Hour
 
-// startRecoveryGC kicks an immediate sweep, then repeats on an interval until
-// the app context is cancelled.
+// startRecoveryGC waits for tab restore to complete, runs one sweep, then
+// repeats on an interval until the app context is cancelled. The wait is
+// load-bearing: restoreOrBuildTabs populates a.tabs asynchronously, and a
+// sweep against the pre-restore empty tab map would see every saved tab's
+// session as closed — and DeleteSession's tab-list persistence would then
+// overwrite desktop-tabs.json with that empty snapshot.
 func (a *App) startRecoveryGC() {
 	a.goSafe("recoveryGC", func() {
+		select {
+		case <-a.tabsRestoredSignal():
+		case <-a.ctx.Done():
+			return
+		}
 		a.sweepReclaimableRecoveryBranches()
 		ticker := time.NewTicker(recoveryGCInterval)
 		defer ticker.Stop()

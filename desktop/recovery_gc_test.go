@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -88,4 +89,67 @@ func TestRecoveryGCSkipsBranchOpenInTab(t *testing.T) {
 	if _, err := os.Stat(branchPath); err != nil {
 		t.Fatalf("open branch must be untouched: %v", err)
 	}
+}
+
+// TestRecoveryGCFirstSweepWaitsForTabRestore forces the startup race the
+// review caught: a saved recovery tab exists in desktop-tabs.json but a.tabs
+// has not been populated yet. The GC's first sweep must wait for the restore
+// gate — sweeping early would judge the branch "not open in any tab" and
+// DeleteSession would persist the pre-restore (empty) tab list over the
+// user's saved one.
+func TestRecoveryGCFirstSweepWaitsForTabRestore(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	root := globalTabWorkspaceRoot()
+	dir := desktopSessionDir(root)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	_, branchPath := forkCoveredRecoveryBranch(t, dir, "startup")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	app := &App{
+		ctx:          ctx,
+		tabs:         map[string]*WorkspaceTab{},
+		tabsRestored: make(chan struct{}),
+	}
+
+	swept := make(chan int, 1)
+	go func() {
+		select {
+		case <-app.tabsRestoredSignal():
+		case <-ctx.Done():
+			swept <- -1
+			return
+		}
+		swept <- app.reclaimRecoveryBranchesIn([]string{dir}, time.Now().Add(48*time.Hour))
+	}()
+
+	// Gate still closed: the sweep must not have run — the branch is intact.
+	select {
+	case n := <-swept:
+		t.Fatalf("sweep ran before tab restore completed (reclaimed=%d)", n)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if _, err := os.Stat(branchPath); err != nil {
+		t.Fatalf("branch touched before restore completed: %v", err)
+	}
+
+	// Restore lands the saved tab holding the branch, then opens the gate:
+	// the sweep runs and must skip the now-open branch.
+	tab := &WorkspaceTab{ID: "tab", Scope: "global", SessionPath: branchPath, Ready: true}
+	app.mu.Lock()
+	app.tabs["tab"] = tab
+	app.mu.Unlock()
+	app.markTabsRestored()
+
+	if n := <-swept; n != 0 {
+		t.Fatalf("post-restore sweep reclaimed = %d, want 0 (branch is open in a restored tab)", n)
+	}
+	if _, err := os.Stat(branchPath); err != nil {
+		t.Fatalf("restored tab's branch must be untouched: %v", err)
+	}
+
+	// markTabsRestored is idempotent (restore + recover paths may both fire).
+	app.markTabsRestored()
 }

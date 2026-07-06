@@ -111,6 +111,14 @@ type App struct {
 	activeTabID string
 	readyHook   func()
 
+	// tabsRestored is closed when restoreOrBuildTabs has finished populating
+	// a.tabs from desktop-tabs.json (or built the first-launch tab). Startup
+	// work that inspects "which sessions are open" or persists the tab list
+	// (recovery GC's DeleteSession does both) must wait on it: running against
+	// the pre-restore empty tab map would treat every saved tab's session as
+	// closed and could overwrite desktop-tabs.json with an empty snapshot.
+	tabsRestored chan struct{}
+
 	// projectTreeChangedHook is test-only: set once before any concurrency
 	// starts, then read lock-free from emitProjectTreeChanged (whose callers
 	// may or may not hold a.mu, so it cannot re-lock). Never write it after
@@ -397,11 +405,16 @@ func (a *App) startup(ctx context.Context) {
 	a.heartbeat = newHeartbeatEngine(a)
 	a.heartbeat.Start()
 
+	a.mu.Lock()
+	a.tabsRestored = make(chan struct{})
+	a.mu.Unlock()
 	go a.restoreOrBuildTabs()
 	a.goSafe("refreshBotRuntime", a.refreshBotRuntime)
 	a.goSafe("sendStartupPing", a.sendStartupPing)
 	a.goSafe("flushMetrics", a.flushMetrics)
 	a.goSafe("flushPendingCrash", a.flushPendingCrash)
+	// After restoreOrBuildTabs is launched: the GC's first sweep waits on
+	// tabsRestored so it never observes the pre-restore empty tab map.
 	a.startRecoveryGC()
 }
 
@@ -479,6 +492,34 @@ func (a *App) trayReadySignal() <-chan struct{} {
 	return a.tray.ready
 }
 
+// markTabsRestored closes the tabsRestored gate exactly once. Safe when the
+// channel was never created (tests that drive App without startup).
+func (a *App) markTabsRestored() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.tabsRestored == nil {
+		return
+	}
+	select {
+	case <-a.tabsRestored:
+	default:
+		close(a.tabsRestored)
+	}
+}
+
+// tabsRestoredSignal returns a channel closed once tab restore has completed.
+// When startup never armed the gate (tests), it reports already-restored.
+func (a *App) tabsRestoredSignal() <-chan struct{} {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.tabsRestored == nil {
+		closed := make(chan struct{})
+		close(closed)
+		return closed
+	}
+	return a.tabsRestored
+}
+
 func (a *App) showMainWindow() {
 	if a.ctx != nil {
 		showFromBackground(a.ctx, a.backgroundMaximised.Swap(false))
@@ -547,6 +588,9 @@ func backgroundRestoreShouldMaximise(goos string, wasMaximised bool) bool {
 // default Global tab on first launch.
 func (a *App) restoreOrBuildTabs() {
 	defer a.recoverToPending("restoreOrBuildTabs")
+	// Unblock startup work gated on the restore (recovery GC) no matter how
+	// this returns — including the recover path above.
+	defer a.markTabsRestored()
 	// Reap any orphaned codegraph processes from a previous crash or older
 	// version that leaked them, so they don't accumulate across restarts.
 	a.reapOrphanCodeGraph()
