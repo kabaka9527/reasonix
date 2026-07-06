@@ -1,7 +1,7 @@
 // Run: tsx src/__tests__/use-controller-meta.test.ts
 
-import { effortSwitchNoticeText, foregroundRunningFromRuntimeMeta, initialState, localizedBackendNoticeText, metaFromTab, modelSwitchNoticeText, reducer, sameMeta, shouldReconcileStaleTurn, tokenModeSwitchNoticeText } from "../lib/useController";
-import type { Meta, TabMeta, WireUsage } from "../lib/types";
+import { effortSwitchNoticeText, foregroundRunningFromRuntimeMeta, historyMessagesToItems, initialState, localizedBackendNoticeText, metaFromTab, modelSwitchNoticeText, reducer, sameMeta, shouldReconcileStaleTurn, tokenModeSwitchNoticeText } from "../lib/useController";
+import type { HistoryMessage, Meta, TabMeta, WireUsage } from "../lib/types";
 
 type LooseTabMeta = Omit<TabMeta, "toolApprovalMode"> & { toolApprovalMode?: TabMeta["toolApprovalMode"] | "" };
 
@@ -172,6 +172,69 @@ console.log("\nuse controller meta");
     'Model "old/model" is no longer available; switched to new/model.',
     "backend model fallback notice is localized",
   );
+  eq(
+    localizedBackendNoticeText("session changed on disk; unsaved local transcript was saved as recovery branch 20260706-152144.863947300-longcat-openai-LongCat-2.0-119b7259f151-recovery-693ce51bcbcbaa9"),
+    "The session changed on disk, so the unsaved local transcript was kept as a conflict copy.",
+    "legacy recovery branch notice hides internal branch id",
+  );
+  eq(
+    localizedBackendNoticeText("session changed on disk; unsaved local transcript was saved as a conflict copy"),
+    "The session changed on disk, so the unsaved local transcript was kept as a conflict copy.",
+    "recovery copy notice is user-facing",
+  );
+  eq(
+    localizedBackendNoticeText("session conflicts kept recurring; kept the transcript on the current recovery branch"),
+    "Repeated save conflicts were detected, so the current conflict copy was saved in place.",
+    "legacy repeated recovery conflict notice is user-facing",
+  );
+  eq(
+    localizedBackendNoticeText("repeated save conflicts were detected; saved the current conflict copy in place"),
+    "Repeated save conflicts were detected, so the current conflict copy was saved in place.",
+    "repeated recovery conflict notice is user-facing",
+  );
+  eq(
+    localizedBackendNoticeText("session changed on disk; adopted the newer transcript"),
+    "The session changed on disk, so Reasonix adopted the newer transcript.",
+    "adopted transcript notice is user-facing",
+  );
+  eq(
+    localizedBackendNoticeText("session changed on disk; adopted the newer transcript (local changes already covered)"),
+    "The session changed on disk, so Reasonix adopted the newer transcript; the local changes were already covered.",
+    "covered adopted transcript notice is user-facing",
+  );
+}
+
+{
+  let s = reducer(initialState, {
+    type: "event",
+    e: { kind: "notice", level: "warn", text: "session conflicts kept recurring; kept the transcript on the current recovery branch" },
+  });
+  s = reducer(s, {
+    type: "event",
+    e: { kind: "notice", level: "warn", text: "repeated save conflicts were detected; saved the current conflict copy in place" },
+  });
+  const recoveryNotices = s.items.filter((item) => item.kind === "notice" && item.text.includes("current conflict copy"));
+  eq(recoveryNotices.length, 1, "repeated recovery conflict notices are collapsed in the live transcript");
+  eq(s.seq, 1, "collapsed recovery notice does not consume a sequence id");
+
+  s = reducer(s, { type: "event", e: { kind: "notice", level: "warn", text: "runtime notice" } });
+  s = reducer(s, { type: "event", e: { kind: "notice", level: "warn", text: "runtime notice" } });
+  const ordinaryNotices = s.items.filter((item) => item.kind === "notice" && item.text === "runtime notice");
+  eq(ordinaryNotices.length, 2, "ordinary repeated notices remain visible");
+}
+
+{
+  const history: HistoryMessage[] = [
+    { role: "notice", level: "warn", content: "session conflicts kept recurring; kept the transcript on the current recovery branch" },
+    { role: "notice", level: "warn", content: "repeated save conflicts were detected; saved the current conflict copy in place" },
+    { role: "user", content: "continue" },
+  ];
+  const hydrated = historyMessagesToItems(history, "h");
+  const recoveryNotices = hydrated.items.filter((item) => item.kind === "notice" && item.text.includes("current conflict copy"));
+  const users = hydrated.items.filter((item) => item.kind === "user");
+  eq(recoveryNotices.length, 1, "repeated recovery conflict notices are collapsed when hydrating history");
+  eq(users[0]?.kind === "user" && users[0].id, "h1", "collapsed history notice keeps later item ids compact");
+  eq(hydrated.seq, 2, "collapsed history notice does not inflate the hydrated sequence");
 }
 
 {

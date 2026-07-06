@@ -879,6 +879,20 @@ func (c *Config) WriteRootsForRoot(fallbackRoot string) []string {
 	return roots
 }
 
+// AllowWriteRoots returns only the configured [sandbox] allow_write extras with
+// ${VAR} expanded — the explicit escape-hatch entries, without the workspace
+// root that WriteRoots prepends. The session-data write guard treats these as
+// user-sanctioned raw access.
+func (c *Config) AllowWriteRoots() []string {
+	var roots []string
+	for _, d := range c.Sandbox.AllowWrite {
+		if d = c.expandVars(d); d != "" {
+			roots = append(roots, d)
+		}
+	}
+	return roots
+}
+
 // ForbidReadRoots returns the directories the agent is forbidden from reading
 // or listing, with ${VAR} expanded. Relative roots are resolved against the
 // current working directory; the confiner resolves them to symlink-free paths.

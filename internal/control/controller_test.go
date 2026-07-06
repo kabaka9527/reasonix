@@ -966,7 +966,8 @@ func TestRecoveryBranchPersistsLaterOwnedCompactionRewrite(t *testing.T) {
 	localSess.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
 	localSess.Add(provider.Message{Role: provider.RoleAssistant, Content: "local"})
 	localExec := agent.New(nil, nil, localSess, agent.Options{}, event.Discard)
-	c := New(Options{Executor: localExec, SessionDir: dir, SessionPath: path, Label: "test"})
+	sink := &noticeSink{}
+	c := New(Options{Executor: localExec, SessionDir: dir, SessionPath: path, Label: "test", Sink: sink})
 
 	if err := c.Snapshot(); err != nil {
 		t.Fatalf("Snapshot initial recovery: %v", err)
@@ -974,6 +975,13 @@ func TestRecoveryBranchPersistsLaterOwnedCompactionRewrite(t *testing.T) {
 	recoveryPath := c.SessionPath()
 	if recoveryPath == "" || recoveryPath == path {
 		t.Fatalf("recovery path = %q, want distinct path", recoveryPath)
+	}
+	notices := sink.notices()
+	if len(notices) == 0 {
+		t.Fatal("initial recovery emitted no user notice")
+	}
+	if got := notices[len(notices)-1]; strings.Contains(got, agent.BranchID(recoveryPath)) || strings.Contains(got, "recovery branch") {
+		t.Fatalf("initial recovery notice exposed internal branch detail: %q", got)
 	}
 
 	localSess.Add(provider.Message{Role: provider.RoleUser, Content: "continue"})
@@ -1730,11 +1738,34 @@ func TestSnapshotConflictAtRecoveryDepthCapForceSavesCurrentBranch(t *testing.T)
 		t.Fatalf("disk tail = %q, want force-saved local transcript", got)
 	}
 	notices := sink.notices()
-	if len(notices) == 0 || !strings.Contains(notices[len(notices)-1], "kept the transcript on the current recovery branch") {
+	if len(notices) == 0 || !strings.Contains(notices[len(notices)-1], "saved the current conflict copy in place") {
 		t.Fatalf("notices = %v, want depth-cap notice", notices)
 	}
 	if stale.NeedsRewriteSave() {
 		t.Fatal("rewrite baseline not re-anchored by depth-cap force save")
+	}
+
+	foreign := agent.NewSession("sys")
+	foreign.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	foreign.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	foreign.Add(provider.Message{Role: provider.RoleUser, Content: "foreign second"})
+	if err := foreign.Save(path); err != nil {
+		t.Fatalf("Save foreign: %v", err)
+	}
+	meta, ok, err = agent.LoadBranchMeta(path)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta foreign ok=%v err=%v", ok, err)
+	}
+	meta.Recovered = true
+	meta.RecoveryDepth = agent.SessionRecoveryMaxDepth
+	if err := agent.SaveBranchMeta(path, meta); err != nil {
+		t.Fatalf("SaveBranchMeta foreign: %v", err)
+	}
+	if err := c.Snapshot(); err != nil {
+		t.Fatalf("repeated depth-cap Snapshot: %v", err)
+	}
+	if got := sink.notices(); len(got) != len(notices) {
+		t.Fatalf("repeated depth-cap snapshot emitted duplicate notice: %v", got)
 	}
 
 	// The force save re-anchored the baseline: the next snapshot must not
