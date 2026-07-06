@@ -2874,22 +2874,45 @@ func (c *Controller) snapshot(markActivity, forceRewrite bool) error {
 	return nil
 }
 
+// snapshotConflictLogAttrs flattens a snapshot-conflict error into slog attrs.
+// Field reports of #6069-class "session changed on disk" spam are only
+// diagnosable when the logs say which trigger fired and what the revision
+// ledger looked like, so every recoverSnapshotConflict outcome logs these.
+func snapshotConflictLogAttrs(saveErr error, path, mode string) []any {
+	attrs := []any{"path", path, "mode", mode}
+	var conflict *agent.SessionSnapshotConflictError
+	if errors.As(saveErr, &conflict) && conflict != nil {
+		attrs = append(attrs,
+			"kind", string(conflict.Kind),
+			"disk_messages", conflict.ExistingMessages,
+			"snapshot_messages", conflict.SnapshotMessages,
+			"base_revision", conflict.BaseRevision,
+			"disk_revision", conflict.DiskRevision,
+		)
+	}
+	return attrs
+}
+
 func (c *Controller) recoverSnapshotConflict(path string, saveErr error, forceRewrite bool) (string, bool, error) {
 	if c.executor == nil || strings.TrimSpace(path) == "" {
 		return "", false, saveErr
 	}
+	mode := "snapshot"
+	if forceRewrite {
+		mode = "rewrite"
+	}
+	logAttrs := snapshotConflictLogAttrs(saveErr, path, mode)
 	if kind, ok := agent.SnapshotConflictKind(saveErr); ok && kind == agent.SessionSnapshotConflictStalePrefix {
 		if c.adoptDiskSession(path) {
+			slog.Warn("controller: snapshot conflict; adopted newer disk transcript", logAttrs...)
 			c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
 				Text: "session changed on disk; adopted the newer transcript"})
 			return path, true, nil
 		}
 	}
 	reason := "snapshot conflict"
-	mode := "snapshot"
 	if forceRewrite {
 		reason = "rewrite conflict"
-		mode = "rewrite"
 	}
 	req := SessionRecoveryRequest{OriginalPath: path, Reason: reason, Mode: mode}
 	meta := agent.BranchMeta{}
@@ -2904,10 +2927,15 @@ func (c *Controller) recoverSnapshotConflict(path string, saveErr error, forceRe
 	if err != nil {
 		if errors.Is(err, agent.ErrSessionRecoveryNotNeeded) {
 			if c.adoptDiskSession(path) {
+				slog.Warn("controller: snapshot conflict; recovery not needed, adopted disk transcript", logAttrs...)
 				c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
-					Text: "session changed on disk; adopted the newer transcript"})
+					Text: "session changed on disk; adopted the newer transcript (local changes already covered)"})
 				return path, true, nil
 			}
+			// Nothing was recovered AND the disk transcript could not be
+			// adopted: the snapshot is silently dropped. Leave a trace so
+			// "my last turns vanished" reports can be tied to this path.
+			slog.Warn("controller: snapshot conflict; recovery not needed but disk transcript could not be adopted", logAttrs...)
 			return "", false, nil
 		}
 		return "", false, fmt.Errorf("recover stale session snapshot: %w", err)
@@ -2930,6 +2958,8 @@ func (c *Controller) recoverSnapshotConflict(path string, saveErr error, forceRe
 	c.mu.Unlock()
 	c.setActiveJobSession(info.Path)
 	c.rebindCheckpoints(info.Path)
+	slog.Warn("controller: snapshot conflict; forked recovery branch",
+		append(logAttrs, "recovery", info.Path, "existing", info.Existing)...)
 	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
 		Text: fmt.Sprintf("session changed on disk; unsaved local transcript was saved as recovery branch %s", agent.BranchID(info.Path))})
 	return info.Path, true, nil

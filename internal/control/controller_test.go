@@ -1512,6 +1512,41 @@ func TestNewSessionStartsFreshContextAndSavesTranscript(t *testing.T) {
 	}
 }
 
+func TestSnapshotConflictLogAttrsCarryRevisionLedger(t *testing.T) {
+	conflict := &agent.SessionSnapshotConflictError{
+		Path:             "/tmp/session.jsonl",
+		Kind:             agent.SessionSnapshotConflictDiverged,
+		ExistingMessages: 7,
+		SnapshotMessages: 5,
+		BaseRevision:     3,
+		DiskRevision:     9,
+	}
+	attrs := snapshotConflictLogAttrs(fmt.Errorf("save: %w", conflict), "/tmp/session.jsonl", "rewrite")
+	got := map[string]any{}
+	for i := 0; i+1 < len(attrs); i += 2 {
+		key, ok := attrs[i].(string)
+		if !ok {
+			t.Fatalf("attr key %v is not a string", attrs[i])
+		}
+		got[key] = attrs[i+1]
+	}
+	if got["mode"] != "rewrite" || got["kind"] != "diverged" {
+		t.Fatalf("attrs = %v, want mode=rewrite kind=diverged", got)
+	}
+	if got["base_revision"] != int64(3) || got["disk_revision"] != int64(9) {
+		t.Fatalf("attrs = %v, want base_revision=3 disk_revision=9", got)
+	}
+	if got["disk_messages"] != 7 || got["snapshot_messages"] != 5 {
+		t.Fatalf("attrs = %v, want disk_messages=7 snapshot_messages=5", got)
+	}
+
+	// A conflict error without the typed detail still logs path and mode.
+	plain := snapshotConflictLogAttrs(agent.ErrSessionSnapshotConflict, "/tmp/session.jsonl", "snapshot")
+	if len(plain) != 4 {
+		t.Fatalf("plain attrs = %v, want only path and mode", plain)
+	}
+}
+
 func TestNewSessionQueuesSessionStartHookContext(t *testing.T) {
 	dir := t.TempDir()
 	exec := agent.New(nil, nil, agent.NewSession("sys"), agent.Options{}, event.Discard)
