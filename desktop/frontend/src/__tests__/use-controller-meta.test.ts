@@ -175,32 +175,32 @@ console.log("\nuse controller meta");
   eq(
     localizedBackendNoticeText("session changed on disk; unsaved local transcript was saved as recovery branch 20260706-152144.863947300-longcat-openai-LongCat-2.0-119b7259f151-recovery-693ce51bcbcbaa9"),
     "The session changed on disk, so the unsaved local transcript was kept as a conflict copy.",
-    "legacy recovery branch notice hides internal branch id",
+    "legacy recovery branch notice can be normalized without exposing internal branch id",
   );
   eq(
     localizedBackendNoticeText("session changed on disk; unsaved local transcript was saved as a conflict copy"),
     "The session changed on disk, so the unsaved local transcript was kept as a conflict copy.",
-    "recovery copy notice is user-facing",
+    "recovery copy notice can be normalized",
   );
   eq(
     localizedBackendNoticeText("session conflicts kept recurring; kept the transcript on the current recovery branch"),
     "Repeated save conflicts were detected, so the current conflict copy was saved in place.",
-    "legacy repeated recovery conflict notice is user-facing",
+    "legacy repeated recovery conflict notice can be normalized",
   );
   eq(
     localizedBackendNoticeText("repeated save conflicts were detected; saved the current conflict copy in place"),
     "Repeated save conflicts were detected, so the current conflict copy was saved in place.",
-    "repeated recovery conflict notice is user-facing",
+    "repeated recovery conflict notice can be normalized",
   );
   eq(
     localizedBackendNoticeText("session changed on disk; adopted the newer transcript"),
     "The session changed on disk, so Reasonix adopted the newer transcript.",
-    "adopted transcript notice is user-facing",
+    "adopted transcript notice can be normalized",
   );
   eq(
     localizedBackendNoticeText("session changed on disk; adopted the newer transcript (local changes already covered)"),
     "The session changed on disk, so Reasonix adopted the newer transcript; the local changes were already covered.",
-    "covered adopted transcript notice is user-facing",
+    "covered adopted transcript notice can be normalized",
   );
 }
 
@@ -214,8 +214,8 @@ console.log("\nuse controller meta");
     e: { kind: "notice", level: "warn", text: "repeated save conflicts were detected; saved the current conflict copy in place" },
   });
   const recoveryNotices = s.items.filter((item) => item.kind === "notice" && item.text.includes("current conflict copy"));
-  eq(recoveryNotices.length, 1, "repeated recovery conflict notices are collapsed in the live transcript");
-  eq(s.seq, 1, "collapsed recovery notice does not consume a sequence id");
+  eq(recoveryNotices.length, 0, "recovery conflict notices stay silent in the live transcript");
+  eq(s.seq, 0, "silent recovery notices do not consume sequence ids");
 
   s = reducer(s, { type: "event", e: { kind: "notice", level: "warn", text: "runtime notice" } });
   s = reducer(s, { type: "event", e: { kind: "notice", level: "warn", text: "runtime notice" } });
@@ -232,9 +232,9 @@ console.log("\nuse controller meta");
   const hydrated = historyMessagesToItems(history, "h");
   const recoveryNotices = hydrated.items.filter((item) => item.kind === "notice" && item.text.includes("current conflict copy"));
   const users = hydrated.items.filter((item) => item.kind === "user");
-  eq(recoveryNotices.length, 1, "repeated recovery conflict notices are collapsed when hydrating history");
-  eq(users[0]?.kind === "user" && users[0].id, "h1", "collapsed history notice keeps later item ids compact");
-  eq(hydrated.seq, 2, "collapsed history notice does not inflate the hydrated sequence");
+  eq(recoveryNotices.length, 0, "recovery conflict notices stay silent when hydrating history");
+  eq(users[0]?.kind === "user" && users[0].id, "h0", "silent history notices keep later item ids compact");
+  eq(hydrated.seq, 1, "silent history notices do not inflate the hydrated sequence");
 }
 
 {

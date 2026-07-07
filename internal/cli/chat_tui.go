@@ -401,14 +401,20 @@ func (m chatTUI) runStatusline() tea.Cmd {
 	return func() tea.Msg { return statuslineMsg{out: runStatuslineCmd(cmd, string(payload))} }
 }
 
+const statuslineCommandTimeout = 2 * time.Second
+
 // runStatuslineCmd runs a status-line command with the JSON context on stdin and
 // returns its first stdout line (status lines are a single row). A tight timeout
 // keeps a slow script from stalling the UI; any failure collapses to "".
 func runStatuslineCmd(cmd, stdinPayload string) string {
+	return runStatuslineCmdWithTimeout(cmd, stdinPayload, statuslineCommandTimeout)
+}
+
+func runStatuslineCmdWithTimeout(cmd, stdinPayload string, timeout time.Duration) string {
 	res := hook.DefaultSpawner(context.Background(), hook.SpawnInput{
-		Command: hook.NormalizeCommand(cmd),
+		Command: cmd,
 		Stdin:   stdinPayload + "\n",
-		Timeout: 2 * time.Second,
+		Timeout: timeout,
 	})
 	out := strings.TrimSpace(res.Stdout)
 	if i := strings.IndexByte(out, '\n'); i >= 0 {
