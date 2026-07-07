@@ -348,3 +348,33 @@ func TestStatsLegacyFileWithoutNameAdopted(t *testing.T) {
 		t.Fatalf("legacy adoption = %+v, want name set and 4 samples kept", s)
 	}
 }
+
+// TestStatsPathBoundedForLongNames: the hash suffix added for collision
+// safety must not push a previously-writable long slug past the 255-byte
+// filename component limit (slugs of 236-244 bytes could write
+// "<slug>.stats.json" before, but "<slug>-<hash>.stats.json" would exceed it).
+func TestStatsPathBoundedForLongNames(t *testing.T) {
+	withTempCache(t)
+
+	long := strings.Repeat("a", 240)
+	p := statsPath(long)
+	if p == "" {
+		t.Fatal("statsPath returned empty")
+	}
+	if base := filepath.Base(p); len(base) > 255 {
+		t.Fatalf("component = %d bytes, exceeds 255 limit: %q", len(base), base)
+	}
+	// The bounded path must still be writable and readable end-to-end.
+	if err := RecordStartup(long, 100*time.Millisecond); err != nil {
+		t.Fatalf("RecordStartup long name: %v", err)
+	}
+	s := readStats(t, long)
+	if s.Name != long || len(s.SamplesMs) != 1 {
+		t.Fatalf("long-name stats = %+v, want one owned sample", s)
+	}
+	// Distinct long names sharing the truncated stem must keep distinct files.
+	other := strings.Repeat("a", 240) + "b"
+	if statsPath(other) == p {
+		t.Fatalf("distinct long names collapsed to one stats path: %q", p)
+	}
+}

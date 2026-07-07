@@ -164,8 +164,11 @@ func Recommend(name string, budget time.Duration, demoteAfter int) Recommendatio
 // "foo.bar" and "foo-bar" collapse to one slug — and two colliding servers
 // sharing a file would alternately reset each other's window, so neither
 // could ever accumulate enough consecutive samples to demote. Hashing the raw
-// name into the filename gives every server its own history. Returns "" when
-// no cache dir is resolvable, which all callers treat as "skip telemetry".
+// name into the filename gives every server its own history. The slug portion
+// is bounded so the whole component stays under the 255-byte filesystem limit
+// even for very long server names — the hash carries the uniqueness, so
+// truncating the slug is safe. Returns "" when no cache dir is resolvable,
+// which all callers treat as "skip telemetry".
 func statsPath(name string) string {
 	base := config.CacheDir()
 	if base == "" {
@@ -173,7 +176,12 @@ func statsPath(name string) string {
 	}
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(name))
-	return filepath.Join(base, "mcp", fmt.Sprintf("%s-%08x.stats.json", slug(name), h.Sum32()))
+	// 255-byte component budget: slug + "-" + 8 hex digits + ".stats.json".
+	stem := slug(name)
+	if maxStem := 255 - len("-00000000.stats.json"); len(stem) > maxStem {
+		stem = stem[:maxStem]
+	}
+	return filepath.Join(base, "mcp", fmt.Sprintf("%s-%08x.stats.json", stem, h.Sum32()))
 }
 
 // legacyStatsPath is the pre-hash location, shared by every server whose name
