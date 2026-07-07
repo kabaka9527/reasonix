@@ -220,3 +220,68 @@ func containsAny(s, chars string) bool {
 	}
 	return false
 }
+
+// TestStatsSlugCollisionDoesNotCrossDemote: "foo.bar" and "foo-bar" share one
+// stats file (lossy filename slug). A slow server's samples must not demote
+// the other server sharing the slug.
+func TestStatsSlugCollisionDoesNotCrossDemote(t *testing.T) {
+	withTempCache(t)
+
+	// foo.bar is chronically slow: enough consecutive over-budget samples to
+	// trigger demotion for itself.
+	for i := 0; i < defaultDemoteAfter; i++ {
+		if err := RecordStartup("foo.bar", 5*time.Second); err != nil {
+			t.Fatalf("RecordStartup foo.bar: %v", err)
+		}
+	}
+	if rec := Recommend("foo.bar", time.Second, 0); !rec.Demote {
+		t.Fatalf("foo.bar should demote on its own history: %+v", rec)
+	}
+	// foo-bar shares the slug but is a different server: it must not inherit
+	// foo.bar's slow history.
+	if rec := Recommend("foo-bar", time.Second, 0); rec.Demote {
+		t.Fatalf("foo-bar demoted off foo.bar's samples: %+v", rec)
+	}
+	// And when foo-bar starts recording, it takes over the file fresh instead
+	// of mixing samples.
+	if err := RecordStartup("foo-bar", 10*time.Millisecond); err != nil {
+		t.Fatalf("RecordStartup foo-bar: %v", err)
+	}
+	s := readStats(t, "foo-bar")
+	if s.Name != "foo-bar" || len(s.SamplesMs) != 1 {
+		t.Fatalf("stats after takeover = %+v, want fresh window owned by foo-bar", s)
+	}
+}
+
+// TestStatsLegacyFileWithoutNameAdopted: stats written by older versions have
+// no Name field; the same server keeps its history (adopted on next write)
+// and Recommend still works on it.
+func TestStatsLegacyFileWithoutNameAdopted(t *testing.T) {
+	withTempCache(t)
+
+	for i := 0; i < 3; i++ {
+		if err := RecordStartup("legacy", 100*time.Millisecond); err != nil {
+			t.Fatalf("RecordStartup: %v", err)
+		}
+	}
+	// Simulate a legacy file: strip the Name field.
+	path := statsPath("legacy")
+	s := readStats(t, "legacy")
+	s.Name = ""
+	if err := writeStatsAtomic(path, s); err != nil {
+		t.Fatalf("write legacy stats: %v", err)
+	}
+
+	// Recommend still reads the legacy file (no ownership check possible).
+	if rec := Recommend("legacy", time.Second, 0); rec.P99 == 0 {
+		t.Fatalf("legacy stats not readable: %+v", rec)
+	}
+	// The next write adopts the file without dropping history.
+	if err := RecordStartup("legacy", 100*time.Millisecond); err != nil {
+		t.Fatalf("RecordStartup after legacy: %v", err)
+	}
+	s = readStats(t, "legacy")
+	if s.Name != "legacy" || len(s.SamplesMs) != 4 {
+		t.Fatalf("legacy adoption = %+v, want name set and 4 samples kept", s)
+	}
+}

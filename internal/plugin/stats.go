@@ -44,6 +44,13 @@ type StartupStats struct {
 	Version   int       `json:"version"`
 	SamplesMs []int64   `json:"samples_ms"`
 	LastSeen  time.Time `json:"last_seen"`
+	// Name is the raw (pre-slug) server name that owns these samples. The
+	// filename slug is lossy — "foo.bar" and "foo-bar" share one file — so
+	// readers verify ownership before trusting samples, or a slow server's
+	// history could demote an unrelated healthy one. Empty on files written
+	// by older versions; those are adopted by the first writer (additive
+	// field, no version bump, so downgraded builds still read the file).
+	Name string `json:"name,omitempty"`
 }
 
 // Recommendation is the result of inspecting a plugin's recent startup
@@ -82,6 +89,12 @@ func RecordStartup(name string, dur time.Duration) error {
 		// migration path trivial as the format evolves.
 		stats = StartupStats{Version: statsVersion}
 	}
+	if stats.Name != "" && stats.Name != name {
+		// The slug collided with a different server's file. Do not mix
+		// samples across servers; start this server's window fresh.
+		stats = StartupStats{Version: statsVersion}
+	}
+	stats.Name = name
 
 	ms := dur.Milliseconds()
 	if ms < 0 {
@@ -127,6 +140,11 @@ func Recommend(name string, budget time.Duration, demoteAfter int) Recommendatio
 		// Either no history yet or a format we can't read — give the plugin a
 		// chance. The cost of one slow start is small compared to wrongly
 		// demoting a healthy plugin off stale data.
+		return Recommendation{}
+	}
+	if stats.Name != "" && stats.Name != name {
+		// Slug collision: these samples belong to a different server. Treat
+		// as no history rather than demote off another server's slowness.
 		return Recommendation{}
 	}
 
