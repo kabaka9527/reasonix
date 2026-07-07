@@ -1064,12 +1064,39 @@ function recoveryNoticeDedupeKey(text: string): string {
   return "";
 }
 
+function quietTranscriptNoticeKey(text: string): string {
+  const recovery = recoveryNoticeDedupeKey(text);
+  if (recovery) return recovery;
+
+  const msg = text.trim();
+  if (/^guardian enabled · model=.+$/i.test(msg)) {
+    return "startup:guardian-enabled";
+  }
+  if (/^\d+ MCP server\(s\) failed to start: .+ \u2014 run \/mcp for details$/i.test(msg)) {
+    return "startup:mcp-failures";
+  }
+  const directMCPFailure = /^mcp\s+([A-Za-z0-9._-]+):\s+.+$/i.exec(msg);
+  if (directMCPFailure) {
+    const name = directMCPFailure[1].toLowerCase();
+    if (!["add", "auth", "config", "connect", "import", "mode", "remove"].includes(name)) {
+      return "startup:mcp-failure";
+    }
+  }
+  if (/^plugin ".+" has been slow \d+ startups in a row \(last \d+ms, budget \d+ms\); demoting to background startup this session$/i.test(msg)) {
+    return "startup:plugin-demote";
+  }
+  if (/^.+ applied: session refreshed after the lease was released$/i.test(msg)) {
+    return "settings:deferred-refresh-applied";
+  }
+  return "";
+}
+
 function appendNoticeItem(items: Item[], seq: number, id: string, level: "info" | "warn", rawText: string): { items: Item[]; seq: number } {
-  if (recoveryNoticeDedupeKey(rawText)) {
+  if (quietTranscriptNoticeKey(rawText)) {
     return { items, seq };
   }
   const text = localizedBackendNoticeText(rawText);
-  if (recoveryNoticeDedupeKey(text)) {
+  if (quietTranscriptNoticeKey(text)) {
     return { items, seq };
   }
   return { items: [...items, { kind: "notice", id, level, text }], seq: seq + 1 };

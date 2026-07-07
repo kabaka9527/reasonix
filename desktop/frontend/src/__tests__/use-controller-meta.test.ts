@@ -224,15 +224,41 @@ console.log("\nuse controller meta");
 }
 
 {
+  const quietLifecycleMessages = [
+    { level: "info", text: "guardian enabled · model=guardian-test" },
+    { level: "warn", text: "2 MCP server(s) failed to start: fs, browser — run /mcp for details" },
+    { level: "warn", text: "mcp fs: stdio plugin \"fs\": command \"missing-fs\" not found on PATH" },
+    { level: "info", text: "settings applied: session refreshed after the lease was released" },
+    { level: "info", text: "plugin \"slowserver\" has been slow 3 startups in a row (last 30000ms, budget 1000ms); demoting to background startup this session" },
+  ] as const;
+  let s = initialState;
+  for (const message of quietLifecycleMessages) {
+    s = reducer(s, { type: "event", e: { kind: "notice", level: message.level, text: message.text } });
+  }
+  eq(s.items.filter((item) => item.kind === "notice").length, 0, "background lifecycle notices stay silent in the live transcript");
+  eq(s.seq, 0, "silent lifecycle notices do not consume sequence ids");
+
+  const userActionFailure = reducer(s, { type: "event", e: { kind: "notice", level: "warn", text: "mcp connect: no configured MCP server named \"fs\"" } });
+  const visibleNotices = userActionFailure.items.filter((item) => item.kind === "notice");
+  eq(visibleNotices.length, 1, "user-triggered MCP failures remain visible");
+  eq(visibleNotices[0]?.kind === "notice" && visibleNotices[0].text, "mcp connect: no configured MCP server named \"fs\"", "visible MCP failure keeps its text");
+}
+
+{
   const history: HistoryMessage[] = [
     { role: "notice", level: "warn", content: "session conflicts kept recurring; kept the transcript on the current recovery branch" },
     { role: "notice", level: "warn", content: "repeated save conflicts were detected; saved the current conflict copy in place" },
+    { role: "notice", level: "info", content: "guardian enabled · model=guardian-test" },
+    { role: "notice", level: "warn", content: "1 MCP server(s) failed to start: fs — run /mcp for details" },
+    { role: "notice", level: "info", content: "settings applied: session refreshed after the lease was released" },
     { role: "user", content: "continue" },
   ];
   const hydrated = historyMessagesToItems(history, "h");
   const recoveryNotices = hydrated.items.filter((item) => item.kind === "notice" && item.text.includes("current conflict copy"));
+  const lifecycleNotices = hydrated.items.filter((item) => item.kind === "notice");
   const users = hydrated.items.filter((item) => item.kind === "user");
   eq(recoveryNotices.length, 0, "recovery conflict notices stay silent when hydrating history");
+  eq(lifecycleNotices.length, 0, "background lifecycle notices stay silent when hydrating history");
   eq(users[0]?.kind === "user" && users[0].id, "h0", "silent history notices keep later item ids compact");
   eq(hydrated.seq, 1, "silent history notices do not inflate the hydrated sequence");
 }

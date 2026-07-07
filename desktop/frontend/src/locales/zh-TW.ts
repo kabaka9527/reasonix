@@ -1252,8 +1252,12 @@ export const zhTW: Record<DictKey, string> = {
   // 工具卡片摘要
   "tool.stepOne": "{n} 步",
   "tool.stepOther": "{n} 步",
+  "tool.error": "錯誤",
+  "tool.errorReceiptMismatch": "證據命令沒有匹配的成功執行記錄",
   "tool.truncated": "輸出已截斷",
   "tool.showAllLines": "顯示全部 {n} 行",
+  "tool.showErrorDetails": "顯示錯誤詳情",
+  "tool.hideErrorDetails": "隱藏錯誤詳情",
   "tool.lineOne": "{n} 行",
   "tool.lineOther": "{n} 行",
   "tool.matchOne": "{n} 處匹配",

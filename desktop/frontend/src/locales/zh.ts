@@ -1918,8 +1918,12 @@ export const zh: Record<DictKey, string> = {
   // 工具卡片摘要
   "tool.stepOne": "{n} 步",
   "tool.stepOther": "{n} 步",
+  "tool.error": "错误",
+  "tool.errorReceiptMismatch": "证据命令没有匹配的成功执行记录",
   "tool.truncated": "输出已截断",
   "tool.showAllLines": "显示全部 {n} 行",
+  "tool.showErrorDetails": "显示错误详情",
+  "tool.hideErrorDetails": "隐藏错误详情",
   "tool.readCount": "已读 {n} 个文件",
   "tool.searchCount": "搜索 {n} 个文件",
   "tool.otherReadCount": "{n} 个只读调用",

@@ -1916,8 +1916,12 @@ export const en = {
   // tool card summaries
   "tool.stepOne": "{n} step",
   "tool.stepOther": "{n} steps",
+  "tool.error": "error",
+  "tool.errorReceiptMismatch": "verification command has no matching successful receipt",
   "tool.truncated": "output truncated",
   "tool.showAllLines": "show all {n} lines",
+  "tool.showErrorDetails": "show error details",
+  "tool.hideErrorDetails": "hide error details",
   "tool.readCount": "Read {n} files",
   "tool.searchCount": "Search {n} files",
   "tool.otherReadCount": "{n} read calls",
