@@ -523,6 +523,7 @@ func (a *App) tabsRestoredSignal() <-chan struct{} {
 func (a *App) showMainWindow() {
 	if a.ctx != nil {
 		showFromBackground(a.ctx, a.backgroundMaximised.Swap(false))
+		a.kickDeferredRebuildRetry()
 	}
 }
 
@@ -990,12 +991,23 @@ func (a *App) tabReadOnly(tabID string) bool {
 
 func (a *App) tabAndCtrlByID(tabID string) (*WorkspaceTab, control.SessionAPI) {
 	a.mu.RLock()
-	defer a.mu.RUnlock()
 	tab := a.tabByIDLocked(tabID)
 	if tab == nil {
+		a.mu.RUnlock()
 		return nil, nil
 	}
-	return tab, tab.Ctrl
+	ctrl := tab.Ctrl
+	retryStartup := ctrl == nil && tab.StartupErrLeaseHeld
+	a.mu.RUnlock()
+	if retryStartup && a.tryRecoverStartupLeaseHeldTab(tab) {
+		a.mu.RLock()
+		defer a.mu.RUnlock()
+		if a.tabs[tab.ID] != tab {
+			return nil, nil
+		}
+		return tab, tab.Ctrl
+	}
+	return tab, ctrl
 }
 
 // activeTabAndCtrl snapshots the active tab and its controller in one locked
@@ -1192,7 +1204,7 @@ func (a *App) ensureTabControllerWorkspace(tab *WorkspaceTab) error {
 	if current := a.tabs[tab.ID]; current == tab {
 		tab.Ctrl = nil
 		tab.Ready = false
-		tab.StartupErr = ""
+		clearTabStartupError(tab)
 		tab.ActivityStatus = ""
 		if tab.sink == nil {
 			tab.sink = &tabEventSink{tabID: tab.ID, app: a, ctx: a.ctx}
@@ -1767,7 +1779,7 @@ func (a *App) clearActiveSessionRuntime(tab *WorkspaceTab, oldCtrl control.Sessi
 	tab.SessionPath = path
 	tab.Label = newCtrl.Label()
 	tab.Ready = true
-	tab.StartupErr = ""
+	clearTabStartupError(tab)
 	tab.goal = ""
 	// Supersede any in-flight startup build: the session it was resuming
 	// was just destroyed, and finishing later would pass the generation
@@ -3143,7 +3155,7 @@ func (a *App) rebindTabToLoadedSessionPath(tab *WorkspaceTab, sessionPath string
 		tab.SessionPath = sessionPath
 		applyTabSessionProfile(tab, profile)
 		tab.Ready = false
-		tab.StartupErr = ""
+		clearTabStartupError(tab)
 		tab.ActivityStatus = ""
 		tab.sink = &tabEventSink{tabID: tab.ID, app: a, ctx: a.ctx}
 		a.saveTabsLocked()
@@ -3185,7 +3197,7 @@ func (a *App) rebindTabToLoadedSessionPath(tab *WorkspaceTab, sessionPath string
 	tab.SessionPath = sessionPath
 	applyTabSessionProfile(tab, profile)
 	tab.Ready = false
-	tab.StartupErr = ""
+	clearTabStartupError(tab)
 	tab.ActivityStatus = ""
 	tab.sink = &tabEventSink{tabID: tab.ID, app: a, ctx: a.ctx}
 	a.saveTabsLocked()
@@ -7473,7 +7485,7 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 	tab.model = modelRef
 	tab.effort = &effort
 	tab.Label = newCtrl.Label()
-	tab.StartupErr = ""
+	clearTabStartupError(tab)
 	tab.Ready = true
 	a.supersedeTabBuildLocked(tab)
 	a.saveTabsLocked()
@@ -7600,7 +7612,7 @@ func (a *App) SetTokenModeForTab(tabID, mode string) error {
 	tab.model = modelRef
 	tab.tokenMode = mode
 	tab.Label = newCtrl.Label()
-	tab.StartupErr = ""
+	clearTabStartupError(tab)
 	tab.Ready = true
 	a.supersedeTabBuildLocked(tab)
 	a.saveTabsLocked()
