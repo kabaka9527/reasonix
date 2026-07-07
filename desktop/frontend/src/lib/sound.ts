@@ -156,3 +156,36 @@ export function playAttentionChime(): void {
     void playWav(pref, 0.25, playSynthAttention);
   }
 }
+
+export type AttentionChimeEvent = {
+  kind?: string;
+  tabId?: string;
+  approval?: { id?: string };
+  ask?: { id?: string };
+};
+
+export function attentionChimeEventKey(event: AttentionChimeEvent): string | undefined {
+  if (event.kind === "approval_request" && event.approval?.id) return `approval:${event.tabId ?? ""}:${event.approval.id}`;
+  if (event.kind === "ask_request" && event.ask?.id) return `ask:${event.tabId ?? ""}:${event.ask.id}`;
+  return undefined;
+}
+
+// attentionChimeSeenCap bounds the dedupe set. Prompt ids are unique per
+// prompt, so the set only ever grows; past the cap the oldest half is dropped
+// (insertion order) — replay dedupe only needs to cover recently replayed
+// prompts, not the whole session history.
+const attentionChimeSeenCap = 512;
+
+export function shouldPlayAttentionChimeForEvent(event: AttentionChimeEvent, seen: Set<string>): boolean {
+  const key = attentionChimeEventKey(event);
+  if (!key || seen.has(key)) return false;
+  if (seen.size >= attentionChimeSeenCap) {
+    let drop = seen.size - attentionChimeSeenCap / 2;
+    for (const k of seen) {
+      if (drop-- <= 0) break;
+      seen.delete(k);
+    }
+  }
+  seen.add(key);
+  return true;
+}

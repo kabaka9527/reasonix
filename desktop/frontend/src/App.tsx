@@ -41,7 +41,7 @@ import { clearLegacyLangPref, normalizeLangPref, readLegacyLangPref, useI18n, us
 import { useController, type Item, type LiveStream } from "./lib/useController";
 import { app, onEvent, onProjectTreeChanged, onSessionRecovered, onSessionRecoveryFailed } from "./lib/bridge";
 import { generativeMusic, isGenerativeMusicEnabled } from "./lib/generative-music";
-import { playSuccessChime } from "./lib/sound";
+import { playAttentionChime, playSuccessChime, shouldPlayAttentionChimeForEvent } from "./lib/sound";
 import { Transcript } from "./components/Transcript";
 import { Composer } from "./components/Composer";
 import { TodoPanel } from "./components/TodoPanel";
@@ -1010,12 +1010,16 @@ export default function App() {
   const setRightDockPreviewWidth = useLayoutStore((s) => s.setRightDockPreviewWidth);
   const workspacePreviewActive = useLayoutStore((s) => s.workspacePreviewActive);
   const setWorkspacePreviewActive = useLayoutStore((s) => s.setWorkspacePreviewActive);
+  const attentionChimeEvents = useRef(new Set<string>());
   // Bump dockRefreshKey after each turn so WorkspacePanel/ContextPanel re-fetch
   // workspace changes, git history, and session metadata after AI tool writes.
   useEffect(() => {
     const unsub = onEvent((e) => {
       if (e.kind === "turn_done") {
         setDockRefreshKey((v) => v + 1);
+      }
+      if (shouldPlayAttentionChimeForEvent(e, attentionChimeEvents.current)) {
+        playAttentionChime();
       }
       if (e.kind === "turn_done") {
         if (!e.err) playSuccessChime();
