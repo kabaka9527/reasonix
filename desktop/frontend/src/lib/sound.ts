@@ -156,3 +156,22 @@ export function playAttentionChime(): void {
     void playWav(pref, 0.25, playSynthAttention);
   }
 }
+
+export type AttentionChimeEvent = {
+  kind?: string;
+  approval?: { id?: string };
+  ask?: { id?: string };
+};
+
+export function attentionChimeEventKey(event: AttentionChimeEvent): string | undefined {
+  if (event.kind === "approval_request" && event.approval?.id) return `approval:${event.approval.id}`;
+  if (event.kind === "ask_request" && event.ask?.id) return `ask:${event.ask.id}`;
+  return undefined;
+}
+
+export function shouldPlayAttentionChimeForEvent(event: AttentionChimeEvent, seen: Set<string>): boolean {
+  const key = attentionChimeEventKey(event);
+  if (!key || seen.has(key)) return false;
+  seen.add(key);
+  return true;
+}
