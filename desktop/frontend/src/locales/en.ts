@@ -788,11 +788,6 @@ export const en = {
   // session recovery
   "recovery.branch": "Conflict copy",
   "recovery.badge": "Copy",
-  "recovery.open": "Open conflict copy",
-  "recovery.toast": "A save conflict was detected, so a conflict copy was kept for {title}.",
-  "recovery.failedLease": "The conflict copy is in use by another runtime, so this tab did not switch to it.",
-  "recovery.failedUnavailable": "The conflict copy could not be opened, so this tab stayed on the original session.",
-  "recovery.banner": "This session is a save-conflict copy. Compare it with the original before continuing.",
   "recovery.noticeSavedCopy": "The session changed on disk, so the unsaved local transcript was kept as a conflict copy.",
   "recovery.noticeKeptCurrent": "Repeated save conflicts were detected, so the current conflict copy was saved in place.",
   "recovery.noticeAdopted": "The session changed on disk, so Reasonix adopted the newer transcript.",

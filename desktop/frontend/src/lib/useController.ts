@@ -1065,9 +1065,11 @@ function recoveryNoticeDedupeKey(text: string): string {
 }
 
 function appendNoticeItem(items: Item[], seq: number, id: string, level: "info" | "warn", rawText: string): { items: Item[]; seq: number } {
+  if (recoveryNoticeDedupeKey(rawText)) {
+    return { items, seq };
+  }
   const text = localizedBackendNoticeText(rawText);
-  const key = recoveryNoticeDedupeKey(rawText) || recoveryNoticeDedupeKey(text);
-  if (key && items.some((item) => item.kind === "notice" && recoveryNoticeDedupeKey(item.text) === key)) {
+  if (recoveryNoticeDedupeKey(text)) {
     return { items, seq };
   }
   return { items: [...items, { kind: "notice", id, level, text }], seq: seq + 1 };

@@ -626,11 +626,6 @@ export const zhTW: Record<DictKey, string> = {
   // 會話恢復
   "recovery.branch": "衝突副本",
   "recovery.badge": "副本",
-  "recovery.open": "開啟衝突副本",
-  "recovery.toast": "偵測到儲存衝突，已為 {title} 保留一份衝突副本。",
-  "recovery.failedLease": "衝突副本被另一個執行階段占用，未切換過去。",
-  "recovery.failedUnavailable": "無法開啟衝突副本，目前標籤仍停留在原會話。",
-  "recovery.banner": "目前會話是儲存衝突副本。繼續前建議與原會話對比。",
   "recovery.noticeSavedCopy": "偵測到會話在磁碟上發生變化，未儲存的本機記錄已保留為衝突副本。",
   "recovery.noticeKeptCurrent": "偵測到重複儲存衝突，目前衝突副本已繼續儲存。",
   "recovery.noticeAdopted": "偵測到會話在磁碟上發生變化，已採用較新的記錄。",

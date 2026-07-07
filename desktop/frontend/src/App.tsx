@@ -39,7 +39,7 @@ import { useWailsResizeFix } from "./lib/useWailsResizeFix";
 import { asArray } from "./lib/array";
 import { clearLegacyLangPref, normalizeLangPref, readLegacyLangPref, useI18n, useT, type Translator } from "./lib/i18n";
 import { useController, type Item, type LiveStream } from "./lib/useController";
-import { app, onEvent, onProjectTreeChanged, onReady, onRuntimeRebuilt, onSessionRecovered, onSessionRecoveryFailed } from "./lib/bridge";
+import { app, onEvent, onProjectTreeChanged, onReady, onRuntimeRebuilt, onSessionRecovered } from "./lib/bridge";
 import { generativeMusic, isGenerativeMusicEnabled } from "./lib/generative-music";
 import { clearAttentionChimeKeys, playAttentionChime, playSuccessChime, shouldPlayAttentionChimeForEvent } from "./lib/sound";
 import { Transcript } from "./components/Transcript";
@@ -2614,36 +2614,10 @@ export default function App() {
     enqueueNavigation({ kind: "blank", scope, workspaceRoot: scope === "project" ? workspaceRoot : "" }),
   [enqueueNavigation]);
 
-  useEffect(() => {
-    return onSessionRecovered((event) => {
-      const scope = event.scope === "project" ? "project" : "global";
-      const workspaceRoot = scope === "project" ? event.workspaceRoot || "" : "";
-      setProjectRevision((value) => value + 1);
-      void refreshTabMetas();
-      showToast(t("recovery.toast", { title: event.topicTitle || t("recovery.branch") }), "warn", event.topicId
-        ? {
-            actionLabel: t("recovery.open"),
-            durationMs: 9000,
-            onAction: () => {
-              void enqueueNavigation({
-                kind: "topic",
-                scope,
-                workspaceRoot,
-                topicId: event.topicId || "",
-                sessionPath: event.recoveryPath || "",
-              });
-            },
-          }
-        : { durationMs: 9000 });
-    });
-  }, [enqueueNavigation, refreshTabMetas, showToast, t]);
-
-  useEffect(() => {
-    return onSessionRecoveryFailed((event) => {
-      const key = event.reason === "lease_held" ? "recovery.failedLease" : "recovery.failedUnavailable";
-      showToast(t(key), "error", { durationMs: 9000 });
-    });
-  }, [showToast, t]);
+  useEffect(() => onSessionRecovered(() => {
+    setProjectRevision((value) => value + 1);
+    void refreshTabMetas();
+  }), [refreshTabMetas]);
 
   const handleNewTab = useCallback(async () => {
     closeTransientOverlays();
@@ -3454,13 +3428,6 @@ export default function App() {
 
           {state.meta?.startupErr && (
             <div className="banner banner--error">{t("topbar.startupError", { msg: state.meta.startupErr })}</div>
-          )}
-
-          {activeTab?.recovered && !sidebarImDetailConnection && (
-            <div className="banner banner--recovery">
-              <span className="banner__badge">{t("recovery.branch")}</span>
-              <span>{t("recovery.banner")}</span>
-            </div>
           )}
 
           <UpdateBanner enabled={startupUpdateChecksEnabled === true} />
