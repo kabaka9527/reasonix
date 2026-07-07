@@ -244,6 +244,8 @@ export function sameMeta(a?: Meta, b?: Meta): boolean {
 
 const STALE_TURN_RECONCILE_MS = 30_000;
 const CANCEL_RECONCILE_DELAYS_MS = [0, 100, 300, 1_000] as const;
+const STARTUP_READY_META_RECONCILE_MS = 250;
+const STARTUP_READY_META_RECONCILE_ATTEMPTS = 60;
 
 export function shouldReconcileStaleTurn(
   state: Pick<State, "running" | "turnActive"> | undefined,
@@ -1139,6 +1141,16 @@ async function refreshMetaForTab(tabId: string, dispatchTo: (tabId: string, acti
   }
 }
 
+async function refreshMetaOnlyForTab(tabId: string, dispatchTo: (tabId: string, action: Action) => void): Promise<Meta | undefined> {
+  try {
+    const meta = await app.MetaForTab(tabId);
+    dispatchTo(tabId, { type: "meta", meta });
+    return meta;
+  } catch {
+    return undefined;
+  }
+}
+
 export function replayPendingPromptsForActiveTab(activeTabId: string | undefined, replay: () => Promise<void> = () => app.ReplayPendingPrompts()): void {
   if (!activeTabId) return;
   void replay().catch(() => {});
@@ -1160,6 +1172,8 @@ export function useController() {
   const stateRef = useRef(activeState);
   const backendActiveTabIdRef = useRef<string | undefined>(undefined);
   const backendActivationPromises = useRef(new Map<string, Promise<boolean>>());
+  const readyMetaReconcileSeq = useRef(0);
+  const readyMetaReconcileActive = useRef<{ tabId: string; seq: number } | undefined>(undefined);
   activeTabIdRef.current = activeTabId;
   stateRef.current = activeState;
 
@@ -1568,6 +1582,51 @@ export function useController() {
       offReady();
     };
   }, [dispatchTo, loadSessionDataForTab, refreshCheckpoints, syncActiveTabFromBackend]);
+
+  // If the startup ready event is missed, keep the composer lock in sync with
+  // the active tab's backend metadata without kicking off tab activation work.
+  useEffect(() => {
+    const tabId = activeTabId;
+    const meta = activeState.meta;
+    if (!tabId || !meta || meta.ready || meta.startupErr || activeState.backendActivationPending) {
+      readyMetaReconcileSeq.current += 1;
+      readyMetaReconcileActive.current = undefined;
+      return;
+    }
+
+    let cancelled = false;
+    let timer: number | undefined;
+    const seq = readyMetaReconcileSeq.current + 1;
+    readyMetaReconcileSeq.current = seq;
+    readyMetaReconcileActive.current = { tabId, seq };
+
+    const stillCurrent = () => {
+      const active = readyMetaReconcileActive.current;
+      return !cancelled && active?.tabId === tabId && active.seq === seq && activeTabIdRef.current === tabId;
+    };
+
+    const schedule = (attempt: number) => {
+      timer = window.setTimeout(() => {
+        void tick(attempt);
+      }, STARTUP_READY_META_RECONCILE_MS);
+    };
+
+    const tick = async (attempt: number) => {
+      if (!stillCurrent()) return;
+      const current = statesRef.current.get(tabId);
+      if (!current?.meta || current.meta.ready || current.meta.startupErr || current.backendActivationPending) return;
+      const nextMeta = await refreshMetaOnlyForTab(tabId, dispatchTo);
+      if (!stillCurrent()) return;
+      if (nextMeta?.ready || nextMeta?.startupErr || attempt + 1 >= STARTUP_READY_META_RECONCILE_ATTEMPTS) return;
+      schedule(attempt + 1);
+    };
+
+    schedule(0);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [activeTabId, activeState.meta?.ready, activeState.meta?.startupErr, activeState.backendActivationPending, dispatchTo]);
 
   // Stale-turn watchdog: if the frontend thinks the agent is running but the
   // turn stream has gone quiet, reconcile with the backend. This catches cases
