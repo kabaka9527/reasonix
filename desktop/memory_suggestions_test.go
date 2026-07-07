@@ -211,6 +211,39 @@ func writeSuggestionSession(t *testing.T, dir, name string, messages ...provider
 	}
 }
 
+// TestHistoryEnglishCandidateNameBackwardCompat: an English statement whose
+// asciiSlug is short (<56 chars) must produce the same Name as old code
+// (plain slug, no hash suffix), so an already-accepted memory under the old
+// Name is not duplicated after upgrade.
+func TestHistoryEnglishCandidateNameBackwardCompat(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	userDir := t.TempDir()
+	cwd := t.TempDir()
+	sessionDir := t.TempDir()
+	store := memory.StoreFor(userDir, cwd)
+	writeSuggestionSession(t, sessionDir, "en.jsonl",
+		provider.Message{Role: provider.RoleUser, Content: "Always prefer English for code comments."},
+		provider.Message{Role: provider.RoleAssistant, Content: "Got it."},
+	)
+
+	app := NewApp()
+	app.setTestCtrl(control.New(control.Options{
+		Memory:     &memory.Set{Store: store, CWD: cwd, UserDir: userDir},
+		SessionDir: sessionDir,
+	}), "test-model")
+	app.tabs["test"].WorkspaceRoot = cwd
+
+	view := app.MemorySuggestions()
+	if len(view.Memories) == 0 {
+		t.Fatalf("no candidates")
+	}
+	// Old code: suggestionName("", statement, "memory-candidate-1") = asciiSlug(statement)
+	oldName := asciiSlug("Always prefer English for code comments.")
+	if view.Memories[0].Name != oldName {
+		t.Fatalf("Name = %q, want old-compatible %q (no hash suffix for short ASCII slugs)", view.Memories[0].Name, oldName)
+	}
+}
+
 // TestHistoryMemoryCandidateNamesUniqueForCJK: two pure-CJK statements that
 // differ in content but produce the same empty asciiSlug must still get
 // distinct Name/ID. Without the hash suffix they would both fall back to

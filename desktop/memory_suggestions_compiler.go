@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"hash/fnv"
 
 	"reasonix/internal/config"
 	"reasonix/internal/memory"
@@ -38,7 +39,7 @@ func suggestCompilerMemories(workspaceRoot string, set *memory.Set, already []Me
 			continue
 		}
 		seen[key] = true
-		name := stableSuggestionName("memory-v5 "+p.Pattern, "memory-v5-pattern")
+		name := compilerCandidateName(p.Pattern)
 		out = append(out, MemorySuggestion{
 			ID:          "memory-" + name,
 			Name:        name,
@@ -54,6 +55,16 @@ func suggestCompilerMemories(workspaceRoot string, set *memory.Set, already []Me
 		}
 	}
 	return out
+}
+
+// compilerCandidateName always appends a hash: compiler patterns are
+// inherently homogeneous (same tool + similar error prefix) so the ASCII
+// slug alone cannot distinguish them even when it is non-empty.
+func compilerCandidateName(pattern string) string {
+	base := suggestionName("", "memory-v5 "+pattern, "memory-v5-pattern")
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(pattern))
+	return fmt.Sprintf("%s-%08x", base, h.Sum32())
 }
 
 func compilerPatternStatement(pattern string) string {

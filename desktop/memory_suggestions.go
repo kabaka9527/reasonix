@@ -513,8 +513,17 @@ func suggestionName(given, source, fallback string) string {
 // 56 chars, so two CJK-only statements (or long English statements sharing a
 // prefix) can collide — colliding Names make Store.Save overwrite the earlier
 // memory, and colliding IDs cross-wire the frontend's accepted-state map.
-// Appending a content-based hash keeps slugs unique and deterministic.
+//
+// When the ASCII slug is short enough that truncation cannot have caused a
+// collision, it is returned as-is for backward compatibility with old-version
+// candidate names. The hash suffix is only appended when the slug fell back to
+// the fallback (non-ASCII source) or when the slug hit the 56-char truncation
+// boundary.
 func stableSuggestionName(source, fallback string) string {
+	slug := asciiSlug(source)
+	if slug != "" && len(slug) < 56 {
+		return slug
+	}
 	base := suggestionName("", source, fallback)
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(source))
