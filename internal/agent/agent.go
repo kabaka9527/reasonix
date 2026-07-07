@@ -278,6 +278,10 @@ type Agent struct {
 	// command may rerun unconfined after the OS sandbox failed to start.
 	sandboxEscapeApprover sandbox.EscapeApprover
 
+	// configWriteApprover, when non-nil, can ask the user whether a file tool
+	// may write a Reasonix-managed config file outside the workspace roots.
+	configWriteApprover tool.ConfigWriteApprover
+
 	// hooks, when non-nil, fires PreToolUse / PostToolUse shell hooks around each
 	// tool call. nil disables hook firing.
 	hooks ToolHooks
@@ -624,6 +628,16 @@ func (a *Agent) SetSandboxEscapeApprover(g sandbox.EscapeApprover) {
 	a.sandboxEscapeApprover = g
 }
 
+// SetConfigWriteApprover installs the optional per-write approval path used by
+// the file tools when a target is a Reasonix-managed config file outside the
+// workspace write roots.
+func (a *Agent) SetConfigWriteApprover(g tool.ConfigWriteApprover) {
+	if nilutil.IsNil(g) {
+		g = nil
+	}
+	a.configWriteApprover = g
+}
+
 func (a *Agent) withTurnPreferences(input string) string {
 	if a == nil {
 		return input
@@ -801,6 +815,10 @@ type Options struct {
 	// enforced OS sandbox fails. nil keeps fail-closed behavior.
 	SandboxEscapeApprover sandbox.EscapeApprover
 
+	// ConfigWriteApprover confirms file-tool writes to Reasonix-managed config
+	// files outside the workspace roots. nil keeps fail-closed behavior.
+	ConfigWriteApprover tool.ConfigWriteApprover
+
 	// Context management. ContextWindow <= 0 disables compaction. Ratios and
 	// RecentKeep fall back to defaults when unset.
 	ContextWindow       int
@@ -893,6 +911,10 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 	if nilutil.IsNil(sandboxEscapeApprover) {
 		sandboxEscapeApprover = nil
 	}
+	configWriteApprover := opts.ConfigWriteApprover
+	if nilutil.IsNil(configWriteApprover) {
+		configWriteApprover = nil
+	}
 	hooks := opts.Hooks
 	if nilutil.IsNil(hooks) {
 		hooks = nil
@@ -924,6 +946,7 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		gate:                     gate,
 		planModeReadOnlyTrust:    planModeReadOnlyTrust,
 		sandboxEscapeApprover:    sandboxEscapeApprover,
+		configWriteApprover:      configWriteApprover,
 		hooks:                    hooks,
 		jobs:                     opts.Jobs,
 		evidence:                 evidence.NewLedger(),
@@ -2340,6 +2363,9 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 	}
 	if a.sandboxEscapeApprover != nil {
 		cctx = sandbox.WithEscapeApprover(cctx, a.sandboxEscapeApprover)
+	}
+	if a.configWriteApprover != nil {
+		cctx = tool.WithConfigWriteApprover(cctx, a.configWriteApprover)
 	}
 	if v := a.responseLanguage.Load(); v != nil {
 		if lang, ok := v.(string); ok {

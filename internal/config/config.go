@@ -879,18 +879,6 @@ func (c *Config) WriteRootsForRoot(fallbackRoot string) []string {
 	return roots
 }
 
-// AgentWriteRootsForRoot returns the write roots used by model-driven tools:
-// the configured workspace/allow_write roots plus Reasonix-owned user config
-// directories. This lets an agent repair Reasonix config on the user's request
-// without widening access to the whole OS home directory.
-func (c *Config) AgentWriteRootsForRoot(fallbackRoot string) []string {
-	roots := c.WriteRootsForRoot(fallbackRoot)
-	for _, root := range ReasonixManagedWriteRoots() {
-		roots = appendUniquePath(roots, root)
-	}
-	return roots
-}
-
 // AllowWriteRoots returns only the configured [sandbox] allow_write extras with
 // ${VAR} expanded — the explicit escape-hatch entries, without the workspace
 // root that WriteRoots prepends. The session-data write guard treats these as

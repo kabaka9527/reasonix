@@ -263,35 +263,21 @@ func LegacyUserConfigPaths() []string {
 	return out
 }
 
-// ReasonixManagedWriteRoots returns Reasonix-owned user configuration
-// directories that model-driven tools may edit when the user asks to repair
-// Reasonix itself. It intentionally returns directories, not the whole OS home:
-// current config.toml, compatibility TOML locations, and the legacy v0.x
-// ~/.reasonix/config.json directory are included.
-func ReasonixManagedWriteRoots() []string {
-	var roots []string
-	addRoot := func(path string) {
-		path = strings.TrimSpace(path)
-		if path == "" {
-			return
-		}
-		roots = appendUniquePath(roots, path)
-	}
-	addFileDir := func(path string) {
-		path = strings.TrimSpace(path)
-		if path == "" {
-			return
-		}
-		addRoot(filepath.Dir(path))
-	}
-	addRoot(ReasonixHomeDir())
-	addFileDir(UserConfigPath())
-	addFileDir(LegacyUserConfigPath())
+// ReasonixManagedConfigPaths returns the Reasonix-owned user configuration
+// FILES that model-driven tools may repair on the user's request, each gated
+// by a fresh per-write human approval: the current config.toml, compatibility
+// TOML locations, and the legacy v0.x ~/.reasonix/config.json. Individual
+// files, never directories — the Reasonix home also holds credentials (.env),
+// global hooks (settings.json), skills, and session stores, and none of those
+// may ride along on a config repair.
+func ReasonixManagedConfigPaths() []string {
+	var out []string
+	out = appendUniquePath(out, UserConfigPath())
 	for _, path := range LegacyUserConfigPaths() {
-		addFileDir(path)
+		out = appendUniquePath(out, path)
 	}
-	addFileDir(legacyConfigPath())
-	return roots
+	out = appendUniquePath(out, legacyConfigPath())
+	return out
 }
 
 func appendUniquePath(paths []string, path string) []string {

@@ -308,9 +308,15 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	}
 
 	reg := tool.NewRegistry()
-	agentWriteRoots := cfg.AgentWriteRootsForRoot(root)
+	writeRoots := cfg.WriteRootsForRoot(root)
 	forbidReadRoots := cfg.ForbidReadRootsForRoot(root)
-	bashSpec := sandbox.Spec{Mode: cfg.BashMode(), WriteRoots: agentWriteRoots, ForbidReadRoots: forbidReadRoots, Network: cfg.Sandbox.Network}
+	// managedConfig names the Reasonix-owned config FILES (config.toml,
+	// compatibility TOMLs, legacy v0.x config.json) the file-writers may repair
+	// outside the workspace after a fresh per-write human approval. The bash
+	// OS-sandbox write roots deliberately stay unwidened: config repair goes
+	// through the approval-gated file tools, not raw shell writes.
+	managedConfig := builtin.NewManagedConfigPaths(config.ReasonixManagedConfigPaths())
+	bashSpec := sandbox.Spec{Mode: cfg.BashMode(), WriteRoots: writeRoots, ForbidReadRoots: forbidReadRoots, Network: cfg.Sandbox.Network}
 	bashSpec.Shell = shell
 	// The session-data guard blocks agent writes into Reasonix's own session
 	// stores (they race the app's saves and surface as conflict-copy loops);
@@ -329,7 +335,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		enabledBuiltins = tokenEconomyBuiltins(enabledBuiltins)
 	}
 	readPathResolver := builtin.NewPathResolver()
-	addBuiltins(reg, enabledBuiltins, agentWriteRoots, bashSpec, bashTimeout, searchSpec, stderr, root, proxySpec, forbidReadRoots, readPathResolver, sessionGuard)
+	addBuiltins(reg, enabledBuiltins, writeRoots, bashSpec, bashTimeout, searchSpec, stderr, root, proxySpec, forbidReadRoots, readPathResolver, sessionGuard, managedConfig)
 	// Use the caller-supplied shared host when set, so controllers for the same
 	// workspace root reuse running MCP processes (e.g. one CodeGraph daemon
 	// instead of one per tab). Otherwise construct a private host per controller.
@@ -944,7 +950,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 				}
 				names := addTools(reg, builtin.Workspace{
 					Dir:         root,
-					WriteRoots:  agentWriteRoots,
+					WriteRoots:  writeRoots,
 					Bash:        bashSpec,
 					BashTimeout: bashTimeout,
 					Search:      searchSpec,
@@ -1486,13 +1492,15 @@ func NewProviderWithProxy(e *config.ProviderEntry, proxy netclient.ProxySpec) (p
 // When workDir is non-empty, tools resolve relative paths against it instead of
 // the process cwd, enabling concurrent multi-project sessions.
 // sessionGuard blocks writer-tool targets inside Reasonix's own session stores
-// and makes bash warn when a command references them.
-func addBuiltins(reg *tool.Registry, enabled, writeRoots []string, bashSpec sandbox.Spec, bashTimeout time.Duration, searchSpec builtin.SearchSpec, stderr io.Writer, workDir string, proxySpec netclient.ProxySpec, forbidReadRoots []string, readPathResolver *builtin.PathResolver, sessionGuard builtin.SessionDataGuard) {
+// and makes bash warn when a command references them. managedConfig names the
+// Reasonix-owned config files writable outside writeRoots after a fresh
+// per-write human approval.
+func addBuiltins(reg *tool.Registry, enabled, writeRoots []string, bashSpec sandbox.Spec, bashTimeout time.Duration, searchSpec builtin.SearchSpec, stderr io.Writer, workDir string, proxySpec netclient.ProxySpec, forbidReadRoots []string, readPathResolver *builtin.PathResolver, sessionGuard builtin.SessionDataGuard, managedConfig builtin.ManagedConfigPaths) {
 	// If a workspace directory is set, use workspace-bound tools that resolve
 	// paths relative to that directory. Otherwise fall back to the process-cwd
 	// compile-time builtins.
 	if workDir != "" {
-		ws := builtin.Workspace{Dir: workDir, WriteRoots: writeRoots, ForbidReadRoots: forbidReadRoots, Bash: bashSpec, BashTimeout: bashTimeout, Search: searchSpec, ProxySpec: proxySpec, ReadPaths: readPathResolver, SessionGuard: sessionGuard}
+		ws := builtin.Workspace{Dir: workDir, WriteRoots: writeRoots, ForbidReadRoots: forbidReadRoots, Bash: bashSpec, BashTimeout: bashTimeout, Search: searchSpec, ProxySpec: proxySpec, ReadPaths: readPathResolver, SessionGuard: sessionGuard, ManagedConfig: managedConfig}
 		for _, t := range ws.Tools(enabled...) {
 			reg.Add(t)
 		}
@@ -1516,7 +1524,7 @@ func addBuiltins(reg *tool.Registry, enabled, writeRoots []string, bashSpec sand
 	// preserved on replace): file-writers bound to the workspace, read tools
 	// bound to forbid-read roots, bash to the OS sandbox, web_fetch to the proxy.
 	// Only replace tools actually enabled/present.
-	confined := append(builtin.ConfineWriters(writeRoots, sessionGuard),
+	confined := append(builtin.ConfineWriters(writeRoots, sessionGuard, managedConfig),
 		builtin.ConfineBash(bashSpec, sessionGuard, bashTimeout),
 		builtin.ConfineSearch(searchSpec, bashSpec, forbidReadRoots),
 		builtin.ConfineWebFetch(proxySpec))

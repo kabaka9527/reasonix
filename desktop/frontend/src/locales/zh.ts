@@ -711,6 +711,9 @@ export const zh: Record<DictKey, string> = {
   "approval.sandboxEscapeSubjectPrefix": "仅本次不进沙箱运行：",
   "approval.sandboxEscapeWrapReason": "Windows 沙箱无法包装这条命令。是否仅本次不进 OS 沙箱运行？这会只对此命令绕过 OS 沙箱。",
   "approval.sandboxEscapeRuntimeReason": "Windows 沙箱启动这条命令时失败。是否仅本次不进 OS 沙箱运行？这会只对此命令绕过 OS 沙箱。",
+  "approval.toolLabelConfigWrite": "Reasonix 配置写入审批",
+  "approval.configWriteSubjectPrefix": "写入 Reasonix 配置：",
+  "approval.configWriteReason": "这次写入的目标是工作区之外的 Reasonix 托管配置文件。它可以改变后续会话的模型服务商、沙箱规则、权限和 MCP 服务器，因此需要你的明确批准。",
 
   // 提问卡片
   "ask.title": "需要你决定",

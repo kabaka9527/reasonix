@@ -27,7 +27,7 @@ function animateShelfExit(
 }
 
 function requiresFreshHumanApproval(tool: string): boolean {
-  return tool === "remember" || tool === "forget" || tool === "exit_plan_mode" || tool === "sandbox_escape";
+  return tool === "remember" || tool === "forget" || tool === "exit_plan_mode" || tool === "sandbox_escape" || tool === "config_write";
 }
 
 function approvalToolLabel(tool: string, t: Translator): string {
@@ -52,6 +52,8 @@ function approvalToolLabel(tool: string, t: Translator): string {
       return t("approval.toolLabelForget");
     case "sandbox_escape":
       return t("approval.toolLabelSandboxEscape");
+    case "config_write":
+      return t("approval.toolLabelConfigWrite");
     case "plan_mode_read_only_command":
       return t("approval.toolLabelPlanModeReadOnly");
     default:
@@ -61,6 +63,7 @@ function approvalToolLabel(tool: string, t: Translator): string {
 
 const sandboxEscapeEnglishSubjectFallback = "run shell command unconfined once";
 const sandboxEscapeEnglishSubjectPrefix = "run unconfined once: ";
+const configWriteEnglishSubjectPrefix = "write Reasonix config: ";
 const planModeMcpEnglishSubject = /^MCP (.+) as read-only for planning and research$/;
 const planModeBashEnglishSubject = /^Trust (.+) as a read-only command prefix while planning\r?\nCommand: ([\s\S]+)$/;
 
@@ -70,6 +73,12 @@ function localizeApprovalSubject(tool: string, subject: string, t: Translator): 
     if (!trimmed || trimmed === sandboxEscapeEnglishSubjectFallback) return t("approval.sandboxEscapeSubjectFallback");
     if (trimmed.startsWith(sandboxEscapeEnglishSubjectPrefix)) {
       return `${t("approval.sandboxEscapeSubjectPrefix")}${trimmed.slice(sandboxEscapeEnglishSubjectPrefix.length)}`;
+    }
+    return trimmed;
+  }
+  if (tool === "config_write") {
+    if (trimmed.startsWith(configWriteEnglishSubjectPrefix)) {
+      return `${t("approval.configWriteSubjectPrefix")}${trimmed.slice(configWriteEnglishSubjectPrefix.length)}`;
     }
     return trimmed;
   }
@@ -94,6 +103,10 @@ function localizeApprovalSubject(tool: string, subject: string, t: Translator): 
 
 function localizeApprovalReason(tool: string, reason: string | undefined, t: Translator): string {
   const trimmed = reason?.trim() ?? "";
+  if (tool === "config_write") {
+    if (!trimmed || trimmed.includes("Reasonix-managed configuration file")) return t("approval.configWriteReason");
+    return trimmed;
+  }
   if (tool !== "sandbox_escape") return trimmed;
   if (trimmed.includes("could not wrap this command")) return t("approval.sandboxEscapeWrapReason");
   if (trimmed.includes("failed while starting this command") || trimmed.includes("Run this command unconfined once?")) {
@@ -135,7 +148,7 @@ export function ApprovalModal({
   const isPlanApproval = approval.tool === "exit_plan_mode";
   const toolLabel = approvalToolLabel(approval.tool, t);
   const isFreshHumanApproval = requiresFreshHumanApproval(approval.tool);
-  const hasFreshSessionGrant = approval.tool === "sandbox_escape";
+  const hasFreshSessionGrant = approval.tool === "sandbox_escape" || approval.tool === "config_write";
   const subject = localizeApprovalSubject(approval.tool, approval.subject, t);
   const reason = localizePlanModeApprovalReason(approval.tool, localizeApprovalReason(approval.tool, approval.reason, t), t);
   const subjectSummary = subject.split(/\r?\n/).find((line) => line.trim())?.trim() ?? "";

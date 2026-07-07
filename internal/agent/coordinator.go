@@ -198,6 +198,20 @@ func (c *Coordinator) SetSandboxEscapeApprover(g sandbox.EscapeApprover) {
 	}
 }
 
+// SetConfigWriteApprover propagates Reasonix-managed config write approvals to
+// both tool-using agents in two-model mode.
+func (c *Coordinator) SetConfigWriteApprover(g tool.ConfigWriteApprover) {
+	if c == nil {
+		return
+	}
+	if c.plannerAgent != nil {
+		c.plannerAgent.SetConfigWriteApprover(g)
+	}
+	if c.executor != nil {
+		c.executor.SetConfigWriteApprover(g)
+	}
+}
+
 // Run plans with the planner model, then hands the plan to the executor.
 func (c *Coordinator) Run(ctx context.Context, input string) error {
 	c.sink.Emit(event.Event{Kind: event.TurnStarted})
