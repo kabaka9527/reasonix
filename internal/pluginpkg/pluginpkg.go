@@ -23,6 +23,7 @@ import (
 const (
 	NativeManifest = "reasonix-plugin.json"
 	CodexManifest  = ".codex-plugin/plugin.json"
+	ClaudeManifest = ".claude-plugin/plugin.json"
 	StateFilename  = "plugin-packages.json"
 
 	claudeSettingsPath = ".claude/settings.json"
@@ -274,7 +275,10 @@ func ParseDir(root string) (Package, []string, error) {
 	if pkg, warnings, err := parseCodex(filepath.Join(root, CodexManifest), root); err == nil {
 		return pkg, warnings, nil
 	}
-	return Package{}, nil, fmt.Errorf("no %s or %s found", NativeManifest, CodexManifest)
+	if pkg, warnings, err := parseClaudePlugin(filepath.Join(root, ClaudeManifest), root); err == nil {
+		return pkg, warnings, nil
+	}
+	return Package{}, nil, fmt.Errorf("no %s, %s, or %s found", NativeManifest, CodexManifest, ClaudeManifest)
 }
 
 func parseNative(path, root string) (Package, []string, error) {
@@ -316,6 +320,14 @@ func parseNative(path, root string) (Package, []string, error) {
 }
 
 func parseCodex(path, root string) (Package, []string, error) {
+	return parseCodexLike(path, root, "codex", true)
+}
+
+func parseClaudePlugin(path, root string) (Package, []string, error) {
+	return parseCodexLike(path, root, "claude", false)
+}
+
+func parseCodexLike(path, root, kind string, includeCodexSessionStartHook bool) (Package, []string, error) {
 	var raw struct {
 		Name        string          `json:"name"`
 		Version     string          `json:"version"`
@@ -340,20 +352,39 @@ func parseCodex(path, root string) (Package, []string, error) {
 		Skills:      skills,
 	}
 	hookPath := filepath.Join(root, "hooks", "session-start-codex")
-	if info, err := os.Stat(hookPath); err == nil && info.Mode().IsRegular() {
-		manifest.Hooks = map[string][]Hook{
-			"SessionStart": {{
-				Command:     hookPath,
-				Cwd:         root,
-				Description: "Codex-compatible session start hook from " + manifest.Name,
-			}},
+	if includeCodexSessionStartHook {
+		if info, err := os.Stat(hookPath); err == nil && info.Mode().IsRegular() {
+			manifest.Hooks = map[string][]Hook{
+				"SessionStart": {{
+					Command:     hookPath,
+					Cwd:         root,
+					Description: "Codex-compatible session start hook from " + manifest.Name,
+				}},
+			}
 		}
 	}
 	warnings := applyClaudeCompatibility(root, &manifest)
 	if err := validateManifest(root, &manifest); err != nil {
 		return Package{}, warnings, err
 	}
-	return Package{Root: root, ManifestKind: "codex", Manifest: manifest}, warnings, nil
+	return Package{Root: root, ManifestKind: kind, Manifest: manifest}, warnings, nil
+}
+
+func ManifestPath(kind string) string {
+	switch kind {
+	case "reasonix":
+		return NativeManifest
+	case "codex":
+		return CodexManifest
+	case "claude":
+		return ClaudeManifest
+	default:
+		return NativeManifest
+	}
+}
+
+func ManifestPaths() []string {
+	return []string{NativeManifest, CodexManifest, ClaudeManifest}
 }
 
 func applyClaudeCompatibility(root string, manifest *Manifest) []string {

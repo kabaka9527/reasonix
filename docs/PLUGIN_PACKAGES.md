@@ -17,8 +17,8 @@ directory.
   `https://github.com/obra/superpowers`.
 - A GitHub branch or subdirectory URL, such as
   `https://github.com/owner/repo/tree/main/path/to/plugin`.
-- A local directory that contains `reasonix-plugin.json` or
-  `.codex-plugin/plugin.json`.
+- A local directory that contains `reasonix-plugin.json`,
+  `.codex-plugin/plugin.json`, or `.claude-plugin/plugin.json`.
 
 Preview the install plan without writing files:
 
@@ -224,8 +224,9 @@ third-party install scripts during plugin installation.
 
 ## Codex Compatibility
 
-Reasonix also reads Codex plugin manifests at `.codex-plugin/plugin.json`.
-For packages such as Superpowers and Claude-style skill packs, Reasonix maps:
+Reasonix also reads Codex plugin manifests at `.codex-plugin/plugin.json` and
+Claude Marketplace manifests at `.claude-plugin/plugin.json`. For packages such
+as Superpowers and Claude-style skill packs, Reasonix maps:
 
 - `skills` to Reasonix skill roots.
 - `hooks/session-start-codex` to the Reasonix `SessionStart` hook when present.

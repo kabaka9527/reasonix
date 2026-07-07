@@ -15,8 +15,8 @@ Reasonix 插件包把 skills、hooks 和 MCP servers 组织成一个可安装单
   `https://github.com/obra/superpowers`。
 - GitHub 分支或子目录 URL，例如
   `https://github.com/owner/repo/tree/main/path/to/plugin`。
-- 本地目录，目录内需要包含 `reasonix-plugin.json` 或
-  `.codex-plugin/plugin.json`。
+- 本地目录，目录内需要包含 `reasonix-plugin.json`、
+  `.codex-plugin/plugin.json` 或 `.claude-plugin/plugin.json`。
 
 只预览安装计划，不写文件：
 
@@ -206,8 +206,8 @@ Reasonix 原生插件在根目录声明 `reasonix-plugin.json`：
 
 ## Codex 兼容
 
-Reasonix 也会读取 `.codex-plugin/plugin.json`。对于 Superpowers 和 Claude 风格
-skill 包，Reasonix 会映射：
+Reasonix 也会读取 `.codex-plugin/plugin.json` 和 `.claude-plugin/plugin.json`。
+对于 Superpowers 和 Claude 风格 skill 包，Reasonix 会映射：
 
 - `skills` 到 Reasonix skill root。
 - 如果存在 `hooks/session-start-codex`，映射为 Reasonix `SessionStart` hook。

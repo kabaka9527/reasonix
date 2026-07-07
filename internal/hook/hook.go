@@ -275,10 +275,6 @@ func appendPluginHooks(out *[]ResolvedHook, reasonixHomeDir, projectRoot string)
 				if item.Installed.Version != "" {
 					env["REASONIX_PLUGIN_VERSION"] = item.Installed.Version
 				}
-				manifestFile := pluginpkg.NativeManifest
-				if pkg.ManifestKind == "codex" {
-					manifestFile = pluginpkg.CodexManifest
-				}
 				*out = append(*out, ResolvedHook{
 					HookConfig: HookConfig{
 						Match:       h.Match,
@@ -291,7 +287,7 @@ func appendPluginHooks(out *[]ResolvedHook, reasonixHomeDir, projectRoot string)
 					},
 					Event:  event,
 					Scope:  ScopePlugin,
-					Source: filepath.Join(pkg.Root, manifestFile),
+					Source: filepath.Join(pkg.Root, pluginpkg.ManifestPath(pkg.ManifestKind)),
 				})
 			}
 		}

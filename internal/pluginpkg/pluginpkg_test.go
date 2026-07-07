@@ -96,6 +96,42 @@ func TestParseCodexClaudeCompatibility(t *testing.T) {
 	}
 }
 
+func TestParseClaudePluginManifest(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, ClaudeManifest), `{
+	  "name": "ui-ux-pro-max",
+	  "version": "2.6.2",
+	  "description": "UI/UX design intelligence",
+	  "skills": "./.claude/skills/"
+	}`)
+	writeTestFile(t, filepath.Join(root, ".claude", "skills", "ui-ux-pro-max", "SKILL.md"), "---\ndescription: UI design helper\n---\nbody")
+	writeTestFile(t, filepath.Join(root, "CLAUDE.md"), "Use the bundled UI workflow.")
+
+	pkg, warnings, err := ParseDir(root)
+	if err != nil {
+		t.Fatalf("ParseDir: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", warnings)
+	}
+	if pkg.ManifestKind != "claude" || pkg.Manifest.Name != "ui-ux-pro-max" || pkg.Manifest.Version != "2.6.2" {
+		t.Fatalf("pkg = %+v", pkg)
+	}
+	if got := pkg.SkillRoots(); len(got) != 1 || got[0] != filepath.Join(root, ".claude", "skills") {
+		t.Fatalf("SkillRoots = %#v", got)
+	}
+	inv := pkg.Inventory()
+	if len(inv.Skills) != 1 || inv.Skills[0].Name != "ui-ux-pro-max" || inv.Skills[0].Invocation != "/ui-ux-pro-max" {
+		t.Fatalf("Inventory().Skills = %+v", inv.Skills)
+	}
+	if hooks := pkg.Manifest.Hooks["SessionStart"]; len(hooks) != 1 || hooks[0].ContextFile != "CLAUDE.md" {
+		t.Fatalf("SessionStart hooks = %+v, want CLAUDE.md context hook", hooks)
+	}
+	if ManifestPath(pkg.ManifestKind) != ClaudeManifest {
+		t.Fatalf("ManifestPath(%q) = %q, want %q", pkg.ManifestKind, ManifestPath(pkg.ManifestKind), ClaudeManifest)
+	}
+}
+
 func TestParseCodexWithoutSessionStartHookDoesNotWarn(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, filepath.Join(root, CodexManifest), `{
