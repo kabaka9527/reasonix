@@ -62,6 +62,36 @@ func TestUserConfigPathUsesReasonixHome(t *testing.T) {
 	}
 }
 
+func TestReasonixManagedWriteRootsIncludeWindowsCurrentAndLegacyConfigDirs(t *testing.T) {
+	home := isolateUserConfigHome(t)
+	setRuntimeGOOS(t, "windows")
+	oldConfigDir := osUserConfigDir
+	osUserConfigDir = func() string { return filepath.Join(home, "AppData", "Roaming") }
+	t.Cleanup(func() { osUserConfigDir = oldConfigDir })
+
+	roots := ReasonixManagedWriteRoots()
+	for _, want := range []string{
+		filepath.Join(home, "AppData", "Roaming", "reasonix"),
+		filepath.Join(home, ".reasonix"),
+	} {
+		found := false
+		for _, got := range roots {
+			if samePath(got, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("managed write roots = %v, want %s", roots, want)
+		}
+	}
+	for _, got := range roots {
+		if samePath(got, home) {
+			t.Fatalf("managed write roots must not include whole home: %v", roots)
+		}
+	}
+}
+
 func TestUserConfigPathHonorsReasonixHome(t *testing.T) {
 	home := isolateUserConfigHome(t)
 	custom := filepath.Join(home, "custom-home")

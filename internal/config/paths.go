@@ -263,6 +263,51 @@ func LegacyUserConfigPaths() []string {
 	return out
 }
 
+// ReasonixManagedWriteRoots returns Reasonix-owned user configuration
+// directories that model-driven tools may edit when the user asks to repair
+// Reasonix itself. It intentionally returns directories, not the whole OS home:
+// current config.toml, compatibility TOML locations, and the legacy v0.x
+// ~/.reasonix/config.json directory are included.
+func ReasonixManagedWriteRoots() []string {
+	var roots []string
+	addRoot := func(path string) {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			return
+		}
+		roots = appendUniquePath(roots, path)
+	}
+	addFileDir := func(path string) {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			return
+		}
+		addRoot(filepath.Dir(path))
+	}
+	addRoot(ReasonixHomeDir())
+	addFileDir(UserConfigPath())
+	addFileDir(LegacyUserConfigPath())
+	for _, path := range LegacyUserConfigPaths() {
+		addFileDir(path)
+	}
+	addFileDir(legacyConfigPath())
+	return roots
+}
+
+func appendUniquePath(paths []string, path string) []string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return paths
+	}
+	clean := filepath.Clean(path)
+	for _, existing := range paths {
+		if samePath(existing, clean) {
+			return paths
+		}
+	}
+	return append(paths, clean)
+}
+
 // ReasonixHomeDir is the current Reasonix home directory. It honors
 // REASONIX_HOME, then uses ~/.reasonix on macOS/Linux or %APPDATA%/reasonix on
 // Windows, with a %USERPROFILE%/AppData/Roaming fallback when %APPDATA% is

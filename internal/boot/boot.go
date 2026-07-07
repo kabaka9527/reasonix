@@ -308,7 +308,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	}
 
 	reg := tool.NewRegistry()
-	bashSpec := sandbox.Spec{Mode: cfg.BashMode(), WriteRoots: cfg.WriteRootsForRoot(root), ForbidReadRoots: cfg.ForbidReadRootsForRoot(root), Network: cfg.Sandbox.Network}
+	agentWriteRoots := cfg.AgentWriteRootsForRoot(root)
+	forbidReadRoots := cfg.ForbidReadRootsForRoot(root)
+	bashSpec := sandbox.Spec{Mode: cfg.BashMode(), WriteRoots: agentWriteRoots, ForbidReadRoots: forbidReadRoots, Network: cfg.Sandbox.Network}
 	bashSpec.Shell = shell
 	// The session-data guard blocks agent writes into Reasonix's own session
 	// stores (they race the app's saves and surface as conflict-copy loops);
@@ -327,7 +329,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		enabledBuiltins = tokenEconomyBuiltins(enabledBuiltins)
 	}
 	readPathResolver := builtin.NewPathResolver()
-	addBuiltins(reg, enabledBuiltins, cfg.WriteRootsForRoot(root), bashSpec, bashTimeout, searchSpec, stderr, root, proxySpec, cfg.ForbidReadRootsForRoot(root), readPathResolver, sessionGuard)
+	addBuiltins(reg, enabledBuiltins, agentWriteRoots, bashSpec, bashTimeout, searchSpec, stderr, root, proxySpec, forbidReadRoots, readPathResolver, sessionGuard)
 	// Use the caller-supplied shared host when set, so controllers for the same
 	// workspace root reuse running MCP processes (e.g. one CodeGraph daemon
 	// instead of one per tab). Otherwise construct a private host per controller.
@@ -942,7 +944,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 				}
 				names := addTools(reg, builtin.Workspace{
 					Dir:         root,
-					WriteRoots:  cfg.WriteRootsForRoot(root),
+					WriteRoots:  agentWriteRoots,
 					Bash:        bashSpec,
 					BashTimeout: bashTimeout,
 					Search:      searchSpec,

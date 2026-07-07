@@ -138,6 +138,49 @@ func TestWriteFileDefaultRootsDenyUserConfigUnlessAllowed(t *testing.T) {
 	}
 }
 
+func TestAgentWriteRootsAllowReasonixConfigButNotWholeHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("AppData", filepath.Join(home, "AppData", "Roaming"))
+
+	project := filepath.Join(home, "project")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	w := writeFile{roots: realRoots(cfg.AgentWriteRootsForRoot(project))}
+
+	for _, target := range []string{
+		config.UserConfigPath(),
+		filepath.Join(home, ".reasonix", "config.json"),
+	} {
+		args, _ := json.Marshal(map[string]string{
+			"path":    target,
+			"content": "{}\n",
+		})
+		if _, err := w.Execute(context.Background(), args); err != nil {
+			t.Fatalf("write Reasonix-managed config %s: %v", target, err)
+		}
+		if _, err := os.Stat(target); err != nil {
+			t.Fatalf("managed config was not created %s: %v", target, err)
+		}
+	}
+
+	outside := filepath.Join(home, "notes.txt")
+	args, _ := json.Marshal(map[string]string{
+		"path":    outside,
+		"content": "nope\n",
+	})
+	if _, err := w.Execute(context.Background(), args); err == nil {
+		t.Fatalf("write outside Reasonix-managed roots should be denied")
+	}
+	if _, err := os.Stat(outside); !os.IsNotExist(err) {
+		t.Fatalf("outside file must not be created, stat err=%v", err)
+	}
+}
+
 func TestBashSandboxConfinement(t *testing.T) {
 	if !sandbox.Available() {
 		t.Skip("OS sandbox not available")
