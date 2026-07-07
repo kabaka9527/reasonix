@@ -5207,10 +5207,21 @@ body > .mermaid-diagram--fullscreen {
   min-width: 0;
 }
 .tool__nested-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 34px;
   font-family: var(--mono);
   font-size: 11px;
-  color: var(--accent);
+  color: color-mix(in srgb, var(--fg-dim) 86%, var(--fg));
+  font-variant-numeric: tabular-nums;
   flex-shrink: 0;
+}
+.tool__nested-icon {
+  width: 14px;
+  height: 14px;
+  color: inherit;
+  flex: 0 0 auto;
 }
 .tool__status-icon {
   font-size: 13px;

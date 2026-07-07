@@ -795,7 +795,7 @@ func (a *App) Settings() SettingsView {
 				Ask:   []string{},
 				Deny:  []string{},
 			},
-			Sandbox:                 SandboxView{Bash: "enforce", AllowWrite: []string{}, EffectiveWriteRoots: []string{}, Shell: "auto"},
+			Sandbox:                 SandboxView{Bash: config.Default().BashMode(), AllowWrite: []string{}, EffectiveWriteRoots: []string{}, Shell: "auto"},
 			Agent:                   AgentView{PlannerMaxSteps: 0, MaxSubagentDepth: agent.DefaultMaxSubagentDepth, ColdResumePrune: true, ReasoningLanguage: "auto"},
 			Bot:                     botSettingsView(config.BotConfig{}),
 			AutoPlan:                "off",
@@ -815,10 +815,7 @@ func (a *App) Settings() SettingsView {
 		}
 	}
 	ctrl := a.activeCtrl()
-	bash := cfg.Sandbox.Bash
-	if bash == "" {
-		bash = "enforce"
-	}
+	bash := cfg.BashMode()
 	shell := cfg.Tools.Shell.Prefer
 	if shell == "" {
 		shell = "auto"
@@ -1538,6 +1535,7 @@ func (a *App) rebuildSettingLocked(setting string) error {
 		if err := a.snapshotTabForAction(tab, "rebuilding settings"); err != nil {
 			return err
 		}
+		prevPath = sessionPathAfterSnapshot(oldCtrl, prevPath)
 		carried = oldCtrl.History()
 	}
 	snap := a.tabRuntimeSnapshot(tab)
@@ -1565,10 +1563,14 @@ func (a *App) rebuildSettingLocked(setting string) error {
 	})
 	if err != nil {
 		if oldCtrl == nil {
+			leaseHeld := false
 			a.mu.Lock()
-			tab.StartupErr = err.Error()
+			leaseHeld = setTabStartupError(tab, err)
 			tab.Ready = true
 			a.mu.Unlock()
+			if leaseHeld {
+				a.scheduleDeferredStartupBuild(tab.ID)
+			}
 			a.emitReady(a.ctx)
 		}
 		return err
@@ -1603,8 +1605,11 @@ func (a *App) rebuildSettingLocked(setting string) error {
 	tab.Ctrl = ctrl
 	tab.model = model
 	tab.Label = ctrl.Label()
-	tab.StartupErr = ""
+	clearTabStartupError(tab)
 	tab.Ready = true
+	// Supersede any in-flight startup build: it would otherwise finish later,
+	// pass its generation check, and overwrite the controller just installed.
+	a.supersedeTabBuildLocked(tab)
 	a.saveTabsLocked()
 	a.mu.Unlock()
 	a.clearDeferredRebuild(tab.ID)
@@ -2372,9 +2377,13 @@ func (a *App) removeBuiltInProviderAccessAndRetargetTabs(name string) error {
 			continue
 		}
 		tab.Ctrl = nil
+		// Supersede any in-flight startup build: it was planned against the
+		// removed provider and would otherwise finish later, pass its
+		// generation check, and reinstall a controller for it.
+		a.supersedeTabBuildLocked(tab)
 		tab.model = fallbackRef
 		tab.Label = fallbackRef
-		tab.StartupErr = ""
+		clearTabStartupError(tab)
 		tab.Ready = a.ctx == nil
 		if a.ctx != nil {
 			rebuildTabs = append(rebuildTabs, tab)
@@ -2487,9 +2496,13 @@ func (a *App) deleteProviderAndRetargetTabs(name string) error {
 			continue
 		}
 		tab.Ctrl = nil
+		// Supersede any in-flight startup build: it was planned against the
+		// removed provider and would otherwise finish later, pass its
+		// generation check, and reinstall a controller for it.
+		a.supersedeTabBuildLocked(tab)
 		tab.model = fallbackRef
 		tab.Label = fallbackRef
-		tab.StartupErr = ""
+		clearTabStartupError(tab)
 		tab.Ready = a.ctx == nil
 		if a.ctx != nil {
 			rebuildTabs = append(rebuildTabs, tab)

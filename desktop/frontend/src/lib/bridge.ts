@@ -574,6 +574,16 @@ export function onFilesDropped(cb: (paths: string[]) => void): () => void {
 
 // onReady subscribes to the agent:ready event fired when boot.Build completes.
 // The frontend re-fetches Meta/Context/History when this lands.
+// onRuntimeRebuilt fires when a tab's controller is replaced in place
+// (model/effort/token-mode switch, clear-while-running). The rebuilt
+// controller restarts prompt ids, so per-tab id-keyed state must reset.
+export function onRuntimeRebuilt(cb: (tabId?: string) => void): () => void {
+  if (realApp() && typeof window !== "undefined" && window.runtime) {
+    return window.runtime.EventsOn("runtime:rebuilt", (tabId?: unknown) => cb(typeof tabId === "string" ? tabId : undefined));
+  }
+  return () => {};
+}
+
 export function onReady(cb: (tabId?: string) => void): () => void {
   if (realApp() && typeof window !== "undefined" && window.runtime) {
     return window.runtime.EventsOn("agent:ready", (tabId?: unknown) => cb(typeof tabId === "string" ? tabId : undefined));
@@ -719,12 +729,13 @@ function browserPlatformOverride(): "darwin" | "windows" | "linux" | "" {
   return value === "darwin" || value === "windows" || value === "linux" ? value : "";
 }
 
-function mockScenario(): "demo" | "fresh" | "running" | "guidance" {
+function mockScenario(): "demo" | "fresh" | "running" | "guidance" | "sandbox_escape" {
   if (typeof window === "undefined") return "demo";
   const value = new URLSearchParams(window.location.search).get("mock")?.trim().toLowerCase();
   if (value === "fresh" || value === "empty" || value === "first-run") return "fresh";
   if (value === "guidance" || value === "guide" || value === "steer") return "guidance";
   if (value === "running" || value === "busy" || value === "streaming") return "running";
+  if (value === "sandbox_escape" || value === "sandbox-escape" || value === "sandboxescape") return "sandbox_escape";
   return "demo";
 }
 
@@ -819,8 +830,8 @@ const mockProviderPresetTemplates: MockProviderPresetTemplate[] = [
   mockPreset("qwen-coding-plan-cn-anthropic", "Qwen Coding Plan CN Anthropic", "Alibaba Cloud Qwen Coding Plan China Anthropic-compatible endpoint.", "QWEN_CODING_API_KEY", mockProviderTemplate({ name: "qwen-coding-plan-cn-anthropic", kind: "anthropic", baseUrl: "https://coding.dashscope.aliyuncs.com/apps/anthropic", models: mockQwenPlanModels, visionModels: mockQwenPlanVisionModels, default: "qwen3.7-plus", apiKeyEnv: "QWEN_CODING_API_KEY", thinking: "adaptive" })),
   mockPreset("qwen-coding-plan-global", "Qwen Coding Plan Global", "Alibaba Cloud Qwen Coding Plan international endpoint.", "QWEN_CODING_API_KEY", mockProviderTemplate({ name: "qwen-coding-plan-global", kind: "openai", baseUrl: "https://coding-intl.dashscope.aliyuncs.com/v1", models: mockQwenPlanModels, visionModels: mockQwenPlanVisionModels, default: "qwen3.7-plus", apiKeyEnv: "QWEN_CODING_API_KEY" })),
   mockPreset("qwen-coding-plan-global-anthropic", "Qwen Coding Plan Global Anthropic", "Alibaba Cloud Qwen Coding Plan international Anthropic-compatible endpoint.", "QWEN_CODING_API_KEY", mockProviderTemplate({ name: "qwen-coding-plan-global-anthropic", kind: "anthropic", baseUrl: "https://coding-intl.dashscope.aliyuncs.com/apps/anthropic", models: mockQwenPlanModels, visionModels: mockQwenPlanVisionModels, default: "qwen3.7-plus", apiKeyEnv: "QWEN_CODING_API_KEY", thinking: "adaptive" })),
-  mockPreset("stepfun", "StepFun", "StepFun coding-plan OpenAI-compatible endpoint.", "STEPFUN_API_KEY", mockProviderTemplate({ name: "stepfun", kind: "openai", baseUrl: "https://api.stepfun.ai/step_plan/v1", models: mockStepFunModels, default: "step-3.7-flash", apiKeyEnv: "STEPFUN_API_KEY", supportedEfforts: ["low", "medium", "high"], defaultEffort: "medium" })),
-  mockPreset("stepfun-anthropic", "StepFun Anthropic", "StepFun coding-plan Anthropic-compatible endpoint.", "STEPFUN_API_KEY", mockProviderTemplate({ name: "stepfun-anthropic", kind: "anthropic", baseUrl: "https://api.stepfun.ai/step_plan", models: mockStepFunModels, default: "step-3.7-flash", apiKeyEnv: "STEPFUN_API_KEY", thinking: "adaptive", supportedEfforts: ["low", "medium", "high"], defaultEffort: "medium" })),
+  mockPreset("stepfun", "StepFun", "StepFun coding-plan OpenAI-compatible endpoint.", "STEPFUN_API_KEY", mockProviderTemplate({ name: "stepfun", kind: "openai", baseUrl: "https://api.stepfun.com/step_plan/v1", models: mockStepFunModels, default: "step-3.7-flash", apiKeyEnv: "STEPFUN_API_KEY", supportedEfforts: ["low", "medium", "high"], defaultEffort: "medium" })),
+  mockPreset("stepfun-anthropic", "StepFun Anthropic", "StepFun coding-plan Anthropic-compatible endpoint.", "STEPFUN_API_KEY", mockProviderTemplate({ name: "stepfun-anthropic", kind: "anthropic", baseUrl: "https://api.stepfun.com/step_plan", models: mockStepFunModels, default: "step-3.7-flash", apiKeyEnv: "STEPFUN_API_KEY", thinking: "adaptive", supportedEfforts: ["low", "medium", "high"], defaultEffort: "medium" })),
   mockPreset("novita", "NovitaAI", "NovitaAI OpenAI-compatible multi-model gateway.", "NOVITA_API_KEY", mockProviderTemplate({ name: "novita", kind: "openai", baseUrl: "https://api.novita.ai/openai/v1", models: mockNovitaModels, default: "zai-org/glm-5.2", apiKeyEnv: "NOVITA_API_KEY" })),
   mockPreset("gmi", "GMI Cloud", "GMI Cloud direct multi-model OpenAI-compatible gateway.", "GMI_API_KEY", mockProviderTemplate({ name: "gmi", kind: "openai", baseUrl: "https://api.gmi-serving.com/v1", models: mockGMIModels, default: "zai-org/GLM-5.2-FP8", apiKeyEnv: "GMI_API_KEY", headers: { "User-Agent": "Reasonix" } })),
   mockPreset("vercel-ai-gateway", "Vercel AI Gateway", "Vercel AI Gateway via Anthropic-compatible Messages API.", "AI_GATEWAY_API_KEY", mockProviderTemplate({ name: "vercel-ai-gateway", kind: "anthropic", baseUrl: "https://ai-gateway.vercel.sh", models: mockVercelModels, visionModels: ["anthropic/claude-sonnet-4.6", "anthropic/claude-opus-4.8", "openai/gpt-5.4", "openai/gpt-5.4-pro", "moonshotai/kimi-k2.7-code"], default: "anthropic/claude-sonnet-4.6", apiKeyEnv: "AI_GATEWAY_API_KEY", authHeader: true, contextWindow: 1000000 })),
@@ -872,6 +883,7 @@ function makeMockApp(): AppBindings {
   const freshMock = scenario === "fresh";
   const guidanceMock = scenario === "guidance";
   const runningMock = scenario === "running" || guidanceMock;
+  const sandboxEscapeMock = scenario === "sandbox_escape";
   const mockAttachmentDataURLs = new Map<string, string>();
   let cancelled = false;
   let pendingAskPreview = false;
@@ -1634,6 +1646,23 @@ function makeMockApp(): AppBindings {
       cwd: "~/projects/joyquant-db",
     },
   ];
+  if (sandboxEscapeMock) {
+    window.setTimeout(() => {
+      if (pendingApprovalPreview) return;
+      pendingApprovalPreview = true;
+      emitMockTurnStarted();
+      emit({ kind: "reasoning", text: t("mock.sandboxEscapeReasoning") });
+      emit({
+        kind: "approval_request",
+        approval: {
+          id: "mock-sandbox-escape-preview",
+          tool: "sandbox_escape",
+          subject: t("mock.sandboxEscapeSubject"),
+          reason: t("mock.sandboxEscapeReason"),
+        },
+      });
+    }, 800);
+  }
   const mockModelCatalog = [
     { ref: "deepseek/deepseek-v4-flash", provider: "deepseek", model: "deepseek-v4-flash" },
     { ref: "deepseek/deepseek-v4-pro", provider: "deepseek", model: "deepseek-v4-pro" },
@@ -1726,6 +1755,26 @@ function makeMockApp(): AppBindings {
             id: "mock-approval-preview",
             tool: "bash",
             subject: t("mock.approvalSubject"),
+          },
+        });
+        return;
+      }
+      if (
+        trimmedInput === "/sandbox-escape-preview" ||
+        trimmedInput === "sandbox escape preview" ||
+        trimmedInput === "sandbox_escape preview" ||
+        trimmedInput === "sandbox escape预览"
+      ) {
+        pendingApprovalPreview = true;
+        await delay(250);
+        if (cancelled) return;
+        emit({
+          kind: "approval_request",
+          approval: {
+            id: "mock-sandbox-escape-preview",
+            tool: "sandbox_escape",
+            subject: t("mock.sandboxEscapeSubject"),
+            reason: t("mock.sandboxEscapeReason"),
           },
         });
         return;
@@ -1841,6 +1890,67 @@ function makeMockApp(): AppBindings {
           },
         });
         emit({ kind: "message", text: "Process card preview complete." });
+        emitMockTurnDone();
+        return;
+      }
+      if (trimmedInput === "/nested-preview" || trimmedInput === "nested preview" || trimmedInput === "嵌套预览") {
+        const parentId = "mock-nested-explore";
+        await delay(180);
+        if (cancelled) return;
+        emit({
+          kind: "reasoning",
+          text: "我先快速探索相关文件，再整理这个工具行的视觉层级。",
+        });
+        emit({
+          kind: "message",
+          text: "",
+          reasoning: "我先快速探索相关文件，再整理这个工具行的视觉层级。",
+        });
+        emit({
+          kind: "tool_dispatch",
+          tool: {
+            id: parentId,
+            name: "explore",
+            args: JSON.stringify({ task: "在 Reasonix 前端中检查工具调用图标和嵌套调用展示" }),
+            readOnly: true,
+            profile: { model: "mock-reasonix", effort: "high" },
+          },
+        });
+        for (let i = 1; i <= 30; i += 1) {
+          if (cancelled) return;
+          const id = `mock-nested-${i}`;
+          const isSearch = i % 3 === 0;
+          const name = isSearch ? "grep" : "read_file";
+          const args = isSearch
+            ? { pattern: i % 2 === 0 ? "tool__nested-count" : "explore", path: "desktop/frontend/src" }
+            : { path: `desktop/frontend/src/${i % 2 === 0 ? "components/ToolCard.tsx" : "styles.css"}`, offset: i * 10, limit: 40 };
+          emit({ kind: "tool_dispatch", tool: { id, name, args: JSON.stringify(args), readOnly: true, parentId } });
+          emit({
+            kind: "tool_result",
+            tool: {
+              id,
+              name,
+              readOnly: true,
+              output: isSearch ? "3 matches" : "read 40 lines",
+              durationMs: 24 + i,
+            },
+          });
+          await delay(18);
+        }
+        emit({
+          kind: "tool_result",
+          tool: {
+            id: parentId,
+            name: "explore",
+            readOnly: true,
+            output: "已读 20 个文件 · 搜索 10 个文件",
+            durationMs: 61510,
+          },
+        });
+        emit({
+          kind: "message",
+          text: "Mock nested tool preview complete. The explore row now shows the compass count marker.",
+        });
         emitMockTurnDone();
         return;
       }

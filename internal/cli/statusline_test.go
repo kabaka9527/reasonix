@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"os/exec"
 	"runtime"
 	"strings"
 	"testing"
@@ -42,6 +43,18 @@ func TestRunStatuslineCmd(t *testing.T) {
 	// A failing command yields an empty line, not an error.
 	if got := runStatuslineCmd(failCmd, "{}"); got != "" {
 		t.Errorf("failed command should yield empty, got %q", got)
+	}
+}
+
+func TestRunStatuslineCmdNormalizesQuotedNodeEval(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node not available")
+	}
+	script := "const payload = JSON.parse(require('fs').readFileSync(0, 'utf8')); console.log(payload.model)"
+	cmd := `node -e "\"` + script + `\""`
+
+	if got := runStatuslineCmd(cmd, `{"model":"deepseek"}`); got != "deepseek" {
+		t.Fatalf("normalized statusline node -e output = %q, want deepseek", got)
 	}
 }
 
