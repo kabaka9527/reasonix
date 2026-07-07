@@ -345,7 +345,10 @@ type Agent struct {
 	compilerTurn            *memorycompiler.Turn
 	// lastCompilerOutcome is the previous finished turn's persisted outcome.
 	// The immediately following user message may retroactively downgrade it
-	// when it reports the result wrong; any turn start consumes it (one-shot).
+	// when it reports the result wrong. Every non-synthetic turn start
+	// consumes it (one-shot) — even while the runtime is nil — so a ref can
+	// never survive intervening turns and be replayed after Memory v5 is
+	// re-enabled. Session switches clear it. Guarded by memoryCompilerMu.
 	lastCompilerOutcome *memorycompiler.OutcomeRef
 
 	// compilerInjectionMu bounds how often Memory v5 may replace a visible user
@@ -537,11 +540,14 @@ func (a *Agent) clearClassifierCache() {
 
 // reviseMemoryCompilerOutcomeForFeedback retroactively downgrades the previous
 // turn's recorded success when the user's immediate follow-up reports the
-// result wrong. One-shot: only the next turn's input may revise, so a stale
-// reference can never be replayed against later conversation.
+// result wrong. The ref is consumed unconditionally so it can never outlive
+// the turn that follows it; the revision itself additionally requires a live
+// runtime and corrective feedback.
 func (a *Agent) reviseMemoryCompilerOutcomeForFeedback(rt *memorycompiler.Runtime, input string) {
+	a.memoryCompilerMu.Lock()
 	ref := a.lastCompilerOutcome
 	a.lastCompilerOutcome = nil
+	a.memoryCompilerMu.Unlock()
 	if ref == nil || rt == nil {
 		return
 	}
@@ -702,6 +708,12 @@ func (a *Agent) SetSession(s *Session) {
 		a.rebuildTodoState(s.Snapshot())
 	}
 	a.resetMemoryCompilerInjectionGate()
+	// A session switch breaks the "immediately preceding turn" relationship:
+	// the next input belongs to a different conversation, so the pending
+	// outcome ref must not be revisable from it.
+	a.memoryCompilerMu.Lock()
+	a.lastCompilerOutcome = nil
+	a.memoryCompilerMu.Unlock()
 	// 清除分类缓存（会话边界）
 	a.clearClassifierCache()
 }
@@ -1010,8 +1022,11 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 		memoryCompilerInput = sourceInput
 	}
 	input = a.withTurnPreferences(rawInput)
-	if memCompiler := a.memoryCompilerRuntime(); memCompiler != nil && !MemoryCompilerSkipFromContext(ctx) {
-		a.reviseMemoryCompilerOutcomeForFeedback(memCompiler, memoryCompilerInput)
+	// Consume the previous turn's outcome ref on every non-synthetic turn,
+	// even while the runtime is nil (/memory-v5 off): revision must only ever
+	// target the immediately preceding turn.
+	if !MemoryCompilerSkipFromContext(ctx) {
+		a.reviseMemoryCompilerOutcomeForFeedback(a.memoryCompilerRuntime(), memoryCompilerInput)
 	}
 	if memCompiler := a.memoryCompilerRuntime(); memCompiler != nil && !MemoryCompilerSkipFromContext(ctx) && shouldStartMemoryCompiler(memoryCompilerInput) {
 		// 使用分类器判断是否为任务
@@ -1039,7 +1054,9 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 				defer func() {
 					turn.Finish(runErr)
 					ref := turn.OutcomeRef()
+					a.memoryCompilerMu.Lock()
 					a.lastCompilerOutcome = &ref
+					a.memoryCompilerMu.Unlock()
 					if a.compilerTurn == turn {
 						a.compilerTurn = nil
 					}
