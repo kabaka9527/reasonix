@@ -742,13 +742,14 @@ function browserPlatformOverride(): "darwin" | "windows" | "linux" | "" {
   return value === "darwin" || value === "windows" || value === "linux" ? value : "";
 }
 
-function mockScenario(): "demo" | "fresh" | "running" | "guidance" | "sandbox_escape" {
+function mockScenario(): "demo" | "fresh" | "running" | "guidance" | "sandbox_escape" | "notice" {
   if (typeof window === "undefined") return "demo";
   const value = new URLSearchParams(window.location.search).get("mock")?.trim().toLowerCase();
   if (value === "fresh" || value === "empty" || value === "first-run") return "fresh";
   if (value === "guidance" || value === "guide" || value === "steer") return "guidance";
   if (value === "running" || value === "busy" || value === "streaming") return "running";
   if (value === "sandbox_escape" || value === "sandbox-escape" || value === "sandboxescape") return "sandbox_escape";
+  if (value === "notice" || value === "notices" || value === "notice-preview") return "notice";
   return "demo";
 }
 
@@ -897,6 +898,7 @@ function makeMockApp(): AppBindings {
   const guidanceMock = scenario === "guidance";
   const runningMock = scenario === "running" || guidanceMock;
   const sandboxEscapeMock = scenario === "sandbox_escape";
+  const noticePreviewMock = scenario === "notice";
   const mockAttachmentDataURLs = new Map<string, string>();
   let cancelled = false;
   let pendingAskPreview = false;
@@ -1581,7 +1583,28 @@ function makeMockApp(): AppBindings {
     setMockTabRunning(currentMockTurnTabId(), false);
     emit({ kind: "turn_done" });
   };
-  let mockTabs: TabMeta[] = freshMock ? [
+  let mockTabs: TabMeta[] = noticePreviewMock ? [
+    {
+      id: "tab_notice_preview",
+      scope: "project",
+      workspaceRoot: "~/projects/reasonix",
+      workspaceName: "reasonix",
+      workspacePath: "~/projects/reasonix",
+      gitBranch: "codex/compact-chat-notices-i18n",
+      topicId: "topic_notice_preview",
+      topicTitle: "Compact notice preview",
+      projectColor: "green",
+      label: "DeepSeek-R1",
+      ready: true,
+      running: false,
+      mode: "normal",
+      collaborationMode: "normal",
+      toolApprovalMode: "ask",
+      tokenMode: "full",
+      active: true,
+      cwd: "~/projects/reasonix",
+    },
+  ] : freshMock ? [
     {
       id: "tab_global",
       scope: "global",
