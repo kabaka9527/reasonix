@@ -1273,7 +1273,7 @@ function NoticeCard({ level, text, detail }: { level: NoticeItem["level"]; text:
   return (
     <div className={`notice-line notice-line--${level}`} data-entrance="true">
       <span className="notice-line__icon">{level === "warn" ? "⚠ " : "ℹ "}</span>
-      <span className="notice-line__text">
+      <div className="notice-line__text">
         {text}
         {detail ? (
           <details className="notice-line__details">
@@ -1281,7 +1281,7 @@ function NoticeCard({ level, text, detail }: { level: NoticeItem["level"]; text:
             <div>{detail}</div>
           </details>
         ) : null}
-      </span>
+      </div>
     </div>
   );
 }
