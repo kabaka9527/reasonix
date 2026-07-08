@@ -58,30 +58,45 @@ func repairableNodeEvalArgs(command string) (string, string, string, bool) {
 }
 
 func normalizeEscapedPowerShellFile(command string) (string, bool) {
-	_, _, ok := repairablePowerShellFileArgs(command)
-	if !ok {
+	trimmed := strings.TrimSpace(command)
+	_, spans, ok := repairablePowerShellFileParse(trimmed)
+	if !ok || len(spans) == 0 {
 		return "", false
 	}
-	fixed := collapseEscapedShellQuotes(strings.TrimSpace(command))
-	if fixed == strings.TrimSpace(command) {
-		return "", false
+	// Replace only the escaped-quote sequences found during parsing, so
+	// well-formed sibling arguments keep their bytes verbatim.
+	var b strings.Builder
+	prev := 0
+	for _, span := range spans {
+		b.WriteString(trimmed[prev:span[0]])
+		b.WriteByte('"')
+		prev = span[1]
 	}
-	return fixed, true
+	b.WriteString(trimmed[prev:])
+	return b.String(), true
 }
 
 func repairablePowerShellFileArgs(command string) (string, []string, bool) {
-	fields, repaired, ok := parseSimpleHookCommandFields(command)
-	if !ok || len(fields) < 3 || !isPowerShellCommand(fields[0]) {
-		return "", nil, false
-	}
-	fileIdx := powerShellFileFlagIndex(fields)
-	if fileIdx < 0 || fileIdx+1 >= len(fields) {
-		return "", nil, false
-	}
-	if !powerShellFileRepairApplies(repaired, fileIdx) {
+	fields, _, ok := repairablePowerShellFileParse(command)
+	if !ok {
 		return "", nil, false
 	}
 	return fields[0], fields[1:], true
+}
+
+func repairablePowerShellFileParse(command string) ([]string, [][2]int, bool) {
+	fields, repaired, spans, ok := parseSimpleHookCommandFields(command)
+	if !ok || len(fields) < 3 || !isPowerShellCommand(fields[0]) {
+		return nil, nil, false
+	}
+	fileIdx := powerShellFileFlagIndex(fields)
+	if fileIdx < 0 || fileIdx+1 >= len(fields) {
+		return nil, nil, false
+	}
+	if !powerShellFileRepairApplies(repaired, fileIdx) {
+		return nil, nil, false
+	}
+	return fields, spans, true
 }
 
 func powerShellFileRepairApplies(repaired []bool, fileIdx int) bool {
@@ -105,10 +120,16 @@ func powerShellFileFlagIndex(fields []string) int {
 	return -1
 }
 
-func parseSimpleHookCommandFields(command string) ([]string, []bool, bool) {
+func parseSimpleHookCommandFields(command string) ([]string, []bool, [][2]int, bool) {
+	// A newline is a shell command separator, not argument whitespace; leave
+	// multi-command strings alone like other compound commands.
+	if strings.ContainsAny(command, "\n\r") {
+		return nil, nil, nil, false
+	}
 	s := strings.TrimSpace(command)
 	fields := []string{}
 	repaired := []bool{}
+	spans := [][2]int{}
 	for i := 0; i < len(s); {
 		for i < len(s) && isShellWhitespace(s[i]) {
 			i++
@@ -128,13 +149,14 @@ func parseSimpleHookCommandFields(command string) ([]string, []bool, bool) {
 					break
 				}
 				if isShellControl(c) {
-					return nil, nil, false
+					return nil, nil, nil, false
 				}
 				if n := escapedShellQuoteLen(s, i); n > 0 {
 					quote = '"'
 					escapedQuote = true
 					fieldStarted = true
 					fieldRepaired = true
+					spans = append(spans, [2]int{i, i + n})
 					i += n
 					continue
 				}
@@ -155,6 +177,7 @@ func parseSimpleHookCommandFields(command string) ([]string, []bool, bool) {
 					quote = 0
 					escapedQuote = false
 					fieldRepaired = true
+					spans = append(spans, [2]int{i, i + n})
 					i += n
 					continue
 				}
@@ -176,10 +199,10 @@ func parseSimpleHookCommandFields(command string) ([]string, []bool, bool) {
 			i++
 		}
 		if quote != 0 {
-			return nil, nil, false
+			return nil, nil, nil, false
 		}
 		if !fieldStarted {
-			return nil, nil, false
+			return nil, nil, nil, false
 		}
 		fields = append(fields, b.String())
 		repaired = append(repaired, fieldRepaired)
@@ -187,7 +210,7 @@ func parseSimpleHookCommandFields(command string) ([]string, []bool, bool) {
 			i++
 		}
 	}
-	return fields, repaired, len(fields) > 0
+	return fields, repaired, spans, len(fields) > 0
 }
 
 func escapedShellQuoteLen(s string, i int) int {
@@ -202,7 +225,7 @@ func escapedShellQuoteLen(s string, i int) int {
 }
 
 func isShellWhitespace(c byte) bool {
-	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
+	return c == ' ' || c == '\t'
 }
 
 func isShellControl(c byte) bool {
@@ -221,13 +244,6 @@ func isDoubleQuoteEscapedByte(c byte) bool {
 	default:
 		return false
 	}
-}
-
-func collapseEscapedShellQuotes(s string) string {
-	for strings.Contains(s, `\"`) {
-		s = strings.ReplaceAll(s, `\"`, `"`)
-	}
-	return s
 }
 
 func normalizeEscapedNodeEval(command string) (string, bool) {

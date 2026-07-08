@@ -216,6 +216,21 @@ func TestNormalizeCommandRepairsOnlyPowerShellFileEscapedQuotes(t *testing.T) {
 			want:    `powershell -File \"C:\hooks\archive.ps1\" && echo done`,
 		},
 		{
+			name:    "multiline command is left alone",
+			command: "powershell -File \\\"C:\\hooks\\archive.ps1\\\"\necho done",
+			want:    "powershell -File \\\"C:\\hooks\\archive.ps1\\\"\necho done",
+		},
+		{
+			name:    "well formed sibling argument keeps its escaped quotes",
+			command: `powershell -File \"C:\hooks\archive.ps1\" "say \"hi\""`,
+			want:    `powershell -File "C:\hooks\archive.ps1" "say \"hi\""`,
+		},
+		{
+			name:    "single quoted sibling argument stays literal",
+			command: `powershell -File \"C:\hooks\archive.ps1\" 'keep \" literal'`,
+			want:    `powershell -File "C:\hooks\archive.ps1" 'keep \" literal'`,
+		},
+		{
 			name:    "non powershell command is left alone",
 			command: `python \"C:\hooks\archive.py\"`,
 			want:    `python \"C:\hooks\archive.py\"`,
@@ -268,6 +283,9 @@ func TestRepairablePowerShellFileArgs(t *testing.T) {
 	}
 	if _, _, ok := repairablePowerShellFileArgs(`powershell -File \"C:\hooks\archive.ps1\" && echo done`); ok {
 		t.Fatal("compound PowerShell command should not be direct-exec repaired")
+	}
+	if _, _, ok := repairablePowerShellFileArgs("powershell -File \\\"C:\\hooks\\archive.ps1\\\"\necho done"); ok {
+		t.Fatal("multiline PowerShell command should not be direct-exec repaired")
 	}
 }
 
