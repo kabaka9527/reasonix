@@ -1,10 +1,13 @@
 package config
 
 import (
+	"fmt"
+	"hash/fnv"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"unicode/utf8"
 )
 
 var (
@@ -344,7 +347,40 @@ func WorkspaceSlug(absPath string) string {
 	if runtimeGOOS == "windows" {
 		absPath = strings.ToLower(absPath)
 	}
-	return strings.NewReplacer(string(os.PathSeparator), "-", "/", "-", "\\", "-", ":", "-").Replace(absPath)
+	slug := strings.NewReplacer(string(os.PathSeparator), "-", "/", "-", "\\", "-", ":", "-").Replace(absPath)
+	return boundFilenameComponent(slug, 255)
+}
+
+// boundFilenameComponent caps a derived filename component at the common
+// per-component filesystem limit (255 bytes on ext4/APFS/NTFS). maxLen is the
+// byte budget for this component (path segments pass 255; names that gain an
+// extension pass 255 minus the extension length). Inputs at or under the
+// budget pass through byte-identical — every component that ever existed on
+// disk is under the budget, or it could not have been created — so existing
+// directories and files keep resolving. Only inputs that would previously
+// have failed with ENAMETOOLONG are truncated, with an FNV-1a hash of the
+// full input appended so distinct deep paths cannot collapse to one name.
+func boundFilenameComponent(s string, maxLen int) string {
+	if maxLen <= 0 || len(s) <= maxLen {
+		return s
+	}
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(s))
+	budget := maxLen - 17 // room for "-" + 16 hex digits
+	prefix := s[:budget]
+	// Back off to a rune boundary so a multi-byte character is never split.
+	for len(prefix) > 0 && !utf8.ValidString(prefix) {
+		prefix = prefix[:len(prefix)-1]
+	}
+	return fmt.Sprintf("%s-%016x", prefix, h.Sum64())
+}
+
+// BoundFilenameComponent is the exported form for sibling packages deriving
+// filename components from unbounded input. maxLen is the byte budget for the
+// component (pass 255 for a bare path segment; subtract the extension length
+// when one will be appended).
+func BoundFilenameComponent(s string, maxLen int) string {
+	return boundFilenameComponent(s, maxLen)
 }
 
 // CacheDir is the per-user cache root for derived/regenerable artefacts: MCP
