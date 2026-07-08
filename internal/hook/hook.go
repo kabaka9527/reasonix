@@ -610,6 +610,9 @@ func spawnCommand(ctx context.Context, command string) *exec.Cmd {
 	if node, flag, script, ok := repairableNodeEvalArgs(command); ok {
 		return exec.CommandContext(ctx, node, flag, script)
 	}
+	if powershell, args, ok := repairablePowerShellFileArgs(command); ok {
+		return exec.CommandContext(ctx, powershell, args...)
+	}
 	if runtime.GOOS == "windows" {
 		if node, flag, script, ok := directNodeEvalArgs(command); ok {
 			return exec.CommandContext(ctx, node, flag, script)

@@ -174,6 +174,121 @@ func TestNormalizeCommandRepairsOnlyStdinNodeEvalQuoting(t *testing.T) {
 	}
 }
 
+func TestNormalizeCommandRepairsOnlyPowerShellFileEscapedQuotes(t *testing.T) {
+	tests := []struct {
+		name    string
+		command string
+		want    string
+	}{
+		{
+			name:    "powershell file path copied with json escaped quotes",
+			command: `powershell -File \"C:\Users\Example\.reasonix\hooks\archive-attachments.ps1\"`,
+			want:    `powershell -File "C:\Users\Example\.reasonix\hooks\archive-attachments.ps1"`,
+		},
+		{
+			name:    "pwsh file path with spaces",
+			command: `pwsh.exe -NoProfile -NonInteractive -File \"C:\Program Files\Reasonix Hooks\archive attachments.ps1\"`,
+			want:    `pwsh.exe -NoProfile -NonInteractive -File "C:\Program Files\Reasonix Hooks\archive attachments.ps1"`,
+		},
+		{
+			name:    "doubly escaped copied quotes",
+			command: `pwsh -File \\\"C:\Program Files\Reasonix Hooks\archive attachments.ps1\\\" \"arg with spaces\"`,
+			want:    `pwsh -File "C:\Program Files\Reasonix Hooks\archive attachments.ps1" "arg with spaces"`,
+		},
+		{
+			name:    "powershell executable path copied with escaped quotes",
+			command: `\"C:\Program Files\PowerShell\7\pwsh.exe\" -File \"C:\hooks\archive.ps1\"`,
+			want:    `"C:\Program Files\PowerShell\7\pwsh.exe" -File "C:\hooks\archive.ps1"`,
+		},
+		{
+			name:    "well formed file command stays unchanged",
+			command: `powershell -NoProfile -File "C:\Program Files\Reasonix Hooks\archive attachments.ps1"`,
+			want:    `powershell -NoProfile -File "C:\Program Files\Reasonix Hooks\archive attachments.ps1"`,
+		},
+		{
+			name:    "command mode may intentionally contain escaped quotes",
+			command: `powershell -Command \"Write-Output hi\"`,
+			want:    `powershell -Command \"Write-Output hi\"`,
+		},
+		{
+			name:    "compound command is left alone",
+			command: `powershell -File \"C:\hooks\archive.ps1\" && echo done`,
+			want:    `powershell -File \"C:\hooks\archive.ps1\" && echo done`,
+		},
+		{
+			name:    "multiline command is left alone",
+			command: "powershell -File \\\"C:\\hooks\\archive.ps1\\\"\necho done",
+			want:    "powershell -File \\\"C:\\hooks\\archive.ps1\\\"\necho done",
+		},
+		{
+			name:    "well formed sibling argument keeps its escaped quotes",
+			command: `powershell -File \"C:\hooks\archive.ps1\" "say \"hi\""`,
+			want:    `powershell -File "C:\hooks\archive.ps1" "say \"hi\""`,
+		},
+		{
+			name:    "single quoted sibling argument stays literal",
+			command: `powershell -File \"C:\hooks\archive.ps1\" 'keep \" literal'`,
+			want:    `powershell -File "C:\hooks\archive.ps1" 'keep \" literal'`,
+		},
+		{
+			name:    "non powershell command is left alone",
+			command: `python \"C:\hooks\archive.py\"`,
+			want:    `python \"C:\hooks\archive.py\"`,
+		},
+		{
+			name:    "missing file argument is left alone",
+			command: `powershell -NoProfile -File`,
+			want:    `powershell -NoProfile -File`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := NormalizeCommand(tt.command); got != tt.want {
+				t.Fatalf("NormalizeCommand(%q) = %q, want %q", tt.command, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadNormalizesPowerShellFileEscapedQuotes(t *testing.T) {
+	home := t.TempDir()
+	bad := `powershell -File \"C:\Program Files\Reasonix Hooks\archive attachments.ps1\"`
+	want := `powershell -File "C:\Program Files\Reasonix Hooks\archive attachments.ps1"`
+	writeSettings(t, home, hookSettingsWithCommand(t, SessionStart, bad))
+
+	hooks := Load(LoadOptions{HomeDir: home})
+	if len(hooks) != 1 {
+		t.Fatalf("Load hooks = %+v, want one", hooks)
+	}
+	if hooks[0].Command != want {
+		t.Fatalf("loaded command = %q, want %q", hooks[0].Command, want)
+	}
+}
+
+func TestRepairablePowerShellFileArgs(t *testing.T) {
+	command := `powershell -NoProfile -NonInteractive -File \"C:\Program Files\Reasonix Hooks\archive attachments.ps1\" -Mode \"startup\"`
+	name, args, ok := repairablePowerShellFileArgs(command)
+	if !ok {
+		t.Fatalf("repairablePowerShellFileArgs(%q) ok = false, want true", command)
+	}
+	if name != "powershell" {
+		t.Fatalf("name = %q, want powershell", name)
+	}
+	wantArgs := []string{"-NoProfile", "-NonInteractive", "-File", `C:\Program Files\Reasonix Hooks\archive attachments.ps1`, "-Mode", "startup"}
+	if strings.Join(args, "\x00") != strings.Join(wantArgs, "\x00") {
+		t.Fatalf("args = %#v, want %#v", args, wantArgs)
+	}
+	if _, _, ok := repairablePowerShellFileArgs(`powershell -File "C:\hooks\archive.ps1"`); ok {
+		t.Fatal("well formed PowerShell command should keep shell execution")
+	}
+	if _, _, ok := repairablePowerShellFileArgs(`powershell -File \"C:\hooks\archive.ps1\" && echo done`); ok {
+		t.Fatal("compound PowerShell command should not be direct-exec repaired")
+	}
+	if _, _, ok := repairablePowerShellFileArgs("powershell -File \\\"C:\\hooks\\archive.ps1\\\"\necho done"); ok {
+		t.Fatal("multiline PowerShell command should not be direct-exec repaired")
+	}
+}
+
 func TestLoadPermissionRequestHook(t *testing.T) {
 	home := t.TempDir()
 	writeSettings(t, home, `{"hooks":{"PermissionRequest":[{"match":"bash","command":"notify"}]}}`)
