@@ -1011,3 +1011,57 @@ func TestCoordinatorRunsExecutorWhenMarkerNotAlone(t *testing.T) {
 		t.Fatal("executor skipped: a final line mentioning the marker in prose was treated as a no-op conclusion")
 	}
 }
+
+// TestCoordinatorHandoffSurvivesPlannerCompaction pins the plan-scan boundary
+// against session rewrites: when the tool-enabled planner's final answer pushes
+// usage past the compaction trigger, Agent.Run rewrites and shortens the
+// planner session right after producing the plan. The pre-turn message count
+// then no longer bounds "this turn's messages" — scanning from it must not
+// hide the plan, or Coordinator.Run degrades to a raw executor turn despite a
+// successful plan.
+func TestCoordinatorHandoffSurvivesPlannerCompaction(t *testing.T) {
+	planner := &mockProvider{name: "planner", streams: [][]provider.Chunk{
+		{ // the plan, with usage past the force-compaction watermark
+			{Type: provider.ChunkText, Text: "Edit main.go and add the missing guard."},
+			{Type: provider.ChunkUsage, Usage: &provider.Usage{PromptTokens: 1900, TotalTokens: 1950}},
+			{Type: provider.ChunkDone},
+		},
+		{ // the compaction summarizer call
+			{Type: provider.ChunkText, Text: "- goal: guard work\n- pending: none"},
+			{Type: provider.ChunkDone},
+		},
+	}}
+	exec := &mockProvider{name: "executor", chunks: []provider.Chunk{
+		{Type: provider.ChunkText, Text: "Done."},
+		{Type: provider.ChunkDone},
+	}}
+
+	plannerReg := tool.NewRegistry()
+	plannerReg.Add(coordinatorTestTool{name: "read_file", readOnly: true, output: "ok"})
+
+	executor := New(exec, tool.NewRegistry(), NewSession("exec-sys"), Options{}, event.Discard)
+	plannerSess := NewSession("planner-sys")
+	// Preset enough planner history that the fold shrinks the session to (or
+	// below) its pre-turn length, which is what strands a boundary based on
+	// the pre-turn message count.
+	filler := strings.Repeat("planner history filler. ", 150)
+	for i := 0; i < 3; i++ {
+		plannerSess.Add(provider.Message{Role: provider.RoleUser, Content: filler})
+		plannerSess.Add(provider.Message{Role: provider.RoleAssistant, Content: filler})
+	}
+	coord := NewCoordinator(planner, plannerSess, nil, plannerReg, Options{ContextWindow: 2000}, executor, 0, event.Discard, nil)
+
+	if err := coord.Run(context.Background(), "fix the bug"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if plannerSess.RewriteVersion() == 0 {
+		t.Fatal("test setup: planner compaction did not fire, the rewrite boundary is not exercised")
+	}
+	if got := len(exec.requests); got == 0 {
+		t.Fatal("executor never ran")
+	}
+	got := lastUser(exec.requests[0])
+	if !strings.Contains(got, "Edit main.go and add the missing guard.") || !strings.Contains(got, executorHandoffMarker) {
+		t.Fatalf("executor input lost the plan handoff after planner compaction:\n%s", got)
+	}
+}

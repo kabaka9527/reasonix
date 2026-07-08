@@ -403,6 +403,7 @@ func (c *Coordinator) plan(ctx context.Context, input string) (string, error) {
 // executor while preserving its separate session and cache prefix.
 func (c *Coordinator) planWithTools(ctx context.Context, input string) (string, error) {
 	before := c.plannerSess.Snapshot()
+	rewriteBefore := c.plannerSess.RewriteVersion()
 	if err := c.plannerAgent.Run(ctx, input); err != nil {
 		// Mirror plan()'s rollback: Run already appended the user message
 		// (and possibly partial assistant/tool rounds) to the planner
@@ -416,7 +417,18 @@ func (c *Coordinator) planWithTools(ctx context.Context, input string) (string, 
 		}
 		return "", err
 	}
-	for i := len(c.plannerSess.Messages) - 1; i >= len(before); i-- {
+	// The plan is this turn's final answer: the last non-empty assistant
+	// message appended after the pre-turn boundary. When a session rewrite
+	// landed during the turn (auto-compaction fires right after the final
+	// answer), the pre-turn length no longer maps to a boundary in the
+	// rewritten log — it can even exceed it, hiding a successfully produced
+	// plan. Rewrites keep the recent tail verbatim, so scanning the whole
+	// rewritten session from the end still finds the final answer first.
+	floor := len(before)
+	if c.plannerSess.RewriteVersion() != rewriteBefore {
+		floor = 0
+	}
+	for i := len(c.plannerSess.Messages) - 1; i >= floor; i-- {
 		m := c.plannerSess.Messages[i]
 		if m.Role == provider.RoleAssistant && strings.TrimSpace(m.Content) != "" {
 			return m.Content, nil
