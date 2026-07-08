@@ -725,3 +725,185 @@ func TestCoordinatorSetPlanModeNilSafety(t *testing.T) {
 	c.SetPlanMode(true)  // should not panic
 	c.SetPlanMode(false) // should not panic
 }
+
+// errorProvider fails every Stream call, standing in for a down/misconfigured
+// planner provider.
+type errorProvider struct{ name string }
+
+func (e *errorProvider) Name() string { return e.name }
+
+func (e *errorProvider) Stream(context.Context, provider.Request) (<-chan provider.Chunk, error) {
+	return nil, fmt.Errorf("provider unavailable")
+}
+
+// TestIsNoOpPlan pins the no-op conclusion contract: the [no_changes] marker on
+// the final line wins; phrase heuristics only match conclusion lines and are
+// vetoed by action verbs, so an "already implemented; extend it" plan must
+// still reach the executor.
+func TestIsNoOpPlan(t *testing.T) {
+	cases := []struct {
+		name string
+		plan string
+		want bool
+	}{
+		{"empty", "", false},
+		{"conclusion phrase single line", "No changes are needed; the current implementation already handles this.", true},
+		{"already implemented with follow-up work", "The auth flow is already implemented; extend it to cover refresh tokens.", false},
+		{"mid-plan aside is not a conclusion", "Findings:\nThis part is already handled by the retry helper.\nConfirm the desired direction with the user.", false},
+		{"explicit marker on final line", "The retry logic exists in client.go and the tests already run this path.\n[no_changes]", true},
+		{"marker mentioned before remaining work", "[no_changes] does not apply here.\nEdit main.go to add the missing guard.", false},
+		{"negated conclusion", "It is not already implemented.", false},
+		{"no-op phrase with action verb", "No changes are needed in code, but run the test suite.", false},
+		{"chinese conclusion", "无需改动,当前逻辑已经覆盖该场景。", true},
+		{"chinese follow-up work", "重试逻辑已经实现,但需要扩展覆盖刷新令牌。", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isNoOpPlan(tc.plan); got != tc.want {
+				t.Errorf("isNoOpPlan(%q) = %v, want %v", tc.plan, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDefaultPlannerPromptRequestsNoChangesMarker keeps the producer and parser
+// of the no-op contract in sync: isNoOpPlan trusts the marker because the
+// planner prompt asks for it.
+func TestDefaultPlannerPromptRequestsNoChangesMarker(t *testing.T) {
+	if !strings.Contains(DefaultPlannerPrompt, noChangesMarker) {
+		t.Fatalf("DefaultPlannerPrompt does not request the %s marker isNoOpPlan parses", noChangesMarker)
+	}
+}
+
+// TestCoordinatorDoesNotSkipExecutorForAlreadyImplementedPlanWithFollowUp is
+// the motivating regression: a plan acknowledging existing code while asking
+// for follow-up work must not be treated as a no-op conclusion.
+func TestCoordinatorDoesNotSkipExecutorForAlreadyImplementedPlanWithFollowUp(t *testing.T) {
+	planner := &mockProvider{name: "planner", chunks: []provider.Chunk{
+		{Type: provider.ChunkText, Text: "The auth flow is already implemented; extend it to cover refresh tokens."},
+		{Type: provider.ChunkDone},
+	}}
+	exec := &mockProvider{name: "executor", chunks: []provider.Chunk{
+		{Type: provider.ChunkText, Text: "Done."},
+		{Type: provider.ChunkDone},
+	}}
+
+	executor := New(exec, tool.NewRegistry(), NewSession("exec-sys"), Options{}, event.Discard)
+	coord := NewCoordinator(planner, NewSession("planner-sys"), nil, nil, Options{}, executor, 0, event.Discard, nil)
+
+	if err := coord.Run(context.Background(), "add refresh token support"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := len(exec.requests); got == 0 {
+		t.Fatal("executor skipped: an already-implemented plan with follow-up work was treated as no-op")
+	}
+	if got := lastUser(exec.requests[0]); !strings.Contains(got, "extend it to cover refresh tokens") {
+		t.Fatalf("executor handoff missing the plan: %q", got)
+	}
+}
+
+// TestCoordinatorSkipsExecutorOnExplicitNoChangesMarker checks the marker
+// contract end to end: research prose above the marker may mention runs/tests
+// of existing code without vetoing the explicit conclusion.
+func TestCoordinatorSkipsExecutorOnExplicitNoChangesMarker(t *testing.T) {
+	planner := &mockProvider{name: "planner", chunks: []provider.Chunk{
+		{Type: provider.ChunkText, Text: "The retry logic exists in client.go and the tests already run this path.\n[no_changes]"},
+		{Type: provider.ChunkDone},
+	}}
+	exec := &mockProvider{name: "executor", chunks: []provider.Chunk{
+		{Type: provider.ChunkText, Text: "Should not run."},
+		{Type: provider.ChunkDone},
+	}}
+
+	executor := New(exec, tool.NewRegistry(), NewSession("exec-sys"), Options{}, event.Discard)
+	coord := NewCoordinator(planner, NewSession("planner-sys"), nil, nil, Options{}, executor, 0, event.Discard, nil)
+
+	if err := coord.Run(context.Background(), "check whether retries are covered"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := len(exec.requests); got != 0 {
+		t.Fatalf("executor requests = %d, want skip on explicit [no_changes] marker", got)
+	}
+	messages := executor.session.Messages
+	if got := len(messages); got != 3 {
+		t.Fatalf("executor session messages = %d, want system + user + no-op assistant", got)
+	}
+	if got := messages[2].Content; !strings.Contains(got, "[no_changes]") {
+		t.Fatalf("persisted executor assistant message = %q, want the planner conclusion", got)
+	}
+}
+
+// TestCoordinatorFallsBackToExecutorWhenPlannerFails checks that a planner
+// failure degrades the turn to executor-only instead of failing it: the
+// executor gets the raw input (no handoff boilerplate), a warning notice is
+// emitted, and the planner session is rolled back so the next plan does not
+// start with consecutive user messages.
+func TestCoordinatorFallsBackToExecutorWhenPlannerFails(t *testing.T) {
+	cases := []struct {
+		name    string
+		planner provider.Provider
+	}{
+		{"stream call fails", &errorProvider{name: "planner"}},
+		{"stream emits error chunk", &mockProvider{name: "planner", chunks: []provider.Chunk{
+			{Type: provider.ChunkError, Err: fmt.Errorf("rate limited")},
+		}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			exec := &mockProvider{name: "executor", chunks: []provider.Chunk{
+				{Type: provider.ChunkText, Text: "Done."},
+				{Type: provider.ChunkDone},
+			}}
+			var events []event.Event
+			sink := event.FuncSink(func(e event.Event) { events = append(events, e) })
+
+			executor := New(exec, tool.NewRegistry(), NewSession("exec-sys"), Options{}, event.Discard)
+			plannerSess := NewSession("planner-sys")
+			coord := NewCoordinator(tc.planner, plannerSess, nil, nil, Options{}, executor, 0, sink, nil)
+
+			if err := coord.Run(context.Background(), "fix the bug"); err != nil {
+				t.Fatalf("Run should fall back to the executor, got: %v", err)
+			}
+			if got := len(exec.requests); got != 1 {
+				t.Fatalf("executor requests = %d, want 1 fallback run", got)
+			}
+			got := lastUser(exec.requests[0])
+			if got != "fix the bug" || strings.Contains(got, "You are the executor now") {
+				t.Fatalf("fallback executor input = %q, want the raw task without handoff boilerplate", got)
+			}
+			if n := len(plannerSess.Messages); n != 1 {
+				t.Fatalf("planner session messages = %d, want rollback to system only", n)
+			}
+			var warned bool
+			for _, e := range events {
+				if e.Kind == event.Notice && e.Level == event.LevelWarn && strings.Contains(e.Text, "Planner failed") {
+					warned = true
+				}
+			}
+			if !warned {
+				t.Fatal("missing warn notice about the planner fallback")
+			}
+		})
+	}
+}
+
+// TestCoordinatorPropagatesPlannerErrorWhenTurnCancelled keeps cancellation
+// semantics: a turn the user aborted must not silently restart on the executor.
+func TestCoordinatorPropagatesPlannerErrorWhenTurnCancelled(t *testing.T) {
+	exec := &mockProvider{name: "executor", chunks: []provider.Chunk{
+		{Type: provider.ChunkText, Text: "Should not run."},
+		{Type: provider.ChunkDone},
+	}}
+	executor := New(exec, tool.NewRegistry(), NewSession("exec-sys"), Options{}, event.Discard)
+	coord := NewCoordinator(&errorProvider{name: "planner"}, NewSession("planner-sys"), nil, nil, Options{}, executor, 0, event.Discard, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := coord.Run(ctx, "fix the bug")
+	if err == nil || !strings.Contains(err.Error(), "planner:") {
+		t.Fatalf("Run = %v, want propagated planner error on cancelled turn", err)
+	}
+	if got := len(exec.requests); got != 0 {
+		t.Fatalf("executor requests = %d, want none after user cancellation", got)
+	}
+}

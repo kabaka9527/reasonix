@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -27,9 +28,22 @@ have enough evidence. Do not write full implementations or attempt side effects.
 Do not ask the user how to trigger the executor and do not say you are waiting
 for the executor. Output executor-ready instructions: what to do, which files or
 commands are relevant, expected blockers, and key decisions. Keep it short and
-actionable.`
+actionable.
+If your research shows the task needs no changes and no actions at all (already
+implemented, already resolved), explain that briefly and end your reply with a
+final line containing exactly [no_changes]. Never emit that marker when any
+work, verification, or follow-up remains.`
 
 const executorHandoffMarker = "Reasonix executor handoff"
+
+// plannerFallbackNotice is shown when the planner fails and the turn degrades
+// to executor-only instead of failing outright.
+const plannerFallbackNotice = "Planner failed; continuing this turn with the executor only."
+
+// noChangesMarker is the explicit no-op conclusion the planner is asked to emit
+// on its final line (see DefaultPlannerPrompt). isNoOpPlan trusts it over the
+// legacy phrase heuristics.
+const noChangesMarker = "[no_changes]"
 
 // PlannerPromptWithContext appends cache-stable standing context, such as loaded
 // REASONIX.md / AGENTS.md memory, to the planner's smaller system prompt.
@@ -208,7 +222,21 @@ func (c *Coordinator) Run(ctx context.Context, input string) error {
 	c.sink.Emit(event.Event{Kind: event.Phase, Text: c.planner.Name() + " · planning", Source: event.UsageSourcePlanner})
 	plan, err := c.plan(ctx, input)
 	if err != nil {
-		return fmt.Errorf("planner: %w", err)
+		// Cancellation and max-steps pauses are control flow, not planner
+		// failures: the first is the user aborting the turn, the second has
+		// saved work in the planner session and asks the user to continue.
+		// Neither may silently restart on the executor.
+		var pause *maxStepsPause
+		if ctx.Err() != nil || errors.As(err, &pause) {
+			return fmt.Errorf("planner: %w", err)
+		}
+		// A planner failure must not take down the turn: the executor is
+		// healthy and owns the full tool set, so degrade to single-model for
+		// this turn (mirroring the auto-plan classifier's fallback to the
+		// heuristic when it errors).
+		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: plannerFallbackNotice, Detail: "planner failed; running the executor without a plan: " + err.Error(), Source: event.UsageSourcePlanner})
+		c.sink.Emit(event.Event{Kind: event.Phase, Text: c.executor.prov.Name() + " · executing", Source: event.UsageSourceExecutor})
+		return c.executor.Run(ctx, input)
 	}
 	c.sink.Emit(event.Event{Kind: event.Phase, Text: c.executor.prov.Name() + " · executing", Source: event.UsageSourceExecutor})
 	if isNoOpPlan(plan) {
@@ -219,12 +247,26 @@ func (c *Coordinator) Run(ctx context.Context, input string) error {
 	return c.executor.Run(ctx, formatHandoff(input, plan, executorToolHandoffContext(c.executor)))
 }
 
+// isNoOpPlan reports whether the plan explicitly concludes that nothing needs
+// to change. The primary contract is the [no_changes] marker requested from the
+// planner in DefaultPlannerPrompt: on the final non-empty line it is trusted
+// as-is, so research notes above it (which may mention tests, runs, or edits
+// that already exist) cannot veto the conclusion. The legacy phrase list stays
+// as a fallback for planners that ignore the marker, but it only matches
+// conclusion positions (the first or last non-empty line) and is vetoed by
+// action verbs anywhere in the plan: a wrong skip silently drops the task,
+// while a missed skip just costs one executor round.
 func isNoOpPlan(plan string) bool {
-	lower := strings.ToLower(strings.TrimSpace(plan))
-	if lower == "" {
+	trimmed := strings.TrimSpace(plan)
+	if trimmed == "" {
 		return false
 	}
-	if containsNoOpActionTerm(lower) {
+	first := strings.ToLower(firstNonEmptyLine(trimmed))
+	last := strings.ToLower(lastNonEmptyLine(trimmed))
+	if strings.Contains(last, noChangesMarker) {
+		return true
+	}
+	if containsNoOpActionTerm(strings.ToLower(trimmed)) {
 		return false
 	}
 	noOp := []string{
@@ -239,7 +281,6 @@ func isNoOpPlan(plan string) bool {
 		"already handled",
 		"already implemented",
 		"already resolved",
-		"[no_changes]",
 		"无需改动",
 		"无需修改",
 		"无需更改",
@@ -254,20 +295,43 @@ func isNoOpPlan(plan string) bool {
 		"已经解决",
 	}
 	for _, phrase := range noOp {
-		if strings.Contains(lower, phrase) && !strings.Contains(lower, "not "+phrase) && !strings.Contains(lower, "不是"+phrase) {
-			return true
+		for _, line := range []string{first, last} {
+			if strings.Contains(line, phrase) && !strings.Contains(line, "not "+phrase) && !strings.Contains(line, "不是"+phrase) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+func firstNonEmptyLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		if t := strings.TrimSpace(line); t != "" {
+			return t
+		}
+	}
+	return ""
+}
+
+func lastNonEmptyLine(s string) string {
+	lines := strings.Split(s, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if t := strings.TrimSpace(lines[i]); t != "" {
+			return t
+		}
+	}
+	return ""
 }
 
 func containsNoOpActionTerm(lower string) bool {
 	terms := []string{
 		" add ", " add docs", " add tests", " update ", " edit ", " write ",
 		" create ", " delete ", " remove ", " patch ", " refactor ", " implement ",
-		" run ", " test ", " build ", " fix ",
+		" run ", " test ", " build ", " fix ", " extend ", " verify ", " check ",
+		" investigate ",
 		"新增", "补充", "更新", "编辑", "写入", "创建", "删除", "移除",
-		"运行", "测试", "构建", "修复", "实现", "重构",
+		"运行", "测试", "构建", "修复", "实现", "重构", "扩展", "验证", "排查",
+		"检查", "调查",
 	}
 	padded := " " + lower + " "
 	for _, term := range terms {
@@ -292,6 +356,11 @@ func (c *Coordinator) plan(ctx context.Context, input string) (string, error) {
 	if c.plannerAgent != nil {
 		return c.planWithTools(ctx, input)
 	}
+	// On failure, roll the just-added user message back: a dangling user turn
+	// would produce consecutive user roles on the next plan (which some
+	// providers reject), and Run's executor fallback keeps the turn alive
+	// after this error, so the planner session must stay coherent.
+	before := c.plannerSess.Snapshot()
 	c.plannerSess.Add(provider.Message{Role: provider.RoleUser, Content: input})
 
 	ch, err := c.planner.Stream(ctx, provider.Request{
@@ -299,6 +368,7 @@ func (c *Coordinator) plan(ctx context.Context, input string) (string, error) {
 		Temperature: provider.OptionalTemperature(c.temperature),
 	})
 	if err != nil {
+		c.plannerSess.Replace(before)
 		return "", err
 	}
 
@@ -312,6 +382,7 @@ func (c *Coordinator) plan(ctx context.Context, input string) (string, error) {
 		case provider.ChunkUsage:
 			usage = chunk.Usage
 		case provider.ChunkError:
+			c.plannerSess.Replace(before)
 			return "", chunk.Err
 		}
 	}

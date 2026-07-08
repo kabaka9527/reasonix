@@ -1195,7 +1195,7 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 		// Grace round guard: if we already gave the model one extra response
 		// and it still wants to call tools, stop here.
 		if graceRound {
-			return fmt.Errorf("paused after %d tool-call rounds (%s) — the work so far is saved; send another message to continue, or set %s higher or to 0 for no limit", a.maxSteps, a.maxStepsKey, a.maxStepsKey)
+			return &maxStepsPause{steps: a.maxSteps, key: a.maxStepsKey}
 		}
 
 		results := a.executeBatch(ctx, calls)
@@ -1229,7 +1229,21 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 	// Only reached when a positive maxSteps guard is configured. The work so far
 	// is already in the session, so the user can just send another message to pick
 	// up where it left off.
-	return fmt.Errorf("paused after %d tool-call rounds (%s) — the work so far is saved; send another message to continue, or set %s higher or to 0 for no limit", a.maxSteps, a.maxStepsKey, a.maxStepsKey)
+	return &maxStepsPause{steps: a.maxSteps, key: a.maxStepsKey}
+}
+
+// maxStepsPause is the deliberate stop when a positive tool-call budget runs
+// out: the session already holds the completed work and the user is asked to
+// continue. It is a control-flow signal, not a provider failure — Coordinator
+// matches on it to surface the pause instead of degrading the turn to
+// executor-only.
+type maxStepsPause struct {
+	steps int
+	key   string
+}
+
+func (e *maxStepsPause) Error() string {
+	return fmt.Sprintf("paused after %d tool-call rounds (%s) — the work so far is saved; send another message to continue, or set %s higher or to 0 for no limit", e.steps, e.key, e.key)
 }
 
 func (a *Agent) emitMemoryCompilerStats(turn *memorycompiler.Turn) {
