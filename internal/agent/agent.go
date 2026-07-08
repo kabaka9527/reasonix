@@ -1154,7 +1154,7 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 					return fmt.Errorf("final-answer readiness failed %d times: %s", finalReadinessBlocks, readiness.reason)
 				}
 				event.RecordReadinessAudit(a.sink, readiness.audit(result, false))
-				a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "final-answer readiness blocked: " + readiness.reason})
+				a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: finalReadinessNoticeText(), Detail: readiness.reason})
 				a.session.Add(provider.Message{Role: provider.RoleUser, Content: a.withTurnPreferences(finalReadinessRetryMessage(readiness.reason))})
 				a.maybeCompact(ctx, usage)
 				continue
@@ -1164,14 +1164,14 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 				if emptyFinalBlocks >= maxEmptyFinalBlocks {
 					return fmt.Errorf("model finished without a visible final answer %d times", emptyFinalBlocks)
 				}
-				a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: emptyFinalNotice(a.prov.Name(), usage, len(reasoning))})
+				a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: emptyFinalNotice(), Detail: emptyFinalNoticeDetail(a.prov.Name(), usage, len(reasoning))})
 				a.session.Add(provider.Message{Role: provider.RoleUser, Content: a.withTurnPreferences(emptyFinalRetryMessage())})
 				a.maybeCompact(ctx, usage)
 				continue
 			}
 			if executorHandoff && !usedAnyTool && handoffNudges < maxExecutorHandoffNudges && shouldNudgeExecutorHandoff(input, text) {
 				handoffNudges++
-				a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "executor answered without taking any action; nudging it to use its tools"})
+				a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: executorHandoffNoticeText(), Detail: "executor answered without taking any action; nudging it to use its tools"})
 				a.session.Add(provider.Message{Role: provider.RoleUser, Content: a.withTurnPreferences(executorHandoffRetryMessage())})
 				a.maybeCompact(ctx, usage)
 				continue
@@ -1222,7 +1222,7 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 			graceRound = true
 			nudge := fmt.Sprintf("Do not call any more tools — your tool-call round limit (%s) has been reached. Instead, synthesize a final answer from all the work already completed: summarize what was accomplished, what remains to be done, and any decisions the user should make. The user can increase %s or continue in the next turn if more work is needed.", a.maxStepsKey, a.maxStepsKey)
 			a.session.Add(provider.Message{Role: provider.RoleUser, Content: a.withTurnPreferences(nudge)})
-			a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf("budget (%s=%d) exhausted: one grace round to finalize", a.maxStepsKey, a.maxSteps)})
+			a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: toolBudgetNoticeText(), Detail: fmt.Sprintf("budget (%s=%d) exhausted: one grace round to finalize", a.maxStepsKey, a.maxSteps)})
 		}
 	}
 	// Only reached when a positive maxSteps guard is configured. The work so far
@@ -1374,6 +1374,10 @@ func finalReadinessIncompleteTodos(items []evidence.TodoStepMatch) string {
 		parts = append(parts, fmt.Sprintf("%s: %s", label, item.Status))
 	}
 	return "latest successful todo_write still has incomplete items: " + strings.Join(parts, ", ")
+}
+
+func finalReadinessNoticeText() string {
+	return "Task status needs one more check; asking the assistant to finish or explain what is blocking it."
 }
 
 func (a *Agent) setTodoState(todos []evidence.TodoItem) {
@@ -1723,12 +1727,24 @@ func emptyFinalRetryMessage() string {
 	return "The previous assistant response finished without any visible answer text. Continue the same task now and provide a concise visible answer to the user. Do not send reasoning only."
 }
 
-func emptyFinalNotice(prov string, u *provider.Usage, reasoningLen int) string {
+func emptyFinalNotice() string {
+	return "No visible answer was produced; asking the assistant to respond again."
+}
+
+func emptyFinalNoticeDetail(prov string, u *provider.Usage, reasoningLen int) string {
 	finish := "unknown"
 	if u != nil && u.FinishReason != "" {
 		finish = u.FinishReason
 	}
 	return fmt.Sprintf("empty final answer blocked: %s returned no visible answer text (finish=%s, reasoning=%d chars); retrying", prov, finish, reasoningLen)
+}
+
+func executorHandoffNoticeText() string {
+	return "The assistant answered before taking action; asking it to use the required tools."
+}
+
+func toolBudgetNoticeText() string {
+	return "Tool round limit reached; asking the assistant to summarize progress."
 }
 
 func streamRecoveryMessage(hasPartialText, hadPartialTool bool) string {
@@ -2178,7 +2194,7 @@ func (a *Agent) applyStormBreaker(calls []provider.ToolCall, outcomes []toolOutc
 	}
 
 	const blockedAdvice = "Change approach: do not keep retrying a blocked tool by changing the tool, command, or arguments. Respect the permission, plan-mode, hook, or loop-guard blocker; use an already-allowed tool, ask the user for the specific approval or choice if appropriate, or explain the blocker in your final answer."
-	var guard, notice string
+	var guard, detail string
 	if stormHit {
 		subject := fmt.Sprintf("%q", calls[0].Name)
 		short := calls[0].Name
@@ -2202,20 +2218,24 @@ func (a *Agent) applyStormBreaker(calls []provider.ToolCall, outcomes []toolOutc
 		guard = fmt.Sprintf(
 			"[loop guard] %s has now %s %d times in a row with the same host response. Re-sending it — even with the wording changed — will not help: the calls keep hitting the same outcome. %s",
 			subject, action, a.stormCount, advice)
-		notice = fmt.Sprintf(
+		detail = fmt.Sprintf(
 			"loop guard: %s hit the same host response %d× — nudging the model to change approach",
 			short, a.stormCount)
 	} else {
 		guard = fmt.Sprintf(
 			"[loop guard] every tool call in the last %d turns has been blocked by the host (permission, plan mode, hook, or loop guard). Switching tools, reordering calls, or rewording arguments will not help while the blockers stand. %s",
 			a.blockedTurnStreak, blockedAdvice)
-		notice = fmt.Sprintf(
+		detail = fmt.Sprintf(
 			"loop guard: every tool call blocked %d turns in a row — nudging the model to change approach",
 			a.blockedTurnStreak)
 	}
 	results[0] = outcomes[0].output + "\n\n" + guard
-	a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: notice})
+	a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: loopGuardNoticeText(), Detail: detail})
 	a.armLoopGuardPass(receiptMark)
+}
+
+func loopGuardNoticeText() string {
+	return "The assistant is stuck retrying a blocked action; asking it to change approach."
 }
 
 // batchStormSignature returns a per-turn fixation signature — each call's

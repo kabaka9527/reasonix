@@ -854,6 +854,9 @@ function sessionItemsToMarkdown(title: string, items: Item[], live?: LiveStream)
         break;
       case "notice":
         lines.push(`### ${item.level === "warn" ? "Warning" : "Notice"}`, "", item.text.trim(), "");
+        if (item.detail?.trim()) {
+          lines.push("Details:", "", item.detail.trim(), "");
+        }
         break;
       case "compaction":
         lines.push("### Context Compaction", "");

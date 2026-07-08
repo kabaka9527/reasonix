@@ -3289,6 +3289,20 @@ a[href] {
   min-width: 0;
   word-break: break-word;
 }
+.notice-line__details {
+  margin-top: 4px;
+  color: var(--fg-faint);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.notice-line__details summary {
+  cursor: pointer;
+  user-select: none;
+}
+.notice-line__details div {
+  margin-top: 4px;
+  white-space: pre-wrap;
+}
 
 /* ── ReadOnly batch (parent fold for read/search tools) ────────────── */
 .readonly-batch {

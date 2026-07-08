@@ -202,6 +202,16 @@ console.log("\nuse controller meta");
     "The session changed on disk, so Reasonix adopted the newer transcript; the local changes were already covered.",
     "covered adopted transcript notice can be normalized",
   );
+  eq(
+    localizedBackendNoticeText("The assistant answered before taking action; asking it to use the required tools."),
+    "The assistant answered before taking action; asking it to use the required tools.",
+    "canonical backend notice is routed through the locale dictionary",
+  );
+  eq(
+    localizedBackendNoticeText("background export failed: needs attention"),
+    "Background export needs attention.",
+    "dynamic background job notice is user-facing",
+  );
 }
 
 {
@@ -261,6 +271,12 @@ console.log("\nuse controller meta");
   eq(lifecycleNotices.length, 0, "background lifecycle notices stay silent when hydrating history");
   eq(users[0]?.kind === "user" && users[0].id, "h0", "silent history notices keep later item ids compact");
   eq(hydrated.seq, 1, "silent history notices do not inflate the hydrated sequence");
+}
+
+{
+  const hydrated = historyMessagesToItems([{ role: "notice", level: "warn", content: "short notice", detail: "historical diagnostic" }], "h");
+  const notice = hydrated.items.find((item) => item.kind === "notice" && item.text === "short notice");
+  eq(notice?.kind === "notice" && notice.detail, "historical diagnostic", "history notices preserve expandable detail text");
 }
 
 {
@@ -390,6 +406,12 @@ console.log("\nuse controller meta");
   const notice = merged.items.find((item) => item.kind === "notice" && item.text === "runtime notice");
   eq(user?.kind === "user" && user.checkpointTurn, 0, "turn_done checkpoint merge stamps user turn zero");
   eq(Boolean(notice), true, "turn_done checkpoint merge preserves runtime notices");
+}
+
+{
+  const s = reducer(initialState, { type: "event", e: { kind: "notice", level: "warn", text: "short notice", detail: "verbose diagnostic" } });
+  const notice = s.items.find((item) => item.kind === "notice" && item.text === "short notice");
+  eq(notice?.kind === "notice" && notice.detail, "verbose diagnostic", "runtime notices preserve expandable detail text");
 }
 
 {

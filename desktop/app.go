@@ -4062,6 +4062,7 @@ func (a *App) singleSurfaceLayoutEnabled() bool {
 type HistoryMessage struct {
 	Role               string                    `json:"role"`
 	Content            string                    `json:"content"`
+	Detail             string                    `json:"detail,omitempty"`
 	SubmitText         string                    `json:"submitText,omitempty"`
 	CheckpointTurn     *int                      `json:"checkpointTurn,omitempty"`
 	Reasoning          string                    `json:"reasoning,omitempty"`
@@ -4836,6 +4837,7 @@ type previewEventRecord struct {
 	UpdatedAt        json.RawMessage           `json:"updatedAt"`
 	UpdatedAtSnake   json.RawMessage           `json:"updated_at"`
 	Text             string                    `json:"text"`
+	Detail           string                    `json:"detail"`
 	Content          string                    `json:"content"`
 	Reasoning        string                    `json:"reasoning"`
 	ReasoningContent string                    `json:"reasoningContent"`
@@ -4943,7 +4945,7 @@ func previewEventSessionMessages(path string) ([]HistoryMessage, bool, error) {
 			if level != "warn" {
 				level = "info"
 			}
-			out = append(out, HistoryMessage{Role: "notice", Level: level, Content: firstNonEmpty(rec.Text, rec.Content)})
+			out = append(out, HistoryMessage{Role: "notice", Level: level, Content: firstNonEmpty(rec.Text, rec.Content), Detail: rec.Detail})
 		case "compaction_started":
 			c := rec.compactionPayload()
 			out = append(out, HistoryMessage{Role: "compaction", Pending: true, Trigger: c.Trigger})
