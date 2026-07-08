@@ -29753,3 +29753,46 @@ body > .mermaid-diagram--fullscreen {
     min-width: 0;
   }
 }
+
+/* ============================================================================
+   Windows + Creation: Vertical alignment for titlebar elements
+   ========================================================================= */
+
+/* Align sidebar logo with Windows titlebar center line */
+.app--windows.app--creation .sidebar__brand,
+:root[data-theme-style] .app--windows.app--creation .sidebar__brand {
+  margin-top: -29px !important;
+}
+
+/* Align topicbar (replaces app-chrome in Creation mode) with Windows controls */
+.app--windows.app--creation .topicbar {
+  transform: translateY(-4px) !important;
+}
+
+/* Align topicbar identity (session title) with Windows controls */
+.app--windows.app--creation .topicbar__identity {
+  transform: translateY(-2px) !important;
+}
+
+/* Reduce session title font size and weight */
+.app--windows.app--creation .topicbar__title-row h1 {
+  font-size: 13.5px !important;
+  font-weight: 520 !important;
+}
+
+/* Align topicbar actions container (right side buttons) - but don't transform, let children handle it */
+.app--windows.app--creation .topicbar__actions {
+  /* Removed transform to avoid double-transform on chrome-btn */
+}
+
+/* Align action buttons (not chrome buttons) */
+.app--windows.app--creation .topicbar__action-btn:not(.topicbar__chrome-btn) {
+  transform: translateY(-2px) !important;
+  align-self: center !important;
+}
+
+/* Align topicbar chrome buttons separately (they're also in actions container) */
+.app--windows.app--creation .topicbar__chrome-btn {
+  transform: translateY(-2px) !important;
+  align-self: center !important;
+}
