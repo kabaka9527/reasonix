@@ -45,7 +45,7 @@ import { clearAttentionChimeKeys, playAttentionChime, playSuccessChime, shouldPl
 import { Transcript } from "./components/Transcript";
 import { Composer } from "./components/Composer";
 import { TodoPanel } from "./components/TodoPanel";
-import { ApprovalModal } from "./components/ApprovalModal";
+import { ApprovalModal, approvalToolLabel } from "./components/ApprovalModal";
 import { AskCard } from "./components/AskCard";
 import { UndoRewindBanner } from "./components/UndoRewindBanner";
 import { ClearContextCard } from "./components/ClearContextCard";
@@ -3516,6 +3516,7 @@ export default function App() {
                 onStop={() => {
                   cancel();
                 }}
+                toolApprovalMode={toolApprovalMode}
               />
             )}
             {state.ask && (
@@ -3567,6 +3568,8 @@ export default function App() {
               turnStartAt={state.turnStartAt}
               turnTokens={state.turnTokens}
               retry={state.retry}
+              pendingApprovalLabel={state.approval ? approvalToolLabel(state.approval.tool, t) : null}
+              pendingAsk={state.ask != null}
               transientDismissSignal={transientOverlayDismissSignal}
               sessionKey={composerSessionKey}
               fileRefRefreshKey={composerFileRefRefreshKey}
