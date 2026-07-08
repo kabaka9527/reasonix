@@ -766,7 +766,18 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		if childDepth > maxSubagentDepth {
 			return "", fmt.Errorf("subagent delegation depth limit reached (max_subagent_depth=%d)", maxSubagentDepth)
 		}
-		subReg := agent.SubagentToolRegistryForDepth(reg, sk.AllowedTools, childDepth, maxSubagentDepth)
+		// A read-only skill (builtin review/security-review, or frontmatter
+		// `read-only: true`) gets its promise enforced at the tool boundary:
+		// writer tools are stripped and bash runs under the plan-mode safe
+		// command policy. Transcripts recorded against the writer-capable
+		// registry stop matching on continue_from (schema-hash check reports
+		// the mismatch).
+		var subReg *tool.Registry
+		if sk.ReadOnly {
+			subReg = agent.ReadOnlySubagentToolRegistryForDepth(reg, sk.AllowedTools, childDepth, maxSubagentDepth)
+		} else {
+			subReg = agent.SubagentToolRegistryForDepth(reg, sk.AllowedTools, childDepth, maxSubagentDepth)
+		}
 		continueFrom := strings.TrimSpace(runOpts.ContinueFrom)
 		legacyForkFrom := strings.TrimSpace(runOpts.ForkFrom)
 		if continueFrom != "" && legacyForkFrom != "" {
