@@ -182,6 +182,14 @@ func (m *chatTUI) scheduleSkillSessionRefresh(reason, notice string) bool {
 	// the stale original transcript.
 	carried := m.ctrl.History()
 	prevPath := m.ctrl.SessionPath()
+	// Move the lease before the rebuilt controller binds prevPath for writing
+	// (AdoptHistory resumes there): after a snapshot retarget the lease still
+	// guards the old path, and the async build must not open an unguarded
+	// writer on the recovery branch.
+	if err := m.rebindSessionLease(prevPath); err != nil {
+		m.notice(reason + ": " + sessionLeaseHeldNotice(err))
+		return false
+	}
 	if notice != "" {
 		m.notice(notice)
 	}

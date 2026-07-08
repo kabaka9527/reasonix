@@ -328,6 +328,110 @@ func TestModelSwitchFailureKeepsLeaseOnRecoveryPathAfterSnapshotConflict(t *test
 	}
 }
 
+// TestModelSwitchMovesLeaseToRecoveryPathBeforeRebuild pins the lease-before-
+// bind order: the rebuilt controller resumes prevPath for writing inside
+// buildController, so the lease must already guard the retargeted path when
+// the build starts, not only after modelSwitchMsg lands.
+func TestModelSwitchMovesLeaseToRecoveryPathBeforeRebuild(t *testing.T) {
+	isolateUserConfig(t)
+	dir := t.TempDir()
+	active := filepath.Join(dir, "model-switch-lease-order.jsonl")
+
+	m := newTestChatTUI()
+	m.ctrl = divergedSessionController(t, dir, active)
+	m.modelRef = "old/old-model"
+	m.leases = control.NewSessionLeaseKeeper()
+	t.Cleanup(m.leases.Release)
+	if err := m.leases.Rebind(active); err != nil {
+		t.Fatalf("seed active lease: %v", err)
+	}
+	var heldAtBuild string
+	m.buildController = func(_ string, _ []provider.Message, _ string) (*control.Controller, error) {
+		heldAtBuild = m.leases.HeldPath()
+		return control.New(control.Options{Label: "deepseek-flash"}), nil
+	}
+
+	m.runModelSubcommand("/model deepseek-flash/deepseek-v4-flash")
+	if m.pendingModelSwitch == nil {
+		t.Fatal("runModelSubcommand did not queue a model switch")
+	}
+	m.pendingModelSwitch()
+
+	assertLeaseHeldRecoveryPathAtBuild(t, &m, active, heldAtBuild)
+}
+
+// TestEffortSwitchMovesLeaseToRecoveryPathBeforeRebuild covers the same
+// lease-before-bind order for the /effort rebuild path.
+func TestEffortSwitchMovesLeaseToRecoveryPathBeforeRebuild(t *testing.T) {
+	isolateUserConfig(t)
+	dir := t.TempDir()
+	active := filepath.Join(dir, "effort-switch-lease-order.jsonl")
+
+	m := newTestChatTUI()
+	m.ctrl = divergedSessionController(t, dir, active)
+	m.modelRef = "deepseek-flash/deepseek-v4-flash"
+	m.leases = control.NewSessionLeaseKeeper()
+	t.Cleanup(m.leases.Release)
+	if err := m.leases.Rebind(active); err != nil {
+		t.Fatalf("seed active lease: %v", err)
+	}
+	var heldAtBuild string
+	m.buildController = func(_ string, _ []provider.Message, _ string) (*control.Controller, error) {
+		heldAtBuild = m.leases.HeldPath()
+		return control.New(control.Options{Label: "deepseek-flash"}), nil
+	}
+
+	cmd := m.runEffortCommand("/effort max")
+	if cmd == nil {
+		t.Fatal("runEffortCommand did not queue a rebuild")
+	}
+	cmd()
+
+	assertLeaseHeldRecoveryPathAtBuild(t, &m, active, heldAtBuild)
+}
+
+// TestSkillRefreshMovesLeaseToRecoveryPathBeforeRebuild covers the same
+// lease-before-bind order for the TUI skill rebuild path.
+func TestSkillRefreshMovesLeaseToRecoveryPathBeforeRebuild(t *testing.T) {
+	dir := t.TempDir()
+	active := filepath.Join(dir, "skill-refresh-lease-order.jsonl")
+
+	m := newTestChatTUI()
+	m.ctrl = divergedSessionController(t, dir, active)
+	m.modelRef = "deepseek-flash/deepseek-v4-flash"
+	m.leases = control.NewSessionLeaseKeeper()
+	t.Cleanup(m.leases.Release)
+	if err := m.leases.Rebind(active); err != nil {
+		t.Fatalf("seed active lease: %v", err)
+	}
+	var heldAtBuild string
+	m.buildController = func(_ string, _ []provider.Message, _ string) (*control.Controller, error) {
+		heldAtBuild = m.leases.HeldPath()
+		return control.New(control.Options{Label: "deepseek-flash"}), nil
+	}
+
+	if !m.scheduleSkillSessionRefresh("skill refresh", "") {
+		t.Fatal("scheduleSkillSessionRefresh did not queue a rebuild")
+	}
+	m.pendingModelSwitch()
+
+	assertLeaseHeldRecoveryPathAtBuild(t, &m, active, heldAtBuild)
+}
+
+// assertLeaseHeldRecoveryPathAtBuild verifies that the snapshot retargeted the
+// controller to a recovery branch and that the lease already guarded that
+// branch when buildController ran.
+func assertLeaseHeldRecoveryPathAtBuild(t *testing.T, m *chatTUI, active, heldAtBuild string) {
+	t.Helper()
+	recoveryPath := m.ctrl.SessionPath()
+	if recoveryPath == "" || recoveryPath == active || !strings.Contains(filepath.Base(recoveryPath), "-recovery-") {
+		t.Fatalf("session path after switch snapshot = %q, want recovery path distinct from active %q", recoveryPath, active)
+	}
+	if want := agent.CanonicalSessionPath(recoveryPath); heldAtBuild != want {
+		t.Fatalf("lease when build started = %q, want recovery path %q", heldAtBuild, want)
+	}
+}
+
 func resumeIndexForPath(t *testing.T, dir, path string) int {
 	t.Helper()
 	for i, session := range recentSessions(dir) {
