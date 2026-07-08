@@ -70,15 +70,17 @@ type Coordinator struct {
 	sink           event.Sink
 	// shouldPlan gates the planner pass per turn; nil plans every turn. Lets a
 	// trivial, non-work turn (a question, a greeting) skip straight to the
-	// executor instead of paying a planner round on it.
-	shouldPlan func(string) bool
+	// executor instead of paying a planner round on it. The turn context is
+	// passed through so a classifier-backed gate stops with the turn instead
+	// of running out its own timeout after the user cancels.
+	shouldPlan func(context.Context, string) bool
 }
 
 // NewCoordinator wires a planner provider (with its own session) to an executor.
 // sink receives the planner's phase/text/usage events; the executor emits its
 // own events to its own sink (the CLI wires the same sink into both). A nil
 // sink is replaced with event.Discard.
-func NewCoordinator(planner provider.Provider, plannerSession *Session, plannerPricing *provider.Pricing, plannerTools *tool.Registry, plannerOptions Options, executor *Agent, temperature float64, sink event.Sink, shouldPlan func(string) bool) *Coordinator {
+func NewCoordinator(planner provider.Provider, plannerSession *Session, plannerPricing *provider.Pricing, plannerTools *tool.Registry, plannerOptions Options, executor *Agent, temperature float64, sink event.Sink, shouldPlan func(context.Context, string) bool) *Coordinator {
 	if nilutil.IsNil(sink) {
 		sink = event.Discard
 	}
@@ -215,7 +217,7 @@ func (c *Coordinator) SetSandboxEscapeApprover(g sandbox.EscapeApprover) {
 // Run plans with the planner model, then hands the plan to the executor.
 func (c *Coordinator) Run(ctx context.Context, input string) error {
 	c.sink.Emit(event.Event{Kind: event.TurnStarted})
-	if c.shouldPlan != nil && !c.shouldPlan(input) {
+	if c.shouldPlan != nil && !c.shouldPlan(ctx, input) {
 		c.sink.Emit(event.Event{Kind: event.Phase, Text: c.executor.prov.Name() + " · executing", Source: event.UsageSourceExecutor})
 		return c.executor.Run(ctx, input)
 	}
@@ -241,7 +243,9 @@ func (c *Coordinator) Run(ctx context.Context, input string) error {
 	c.sink.Emit(event.Event{Kind: event.Phase, Text: c.executor.prov.Name() + " · executing", Source: event.UsageSourceExecutor})
 	if isNoOpPlan(plan) {
 		c.persistExecutorNoOp(ctx, input, plan)
-		c.sink.Emit(event.Event{Kind: event.Text, Text: plan})
+		// The relayed conclusion is planner text; keep its source so sinks
+		// attribute it like every other planner emission.
+		c.sink.Emit(event.Event{Kind: event.Text, Text: plan, Source: event.UsageSourcePlanner})
 		return nil
 	}
 	return c.executor.Run(ctx, formatHandoff(input, plan, executorToolHandoffContext(c.executor)))
@@ -490,6 +494,11 @@ Executor instructions:
 Carry out the task, adapting the plan as needed.`, executorHandoffMarker, task, plan, toolBlock)
 }
 
+// executorToolHandoffContext counters planner "tool unavailable" hallucinations
+// in the handoff. MCP tools are the surface planners actually mis-report (the
+// planner registry filters them away), so the block is only emitted when the
+// executor carries MCP tools; the built-in tool list would just restate the
+// schema already attached to the request and pay its tokens every planned turn.
 func executorToolHandoffContext(a *Agent) string {
 	if a == nil || a.tools == nil {
 		return ""
@@ -510,15 +519,13 @@ func executorToolHandoffContext(a *Agent) string {
 			mcpNames = append(mcpNames, name)
 		}
 	}
-	if len(toolNames) == 0 {
+	if len(mcpNames) == 0 {
 		return ""
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "- The executor request includes the full tool schema (%d tools). Tool names include: %s.", len(toolNames), boundedToolNames(toolNames, 24))
-	if len(mcpNames) > 0 {
-		fmt.Fprintf(&b, "\n- MCP tools are already registered for the executor in this request (%d MCP tools). MCP tool names include: %s.", len(mcpNames), boundedToolNames(mcpNames, 16))
-	}
+	fmt.Fprintf(&b, "- The executor request includes the full tool schema (%d tools).", len(toolNames))
+	fmt.Fprintf(&b, "\n- MCP tools are already registered for the executor in this request (%d MCP tools). MCP tool names include: %s.", len(mcpNames), boundedToolNames(mcpNames, 16))
 	return b.String()
 }
 

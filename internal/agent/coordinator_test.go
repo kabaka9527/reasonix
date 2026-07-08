@@ -113,7 +113,7 @@ func TestCoordinatorSkipsPlannerForTrivialTurn(t *testing.T) {
 
 	executor := New(exec, tool.NewRegistry(), NewSession("exec-sys"), Options{}, event.Discard)
 	plannerSess := NewSession("planner-sys")
-	coord := NewCoordinator(planner, plannerSess, nil, nil, Options{}, executor, 0, event.Discard, func(string) bool { return false })
+	coord := NewCoordinator(planner, plannerSess, nil, nil, Options{}, executor, 0, event.Discard, func(context.Context, string) bool { return false })
 
 	if err := coord.Run(context.Background(), "what does this function do?"); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -1063,5 +1063,97 @@ func TestCoordinatorHandoffSurvivesPlannerCompaction(t *testing.T) {
 	got := lastUser(exec.requests[0])
 	if !strings.Contains(got, "Edit main.go and add the missing guard.") || !strings.Contains(got, executorHandoffMarker) {
 		t.Fatalf("executor input lost the plan handoff after planner compaction:\n%s", got)
+	}
+}
+
+// TestCoordinatorNoOpConclusionAttributedToPlanner pins the event source on the
+// relayed no-op conclusion: it is planner text and must not be attributed to
+// the executor by sinks that key styling/usage off Source.
+func TestCoordinatorNoOpConclusionAttributedToPlanner(t *testing.T) {
+	planner := &mockProvider{name: "planner", chunks: []provider.Chunk{
+		{Type: provider.ChunkText, Text: "The guard already exists in parser.go.\n[no_changes]"},
+		{Type: provider.ChunkDone},
+	}}
+	exec := &mockProvider{name: "executor"}
+	var events []event.Event
+	sink := event.FuncSink(func(e event.Event) { events = append(events, e) })
+
+	executor := New(exec, tool.NewRegistry(), NewSession("exec-sys"), Options{}, event.Discard)
+	coord := NewCoordinator(planner, NewSession("planner-sys"), nil, nil, Options{}, executor, 0, sink, nil)
+
+	if err := coord.Run(context.Background(), "check the parser guard"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var conclusion *event.Event
+	for i := range events {
+		if events[i].Kind == event.Text && strings.Contains(events[i].Text, "[no_changes]") {
+			conclusion = &events[i]
+		}
+	}
+	if conclusion == nil {
+		t.Fatal("no-op conclusion text event not emitted")
+	}
+	if conclusion.Source != event.UsageSourcePlanner {
+		t.Fatalf("no-op conclusion Source = %q, want planner attribution", conclusion.Source)
+	}
+}
+
+// TestCoordinatorHandoffOmitsToolContextWithoutMCPTools checks that the handoff
+// does not restate the built-in tool schema: the tool-context block exists to
+// counter planner claims about MCP availability and is dropped entirely when
+// the executor carries no MCP tools.
+func TestCoordinatorHandoffOmitsToolContextWithoutMCPTools(t *testing.T) {
+	planner := &mockProvider{name: "planner", chunks: []provider.Chunk{
+		{Type: provider.ChunkText, Text: "Edit main.go and add the missing guard."},
+		{Type: provider.ChunkDone},
+	}}
+	exec := &mockProvider{name: "executor", chunks: []provider.Chunk{
+		{Type: provider.ChunkText, Text: "Done."},
+		{Type: provider.ChunkDone},
+	}}
+
+	execReg := tool.NewRegistry()
+	execReg.Add(coordinatorTestTool{name: "write_file", readOnly: false, output: "ok"})
+	executor := New(exec, execReg, NewSession("exec-sys"), Options{}, event.Discard)
+	coord := NewCoordinator(planner, NewSession("planner-sys"), nil, nil, Options{}, executor, 0, event.Discard, nil)
+
+	if err := coord.Run(context.Background(), "fix the missing guard"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	got := lastUser(exec.requests[0])
+	for _, unwanted := range []string{"Executor tool context", "Tool names include"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("handoff restates built-in tool schema (%q):\n%s", unwanted, got)
+		}
+	}
+	if !strings.Contains(got, "Edit main.go") {
+		t.Fatalf("handoff missing the plan: %q", got)
+	}
+}
+
+// TestCoordinatorPassesTurnContextToPlannerGate pins the C2 contract: the gate
+// receives the live turn context, so a classifier-backed gate is cancelled
+// with the turn instead of running out its own timeout.
+func TestCoordinatorPassesTurnContextToPlannerGate(t *testing.T) {
+	type gateCtxKey struct{}
+	exec := &mockProvider{name: "executor", chunks: []provider.Chunk{
+		{Type: provider.ChunkText, Text: "It does X."},
+		{Type: provider.ChunkDone},
+	}}
+	executor := New(exec, tool.NewRegistry(), NewSession("exec-sys"), Options{}, event.Discard)
+
+	var sawTurnValue bool
+	gate := func(ctx context.Context, _ string) bool {
+		sawTurnValue = ctx.Value(gateCtxKey{}) != nil
+		return false
+	}
+	coord := NewCoordinator(&mockProvider{name: "planner"}, NewSession("planner-sys"), nil, nil, Options{}, executor, 0, event.Discard, gate)
+
+	ctx := context.WithValue(context.Background(), gateCtxKey{}, "turn")
+	if err := coord.Run(ctx, "what does this do?"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !sawTurnValue {
+		t.Fatal("planner gate did not receive the turn context")
 	}
 }
