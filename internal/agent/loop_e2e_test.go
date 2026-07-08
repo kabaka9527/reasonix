@@ -13,6 +13,12 @@ import (
 	"reasonix/internal/tool"
 )
 
+type toolCallReasoningRequiredProvider struct {
+	*testutil.MockProvider
+}
+
+func (p toolCallReasoningRequiredProvider) RequiresToolCallReasoning() bool { return true }
+
 func echoRegistry() *tool.Registry {
 	reg := tool.NewRegistry()
 	reg.Add(echoTool{})
@@ -521,6 +527,59 @@ func TestRunWellFormedToolLoopRoundTrips(t *testing.T) {
 	before := len(msgs)
 	if after := len(provider.SanitizeToolPairing(msgs)); after != before {
 		t.Errorf("repair mutated a well-formed session: %d -> %d", before, after)
+	}
+}
+
+func TestRunRejectsRequiredToolCallsWithoutReasoning(t *testing.T) {
+	mp := testutil.NewMock("deepseek-proxy",
+		testutil.Turn{ToolCalls: []provider.ToolCall{{ID: "c1", Name: "echo", Arguments: `{"text":"hi"}`}}},
+	)
+	a := New(toolCallReasoningRequiredProvider{mp}, echoRegistry(), NewSession(""), Options{}, event.Discard)
+
+	err := a.Run(context.Background(), "go")
+	var missing *provider.MissingToolCallReasoningError
+	if !errors.As(err, &missing) || !missing.CurrentTurn {
+		t.Fatalf("Run error = %T %v, want current-turn MissingToolCallReasoningError", err, err)
+	}
+	for _, m := range a.Session().Messages {
+		if m.Role == provider.RoleAssistant || m.Role == provider.RoleTool {
+			t.Fatalf("invalid tool-call turn should not be saved, session=%+v", a.Session().Messages)
+		}
+	}
+}
+
+func TestRunPreservesOriginalRequiredToolCallReasoningAcrossHook(t *testing.T) {
+	mp := testutil.NewMock("deepseek-proxy",
+		testutil.Turn{
+			Reasoning: "original reasoning",
+			ToolCalls: []provider.ToolCall{{
+				ID: "c1", Name: "echo", Arguments: `{"text":"hi"}`,
+			}},
+		},
+		testutil.Turn{Text: "done"},
+	)
+	h := &stubHooks{hasPostLLM: true, postLLMOut: "translated display"}
+	a := New(toolCallReasoningRequiredProvider{mp}, echoRegistry(), NewSession(""), Options{Hooks: h}, event.Discard)
+
+	if err := a.Run(context.Background(), "go"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	reqs := mp.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("provider calls = %d, want 2", len(reqs))
+	}
+	var toolCallAssistant provider.Message
+	for _, m := range reqs[1].Messages {
+		if m.Role == provider.RoleAssistant && len(m.ToolCalls) > 0 {
+			toolCallAssistant = m
+			break
+		}
+	}
+	if toolCallAssistant.ReasoningContent != "original reasoning" {
+		t.Fatalf("tool-call reasoning = %q, want original provider reasoning", toolCallAssistant.ReasoningContent)
+	}
+	if toolCallAssistant.ReasoningContent == "translated display" {
+		t.Fatal("translated display text leaked into provider-visible tool-call reasoning")
 	}
 }
 

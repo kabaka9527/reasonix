@@ -617,6 +617,51 @@ type Provider interface {
 	Stream(ctx context.Context, req Request) (<-chan Chunk, error)
 }
 
+// ToolCallReasoningPolicy is optionally implemented by providers whose protocol
+// requires assistant tool_calls turns to replay the provider-issued reasoning
+// block. Most providers leave this unset; callers must treat it as false.
+type ToolCallReasoningPolicy interface {
+	RequiresToolCallReasoning() bool
+}
+
+// RequiresToolCallReasoning reports whether p requires assistant tool_calls
+// turns to carry reasoning_content when replayed in history.
+func RequiresToolCallReasoning(p Provider) bool {
+	if nilutil.IsNil(p) {
+		return false
+	}
+	policy, ok := p.(ToolCallReasoningPolicy)
+	return ok && policy.RequiresToolCallReasoning()
+}
+
+// MissingToolCallReasoningError is returned before sending a known-invalid
+// DeepSeek thinking-mode request: the session contains, or the current turn
+// produced, an assistant tool_calls message whose reasoning_content was dropped.
+type MissingToolCallReasoningError struct {
+	Provider      string
+	MessageIndex  int
+	ToolCallCount int
+	CurrentTurn   bool
+}
+
+func (e *MissingToolCallReasoningError) Error() string {
+	prov := strings.TrimSpace(e.Provider)
+	if prov == "" {
+		prov = "provider"
+	}
+	count := e.ToolCallCount
+	if count <= 0 {
+		count = 1
+	}
+	if e.CurrentTurn {
+		return fmt.Sprintf("%s returned an assistant tool_calls turn with %d tool call(s) but no reasoning_content; DeepSeek thinking mode requires reasoning_content to be passed back, so the invalid turn was not saved", prov, count)
+	}
+	if e.MessageIndex >= 0 {
+		return fmt.Sprintf("%s cannot replay messages[%d]: assistant tool_calls has %d tool call(s) but no reasoning_content; repair or compact this session before continuing", prov, e.MessageIndex, count)
+	}
+	return fmt.Sprintf("%s cannot replay assistant tool_calls without reasoning_content; repair or compact this session before continuing", prov)
+}
+
 // Config is a resolved provider instance configuration.
 type Config struct {
 	Name    string         // instance name, e.g. "deepseek"

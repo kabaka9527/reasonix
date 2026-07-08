@@ -949,6 +949,107 @@ func TestNewReadsEffortFromConfig(t *testing.T) {
 	}
 }
 
+func TestStreamReadsReasoningFallbackField(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"choices":[{"delta":{"reasoning":"vllm thinking","content":"answer"}}]}`+"\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	p, err := New(provider.Config{Name: "vllm", BaseURL: srv.URL, Model: "qwen", APIKey: "k"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ch, err := p.Stream(context.Background(), provider.Request{})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	var reasoning, text strings.Builder
+	for chunk := range ch {
+		switch chunk.Type {
+		case provider.ChunkReasoning:
+			reasoning.WriteString(chunk.Text)
+		case provider.ChunkText:
+			text.WriteString(chunk.Text)
+		case provider.ChunkError:
+			t.Fatalf("stream error: %v", chunk.Err)
+		}
+	}
+	if reasoning.String() != "vllm thinking" {
+		t.Fatalf("reasoning = %q, want vLLM fallback field", reasoning.String())
+	}
+	if text.String() != "answer" {
+		t.Fatalf("text = %q, want answer", text.String())
+	}
+}
+
+func TestStreamReasoningContentTakesPrecedenceOverFallback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"choices":[{"delta":{"reasoning_content":"standard","reasoning":"fallback"}}]}`+"\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	p, err := New(provider.Config{Name: "vllm", BaseURL: srv.URL, Model: "qwen", APIKey: "k"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ch, err := p.Stream(context.Background(), provider.Request{})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	var reasoning strings.Builder
+	for chunk := range ch {
+		switch chunk.Type {
+		case provider.ChunkReasoning:
+			reasoning.WriteString(chunk.Text)
+		case provider.ChunkError:
+			t.Fatalf("stream error: %v", chunk.Err)
+		}
+	}
+	if reasoning.String() != "standard" {
+		t.Fatalf("reasoning = %q, want reasoning_content precedence", reasoning.String())
+	}
+}
+
+func TestStreamRejectsDeepSeekToolCallsWithoutReasoningBeforeHTTP(t *testing.T) {
+	var requests int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	defer srv.Close()
+
+	p, err := New(provider.Config{
+		Name:    "deepseek-proxy",
+		BaseURL: srv.URL,
+		Model:   "deepseek-v4-pro",
+		APIKey:  "k",
+		Extra:   map[string]any{"reasoning_protocol": "deepseek"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = p.Stream(context.Background(), provider.Request{
+		Messages: []provider.Message{
+			{Role: provider.RoleUser, Content: "inspect"},
+			{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{
+				ID: "call_1", Name: "read_file", Arguments: `{"path":"main.go"}`,
+			}}},
+			{Role: provider.RoleTool, ToolCallID: "call_1", Name: "read_file", Content: "package main"},
+		},
+	})
+	var missing *provider.MissingToolCallReasoningError
+	if !errors.As(err, &missing) {
+		t.Fatalf("Stream error = %T %v, want MissingToolCallReasoningError", err, err)
+	}
+	if requests != 0 {
+		t.Fatalf("invalid DeepSeek history should fail locally, server saw %d request(s)", requests)
+	}
+}
+
 // TestBuildRequestPreservesEmptyIDToolResults proves a multi-tool turn whose
 // calls carry no id (some OpenAI-compatible gateways omit it, sending only the
 // index) keeps every tool result through buildRequest. SanitizeToolPairing keys

@@ -234,6 +234,10 @@ type client struct {
 
 func (c *client) Name() string { return c.name }
 
+func (c *client) RequiresToolCallReasoning() bool {
+	return c != nil && c.deepseek && c.thinkingType != "disabled"
+}
+
 func (c *client) sendOpts() provider.SendOptions {
 	return provider.SendOptions{
 		Provider:   c.name,
@@ -342,6 +346,9 @@ var bufPool = sync.Pool{
 }
 
 func (c *client) Stream(ctx context.Context, req provider.Request) (<-chan provider.Chunk, error) {
+	if err := c.validateToolCallReasoning(req.Messages); err != nil {
+		return nil, err
+	}
 	buf := bufPool.Get().(*bytes.Buffer)
 	buf.Reset()
 	if err := json.NewEncoder(buf).Encode(c.buildRequest(req)); err != nil {
@@ -423,6 +430,22 @@ func sendChunk(ctx context.Context, out chan<- provider.Chunk, chunk provider.Ch
 	case out <- chunk:
 		return true
 	}
+}
+
+func (c *client) validateToolCallReasoning(messages []provider.Message) error {
+	if !c.RequiresToolCallReasoning() {
+		return nil
+	}
+	for i, m := range provider.SanitizeToolPairing(messages) {
+		if m.Role == provider.RoleAssistant && len(m.ToolCalls) > 0 && strings.TrimSpace(m.ReasoningContent) == "" {
+			return &provider.MissingToolCallReasoningError{
+				Provider:      c.name,
+				MessageIndex:  i,
+				ToolCallCount: len(m.ToolCalls),
+			}
+		}
+	}
+	return nil
 }
 
 func (c *client) buildRequest(req provider.Request) chatRequest {
@@ -632,9 +655,13 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 		}
 
 		delta := sr.Choices[0].Delta
-		if delta.ReasoningContent != "" {
+		reasoningDelta := delta.ReasoningContent
+		if reasoningDelta == "" {
+			reasoningDelta = delta.Reasoning
+		}
+		if reasoningDelta != "" {
 			emitted = true
-			if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkReasoning, Text: delta.ReasoningContent}) {
+			if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkReasoning, Text: reasoningDelta}) {
 				return emitted, ctx.Err()
 			}
 		}
@@ -862,6 +889,7 @@ type streamResponse struct {
 		Delta struct {
 			Content          string         `json:"content"`
 			ReasoningContent string         `json:"reasoning_content"`
+			Reasoning        string         `json:"reasoning"`
 			ToolCalls        []chatToolCall `json:"tool_calls"`
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
