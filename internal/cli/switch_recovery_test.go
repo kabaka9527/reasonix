@@ -263,6 +263,71 @@ func TestShutdownMessageSnapshotsCurrentController(t *testing.T) {
 	}
 }
 
+// TestBranchCompletionKeepsLeaseOnRecoveryPathAfterSnapshotConflict covers the
+// /switch tab-completion path: listing branches snapshots the session, which
+// can retarget the controller to a recovery branch even though no switch runs.
+func TestBranchCompletionKeepsLeaseOnRecoveryPathAfterSnapshotConflict(t *testing.T) {
+	dir := t.TempDir()
+	active := filepath.Join(dir, "completion-active-conflict.jsonl")
+
+	m := newTestChatTUI()
+	m.ctrl = divergedSessionController(t, dir, active)
+	m.leases = control.NewSessionLeaseKeeper()
+	t.Cleanup(m.leases.Release)
+	if err := m.leases.Rebind(active); err != nil {
+		t.Fatalf("seed active lease: %v", err)
+	}
+
+	if _, _, ok := m.branchArgItems("/switch "); !ok {
+		t.Fatal("branchArgItems did not handle /switch completion")
+	}
+
+	recoveryPath := m.ctrl.SessionPath()
+	if recoveryPath == "" || recoveryPath == active || !strings.Contains(filepath.Base(recoveryPath), "-recovery-") {
+		t.Fatalf("session path after completion snapshot = %q, want recovery path distinct from active %q", recoveryPath, active)
+	}
+	if got, want := m.leases.HeldPath(), agent.CanonicalSessionPath(recoveryPath); got != want {
+		t.Fatalf("lease after completion snapshot = %q, want recovery path %q", got, want)
+	}
+}
+
+// TestModelSwitchFailureKeepsLeaseOnRecoveryPathAfterSnapshotConflict covers
+// the rebuild-failure branch: the pre-switch snapshot can retarget the kept
+// controller to a recovery branch, and a failed build must not leave the lease
+// on the stale original path.
+func TestModelSwitchFailureKeepsLeaseOnRecoveryPathAfterSnapshotConflict(t *testing.T) {
+	isolateUserConfig(t)
+	dir := t.TempDir()
+	active := filepath.Join(dir, "model-switch-failure-conflict.jsonl")
+
+	m := newTestChatTUI()
+	m.ctrl = divergedSessionController(t, dir, active)
+	m.modelRef = "old/old-model"
+	m.buildController = func(string, []provider.Message, string) (*control.Controller, error) {
+		return nil, fmt.Errorf("build failed")
+	}
+	m.leases = control.NewSessionLeaseKeeper()
+	t.Cleanup(m.leases.Release)
+	if err := m.leases.Rebind(active); err != nil {
+		t.Fatalf("seed active lease: %v", err)
+	}
+
+	m.runModelSubcommand("/model deepseek-flash/deepseek-v4-flash")
+	if m.pendingModelSwitch == nil {
+		t.Fatal("runModelSubcommand did not queue a model switch")
+	}
+	next, _ := m.Update(m.pendingModelSwitch())
+	m = next.(chatTUI)
+
+	recoveryPath := m.ctrl.SessionPath()
+	if recoveryPath == "" || recoveryPath == active || !strings.Contains(filepath.Base(recoveryPath), "-recovery-") {
+		t.Fatalf("session path after failed switch = %q, want recovery path distinct from active %q", recoveryPath, active)
+	}
+	if got, want := m.leases.HeldPath(), agent.CanonicalSessionPath(recoveryPath); got != want {
+		t.Fatalf("lease after failed switch = %q, want recovery path %q", got, want)
+	}
+}
+
 func resumeIndexForPath(t *testing.T, dir, path string) int {
 	t.Helper()
 	for i, session := range recentSessions(dir) {

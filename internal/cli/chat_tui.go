@@ -1384,7 +1384,10 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pendingModelSwitch = nil
 		if msg.err != nil {
 			m.notice("model: " + msg.err.Error())
-			// Build failed — no old controller to retire.
+			// Build failed — no old controller to retire. The kept controller
+			// may still have been retargeted to a recovery branch by the
+			// pre-switch snapshot, so the lease must follow it.
+			m.followSessionLease()
 		} else {
 			m.ctrl = msg.ctrl
 			m.label = msg.label
