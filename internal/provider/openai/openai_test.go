@@ -821,8 +821,12 @@ func TestNewThinkingConfigParsing(t *testing.T) {
 }
 
 // TestBuildRequestDeepSeekDisabled covers both user-facing ways to turn
-// DeepSeek thinking off. Either input must route to thinking.type=disabled and
-// drop reasoning_effort.
+// DeepSeek thinking off. Either input must route to thinking.type=disabled,
+// drop reasoning_effort, and keep the pre-fix tool-call history bytes: a
+// tool_calls turn with no reasoning omits the reasoning_content key entirely
+// (only thinking mode requires it), while reasoning left over from a
+// thinking-mode round still round-trips so the prompt-cache prefix of a mixed
+// thinking-on→off session stays stable.
 func TestBuildRequestDeepSeekDisabled(t *testing.T) {
 	base := provider.Config{Name: "ds", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4", APIKey: "k"}
 	for _, tc := range []struct {
@@ -839,12 +843,30 @@ func TestBuildRequestDeepSeekDisabled(t *testing.T) {
 			if err != nil {
 				t.Fatalf("New(%v): %v", tc.extra, err)
 			}
-			req := p.(*client).buildRequest(provider.Request{})
+			req := p.(*client).buildRequest(provider.Request{
+				Messages: []provider.Message{
+					{Role: provider.RoleUser, Content: "inspect"},
+					{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{
+						ID: "call_1", Name: "read_file", Arguments: `{"path":"main.go"}`,
+					}}},
+					{Role: provider.RoleTool, ToolCallID: "call_1", Name: "read_file", Content: "package main"},
+					{Role: provider.RoleAssistant, ReasoningContent: "from a thinking round", ToolCalls: []provider.ToolCall{{
+						ID: "call_2", Name: "read_file", Arguments: `{"path":"go.mod"}`,
+					}}},
+					{Role: provider.RoleTool, ToolCallID: "call_2", Name: "read_file", Content: "module demo"},
+				},
+			})
 			if req.Thinking == nil || req.Thinking.Type != "disabled" {
 				t.Fatalf("Thinking = %+v, want disabled", req.Thinking)
 			}
 			if req.ReasoningEffort != "" {
 				t.Fatalf("disabled DeepSeek must not send reasoning_effort, got %q", req.ReasoningEffort)
+			}
+			if rc := req.Messages[1].ReasoningContent; rc != nil {
+				t.Fatalf("disabled mode must omit reasoning_content on a reasoning-less tool_calls turn, got %q", *rc)
+			}
+			if rc := req.Messages[3].ReasoningContent; rc == nil || *rc != "from a thinking round" {
+				t.Fatalf("disabled mode must keep round-tripping thinking-round reasoning, got %v", rc)
 			}
 		})
 	}

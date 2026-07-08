@@ -447,9 +447,15 @@ func (c *client) buildRequest(req provider.Request) chatRequest {
 		// validates turns after the last user message, but emitting the field on
 		// every tool_calls turn is uniform and verified accepted — so always send
 		// it (empty included) rather than fail the request when reasoning was lost
-		// upstream (e.g. a gateway renamed the field).
+		// upstream (e.g. a gateway renamed the field). With thinking disabled the
+		// API tolerates every shape, so keep the exact pre-fix bytes there: send
+		// the key only when a thinking-mode round left reasoning in the history
+		// (dropping it would invalidate the prompt-cache prefix of mixed
+		// thinking-on→off sessions for no gain).
 		if c.deepseek && m.Role == provider.RoleAssistant && len(m.ToolCalls) > 0 {
-			cm.ReasoningContent = &m.ReasoningContent
+			if c.RequiresToolCallReasoning() || m.ReasoningContent != "" {
+				cm.ReasoningContent = &m.ReasoningContent
+			}
 		}
 		for _, tc := range m.ToolCalls {
 			wire := chatToolCall{ID: tc.ID, Type: "function"}
