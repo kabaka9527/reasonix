@@ -314,3 +314,38 @@ func TestGuardianLoadResetsLegacyConsecutiveUserSessions(t *testing.T) {
 		t.Fatalf("cursor = %+v, want zeroed after reset", gs.cursor)
 	}
 }
+
+// TestGuardianSessionAlternatesAfterCompaction reproduces the compaction seam:
+// every compactEvery-th review runs CompactNow, and generic compaction inserts
+// its digest as a RoleUser message that can land directly before a review's
+// user turn — consecutive user roles again. The post-review normalization must
+// keep the session strictly alternating across that fold.
+func TestGuardianSessionAlternatesAfterCompaction(t *testing.T) {
+	prov := &scriptedProvider{} // default allow verdict, also serves the summarizer
+	gs := NewSession(prov, tool.NewRegistry(), PolicyPrompt(), "guardian-test", 0, nil, &captureSink{})
+	parent := agent.NewSession("sys")
+
+	filler := strings.Repeat("parent transcript filler. ", 160)
+	for i := 0; i < compactEvery; i++ {
+		parent.Add(provider.Message{Role: provider.RoleUser, Content: fmt.Sprintf("turn %d: %s", i, filler)})
+		if allow, _, err := gs.Review(context.Background(), "write_file", json.RawMessage(`{"file_path":"a.txt"}`), parent); err != nil || !allow {
+			t.Fatalf("review %d = allow %v err %v, want allow nil", i+1, allow, err)
+		}
+	}
+
+	msgs := gs.sess.Snapshot()
+	var hasDigest bool
+	for _, m := range msgs {
+		if agent.IsCompactionSummary(m) {
+			hasDigest = true
+		}
+	}
+	if !hasDigest {
+		t.Fatal("test setup: guardian compaction did not fold anything, the digest adjacency is not exercised")
+	}
+	for i := 1; i < len(msgs); i++ {
+		if msgs[i].Role == msgs[i-1].Role {
+			t.Fatalf("guardian session has consecutive %s messages at indexes %d/%d of %d", msgs[i].Role, i-1, i, len(msgs))
+		}
+	}
+}

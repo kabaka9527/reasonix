@@ -193,6 +193,12 @@ func (gs *Session) Review(ctx context.Context, toolName string, args json.RawMes
 			}
 		}
 	}
+	// Any compaction this review triggered (the periodic CompactNow above or
+	// maybeCompact inside Run) inserts its digest as a RoleUser message, which
+	// can land directly before a review's user turn and re-create the
+	// consecutive-user shape this session must never carry. Repair on the
+	// final session state, after any failed-turn rollback.
+	gs.normalizeAlternation()
 
 	if assessment.Outcome == "deny" {
 		action := gs.recordDenial()
@@ -281,6 +287,43 @@ func (gs *Session) rollbackReview(before []provider.Message, rewriteBefore int) 
 		msgs = msgs[:len(msgs)-1]
 	}
 	gs.sess.Replace(msgs)
+}
+
+// normalizeAlternation merges runs of consecutive user messages into one so
+// the guardian session keeps strictly alternating user/assistant roles.
+// Generic compaction inserts its digest as a RoleUser message, which can land
+// directly before a review's user turn (or before an older digest); providers
+// that reject consecutive same-role messages would then fail every subsequent
+// request. Merging keeps all content, and a merged message that starts with a
+// digest keeps its digest prefix, so later folds still pin it verbatim. The
+// merge only runs when a rewrite already reset the prefix cache this review,
+// so it never adds a cache reset of its own. Caller holds gs.mu.
+func (gs *Session) normalizeAlternation() {
+	msgs := gs.sess.Snapshot()
+	out := make([]provider.Message, 0, len(msgs))
+	merged := false
+	for _, m := range msgs {
+		if m.Role == provider.RoleUser && len(out) > 0 && out[len(out)-1].Role == provider.RoleUser {
+			prev := &out[len(out)-1]
+			// A digest joining a plain user message keeps the digest text
+			// first: IsCompactionSummary matches on the prefix, and the digest
+			// summarizes older history anyway, so digest-first also preserves
+			// chronology.
+			if agent.IsCompactionSummary(m) && !agent.IsCompactionSummary(*prev) {
+				prev.Content = strings.TrimRight(m.Content, "\n") + "\n\n" + prev.Content
+			} else {
+				prev.Content = strings.TrimRight(prev.Content, "\n") + "\n\n" + m.Content
+			}
+			merged = true
+			continue
+		}
+		out = append(out, m)
+	}
+	if !merged {
+		return
+	}
+	gs.sess.Replace(out)
+	gs.sess.IncrementRewrite()
 }
 
 // Load replaces the guardian's internal agent session with the one at path,
