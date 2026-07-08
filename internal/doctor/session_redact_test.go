@@ -1,12 +1,14 @@
 package doctor
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"reasonix/internal/agent"
+	"reasonix/internal/provider"
 	"reasonix/internal/store"
 )
 
@@ -40,12 +42,6 @@ func TestRedactSessionsScrubsHistoricalSessionArtifacts(t *testing.T) {
 		t.Fatalf("FilesChanged = %d, want 6", res.FilesChanged)
 	}
 	for path := range files {
-		if path == store.SessionEventIndex(sessionPath) {
-			if _, err := os.Stat(path); !os.IsNotExist(err) {
-				t.Fatalf("event index should be removed after transcript rewrite, stat err=%v", err)
-			}
-			continue
-		}
 		data, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
@@ -53,6 +49,95 @@ func TestRedactSessionsScrubsHistoricalSessionArtifacts(t *testing.T) {
 		if strings.Contains(string(data), secret) {
 			t.Fatalf("%s still leaked secret:\n%s", path, data)
 		}
+	}
+	// The rewrite must go through the real save machinery: the session still
+	// loads, the event log still replays, and the masked value survived.
+	loaded, err := agent.LoadSession(sessionPath)
+	if err != nil {
+		t.Fatalf("redacted session no longer loads: %v", err)
+	}
+	if len(loaded.Messages) != 1 || !strings.Contains(loaded.Messages[0].Content, "DEEPSEEK_API_KEY=sk-rea") {
+		t.Fatalf("redacted session lost its masked content: %+v", loaded.Messages)
+	}
+}
+
+// TestRedactSessionsHandlesQuotedSecretsWithoutCorruption pins the decode-
+// before-redact contract: on disk a quoted secret is JSON-encoded with \"
+// escapes, and masking the raw bytes would eat the escape's backslash,
+// truncate the JSON string, and leave the transcript undecodable — while the
+// secret itself stayed in the clear.
+func TestRedactSessionsHandlesQuotedSecretsWithoutCorruption(t *testing.T) {
+	dir := t.TempDir()
+	const secret = "hunter2-longer-secret-value"
+	sessionPath := filepath.Join(dir, "abc.jsonl")
+	line, err := json.Marshal(provider.Message{
+		Role:    provider.RoleTool,
+		Content: `export PASSWORD="` + secret + `"` + "\n",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sessionPath, append(line, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res := RedactSessions(RedactSessionsOptions{Dirs: []string{dir}})
+	if len(res.Errors) > 0 {
+		t.Fatalf("RedactSessions errors = %v", res.Errors)
+	}
+	if res.FilesChanged != 1 {
+		t.Fatalf("FilesChanged = %d, want 1", res.FilesChanged)
+	}
+	loaded, err := agent.LoadSession(sessionPath)
+	if err != nil {
+		t.Fatalf("redaction corrupted the transcript: %v", err)
+	}
+	if len(loaded.Messages) != 1 {
+		t.Fatalf("message count = %d, want 1", len(loaded.Messages))
+	}
+	if strings.Contains(loaded.Messages[0].Content, secret) {
+		t.Fatalf("quoted secret leaked: %q", loaded.Messages[0].Content)
+	}
+}
+
+// TestRedactSessionsIsNoOpOnHealthyStore pins idempotence: a store written by
+// a redacting build must survive the doctor untouched — rerunning cleanup on
+// clean sessions must never rewrite (or worse, corrupt) them.
+func TestRedactSessionsIsNoOpOnHealthyStore(t *testing.T) {
+	dir := t.TempDir()
+	sessionPath := filepath.Join(dir, "abc.jsonl")
+	s := agent.NewSession("sys")
+	s.Add(provider.Message{Role: provider.RoleUser, Content: "inspect"})
+	s.Add(provider.Message{
+		Role:       provider.RoleTool,
+		Name:       "bash",
+		ToolCallID: "call_1",
+		Content:    `export PASSWORD="hunter2-longer-secret-value"` + "\n",
+	})
+	if err := s.Save(sessionPath); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	before, err := os.ReadFile(sessionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res := RedactSessions(RedactSessionsOptions{Dirs: []string{dir}})
+	if len(res.Errors) > 0 {
+		t.Fatalf("RedactSessions errors = %v", res.Errors)
+	}
+	if res.FilesChanged != 0 {
+		t.Fatalf("healthy already-redacted store rewritten: %+v", res)
+	}
+	after, err := os.ReadFile(sessionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatalf("healthy transcript bytes changed:\nbefore: %s\nafter:  %s", before, after)
+	}
+	if _, err := agent.LoadSession(sessionPath); err != nil {
+		t.Fatalf("healthy session no longer loads: %v", err)
 	}
 }
 
