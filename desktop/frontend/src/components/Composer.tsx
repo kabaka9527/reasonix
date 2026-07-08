@@ -254,6 +254,39 @@ async function dataURLHash(dataUrl: string): Promise<string> {
   }
 }
 
+function fallbackCopyText(value: string): boolean {
+  const activeElement = document.activeElement;
+  const selection = document.getSelection();
+  const ranges: Range[] = [];
+  if (selection) {
+    for (let index = 0; index < selection.rangeCount; index += 1) {
+      ranges.push(selection.getRangeAt(index));
+    }
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.inset = "0 auto auto 0";
+  textarea.style.width = "1px";
+  textarea.style.height = "1px";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } finally {
+    textarea.remove();
+    if (selection) {
+      selection.removeAllRanges();
+      for (const range of ranges) selection.addRange(range);
+    }
+    if (activeElement instanceof HTMLElement) activeElement.focus();
+  }
+  return ok;
+}
+
 function composerMaxHeight(): number {
   if (typeof window === "undefined") return COMPOSER_MAX_HEIGHT;
   return Math.max(COMPOSER_MIN_HEIGHT, Math.min(COMPOSER_MAX_HEIGHT, Math.floor(window.innerHeight * COMPOSER_MAX_VIEWPORT_RATIO)));
@@ -1548,15 +1581,29 @@ export function Composer({
   const copyComposerSelection = async (cut = false) => {
     const selection = getInputSelection();
     setInputMenuPoint(null);
-    if (!selection.selected || !navigator.clipboard?.writeText) {
+    if (!selection.selected) {
       focusInputRange(selection.from, selection.to);
       return;
     }
     try {
       await navigator.clipboard.writeText(selection.selected);
-      if (cut) replaceInputRange("", selection.from, selection.to);
-      else focusInputRange(selection.from, selection.to);
     } catch {
+      // Fall back to Wails desktop runtime, then execCommand
+      try {
+        if (typeof window !== "undefined" && (await window.runtime?.ClipboardSetText?.(selection.selected))) {
+          /* ok */
+        } else {
+          fallbackCopyText(selection.selected);
+        }
+      } catch {
+        focusInputRange(selection.from, selection.to);
+        return;
+      }
+    }
+    if (cut) {
+      resetPromptHistoryNavigation();
+      replaceInputRange("", selection.from, selection.to);
+    } else {
       focusInputRange(selection.from, selection.to);
     }
   };
@@ -1564,6 +1611,18 @@ export function Composer({
   const pasteIntoComposer = async () => {
     const selection = getInputSelection();
     setInputMenuPoint(null);
+
+    // Try reading clipboard items for image detection (no event in menu path)
+    try {
+      const items = await navigator.clipboard.read();
+      if (items.some((item) => item.types.some((t) => t.startsWith("image/")))) {
+        void attachNativeClipboardImage(true, activeDraftKeyRef.current);
+        return;
+      }
+    } catch {
+      /* clipboard.read() not supported or permission denied; fall through */
+    }
+
     if (!navigator.clipboard?.readText) {
       focusInputRange(selection.from, selection.to);
       return;
