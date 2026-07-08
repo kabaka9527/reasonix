@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	fileenc "reasonix/internal/fileutil/encoding"
 	"reasonix/internal/tool"
 )
 
@@ -22,6 +23,11 @@ type writeFile struct {
 	guard   SessionDataGuard
 	managed ManagedConfigPaths
 	workDir string
+	// overlay, when non-nil, routes the write through the host transport so an
+	// open editor buffer updates too. Consulted only after write confinement,
+	// and only for plain-UTF-8 targets (the overlay is text-only, so non-UTF-8
+	// files keep the local encoding-preserving path).
+	overlay FileOverlay
 }
 
 func (writeFile) Name() string { return "write_file" }
@@ -58,6 +64,17 @@ func (w writeFile) Execute(ctx context.Context, args json.RawMessage) (string, e
 	existing, enc, rerr := readFileEncoded(p.Path)
 	if rerr == nil && existing == p.Content {
 		return fmt.Sprintf("%s already contains the exact content; no changes made", p.Path), nil
+	}
+	// The host overlay applies the write to the editor buffer and the file in
+	// one step. Text-only, so it handles plain UTF-8 targets (and new files);
+	// non-UTF-8 files stay on the local encoding-preserving path below.
+	if w.overlay != nil && filepath.IsAbs(p.Path) && (rerr != nil || enc == fileenc.UTF8) {
+		if ok, werr := w.overlay.WriteTextFile(ctx, p.Path, p.Content); ok {
+			if werr != nil {
+				return "", fmt.Errorf("write %s: %w", p.Path, werr)
+			}
+			return fmt.Sprintf("wrote %d bytes to %s", len(p.Content), p.Path), nil
+		}
 	}
 	if dir := filepath.Dir(p.Path); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
