@@ -168,9 +168,9 @@ function assistantAnswerOnly(item: AssistantItem): AssistantItem {
   return { ...item, reasoning: "", reasoningComplete: true, reasoningDurationMs: undefined };
 }
 
-function assistantHasVisibleAnswer(item: AssistantItem, live?: LiveStream): boolean {
+function assistantHasVisibleAnswer(item: AssistantItem, liveId: string | undefined, liveHasAnswerText: boolean): boolean {
   if (item.text.trim() !== "") return true;
-  return Boolean(live && live.id === item.id && live.text.trim() !== "");
+  return liveId === item.id && liveHasAnswerText;
 }
 
 // ── Transcript component ──────────────────────────────────────────────────────
@@ -495,6 +495,14 @@ export function Transcript({
     return buildStepGroups(items, hotStartIdx);
   }, [displayMode, hotStartIdx, items]);
 
+  // The hot-zone memo must not depend on the live stream's full text/reasoning
+  // — that would rebuild the whole element array on every streaming token
+  // (LiveAssistantMessage reads those via LiveStreamContext instead). The memo
+  // only needs presence flags, which flip at most once per turn.
+  const liveId = live?.id;
+  const liveHasAnswerText = Boolean(live?.text.trim());
+  const liveHasReasoning = Boolean(live?.reasoning);
+
   const hotZoneNodes = useMemo<ReactNode[]>(() => {
     const out: ReactNode[] = [];
     let actionText = "";
@@ -551,6 +559,19 @@ export function Transcript({
         processBatch = [];
         processBatchStart = null;
       };
+      // Warnings must stay visible after the fold auto-closes on completion —
+      // route them around the process fold; everything else batches into it.
+      const pushProcessItems = (list: Item[]) => {
+        for (const item of list) {
+          if (item.kind === "notice" && item.level === "warn") {
+            flushProcessBatch();
+            out.push(<NoticeCard key={item.id} level={item.level} text={item.text} detail={item.detail} />);
+            continue;
+          }
+          if (!processBatchStart) processBatchStart = item.id;
+          processBatch.push(item);
+        }
+      };
 
       for (const group of stepGroups) {
         const first = group.items[0];
@@ -580,8 +601,7 @@ export function Transcript({
 
         // Completed non-final step → batch it
         if (group.isComplete && !group.isFinal) {
-          if (!processBatchStart) processBatchStart = first.id;
-          processBatch.push(...group.items);
+          pushProcessItems(group.items);
           continue;
         }
 
@@ -593,10 +613,7 @@ export function Transcript({
         const hasRunning = nonAssistantItems.some((it) => it.kind === "tool" && it.status === "running");
         const finalAssistants = group.items.filter((it): it is AssistantItem => it.kind === "assistant" && !it.streaming && it.text.trim() !== "");
         if (finalAssistants.length > 0 && !hasRunning) {
-          if (nonAssistantItems.length > 0) {
-            if (!processBatchStart) processBatchStart = first.id;
-            processBatch.push(...nonAssistantItems);
-          }
+          pushProcessItems(nonAssistantItems);
           for (const assistant of finalAssistants) {
             if (!assistant.reasoning) continue;
             if (!processBatchStart) processBatchStart = assistant.id;
@@ -612,6 +629,7 @@ export function Transcript({
                 expandWhileStreaming={false}
                 truncateStreamingReasoning={true}
                 creationMode={creationMode}
+                reasoningDisplay="hide"
               />,
             );
             actionText = appendTurnActionCopyText(actionText, assistant.text);
@@ -623,10 +641,7 @@ export function Transcript({
         // Active step → keep the live process in the same turn-level reasoning
         // fold. The final answer, if it has started streaming, still renders
         // outside the fold with its reasoning hidden.
-        if (nonAssistantItems.length > 0) {
-          if (!processBatchStart) processBatchStart = first.id;
-          processBatch.push(...nonAssistantItems);
-        }
+        pushProcessItems(nonAssistantItems);
         for (const it of group.items) {
           if (it.kind !== "assistant") continue;
           if (!processBatchStart) processBatchStart = it.id;
@@ -708,10 +723,10 @@ export function Transcript({
           }
           case "assistant": {
             const assistant = it as AssistantItem;
-            if (assistant.reasoning || (live?.id === assistant.id && live.reasoning)) {
+            if (assistant.reasoning || (liveId === assistant.id && liveHasReasoning)) {
               pushProcessItem(assistantReasoningOnly(assistant));
             }
-            if (assistantHasVisibleAnswer(assistant, live)) {
+            if (assistantHasVisibleAnswer(assistant, liveId, liveHasAnswerText)) {
               flushProcessBatch();
               out.push(
                 <LiveAssistantMessage
@@ -719,6 +734,7 @@ export function Transcript({
                   item={assistantAnswerOnly(assistant)}
                   defaultExpanded={false}
                   creationMode={creationMode}
+                  reasoningDisplay="hide"
                 />,
               );
             }
@@ -735,7 +751,14 @@ export function Transcript({
             pushProcessItem(it);
             break;
           case "notice":
-            pushProcessItem(it);
+            // Warnings must stay visible after the fold auto-closes on
+            // completion — only info-level notices belong to the process fold.
+            if (it.level === "warn") {
+              flushProcessBatch();
+              out.push(<NoticeCard key={it.id} level={it.level} text={it.text} detail={it.detail} />);
+            } else {
+              pushProcessItem(it);
+            }
             break;
           case "compaction":
             pushProcessItem(it);
@@ -746,7 +769,7 @@ export function Transcript({
       if (!running) pushTurnActions();
     }
     return out;
-  }, [hotStartIdx, items, openAction, actionPending, rewindDisabled, running, onEditPrompt, onRewind, subcallsByParent, userTurn, checkpointsByTurn, displayMode, stepGroups, tabId, actionHoverMenus, creationMode, lastTurn, turnStartAt, live?.id, live?.text, live?.reasoning]);
+  }, [hotStartIdx, items, openAction, actionPending, rewindDisabled, running, onEditPrompt, onRewind, subcallsByParent, userTurn, checkpointsByTurn, displayMode, stepGroups, tabId, actionHoverMenus, creationMode, lastTurn, turnStartAt, liveId, liveHasAnswerText, liveHasReasoning]);
 
   // ── Assemble rendered output ──────────────────────────────────────────────
   // Warm/cold zone is a separate memo'd WarmZone component so streaming tokens
@@ -789,6 +812,7 @@ export function Transcript({
               warmUserTurn={userTurn}
               warmCheckpoints={checkpointsByTurn}
               warmLastTurn={lastTurn}
+              warmDisplayMode={displayMode}
               warmOpenAction={openAction}
               warmActionPending={actionPending}
               warmRewindDisabled={rewindDisabled}
@@ -845,6 +869,7 @@ const WarmZone = memo(function WarmZone({
   warmUserTurn,
   warmCheckpoints,
   warmLastTurn,
+  warmDisplayMode,
   warmOpenAction,
   warmActionPending,
   warmRewindDisabled,
@@ -868,6 +893,7 @@ const WarmZone = memo(function WarmZone({
   warmUserTurn: ReadonlyMap<string, number>;
   warmCheckpoints: ReadonlyMap<number, CheckpointMeta>;
   warmLastTurn?: number;
+  warmDisplayMode: DisplayMode;
   warmOpenAction: OpenTurnAction | null;
   warmActionPending: boolean;
   warmRewindDisabled: boolean;
@@ -934,6 +960,7 @@ const WarmZone = memo(function WarmZone({
               tabId={tabId}
               creationMode={creationMode}
               lastTurn={warmLastTurn}
+              mode={warmDisplayMode}
             />
           </WarmTurnCard>,
         );
@@ -982,6 +1009,7 @@ function WarmTurnItems({
   tabId,
   creationMode = false,
   lastTurn,
+  mode,
 }: {
   startIdx: number;
   endIdx: number;
@@ -999,6 +1027,7 @@ function WarmTurnItems({
   tabId?: string;
   creationMode?: boolean;
   lastTurn?: number;
+  mode: DisplayMode;
 }) {
   const nodes: React.ReactNode[] = [];
   let actionText = "";
@@ -1030,44 +1059,39 @@ function WarmTurnItems({
     actionReady = false;
   };
 
-  // Group consecutive completed read-only tools into ReadOnlyBatch
-  const roBatch: ToolItem[] = [];
-  const toolBatch: ToolItem[] = [];
-  let toolBatchKind: ToolGroupKind | null = null;
-  const flushRO = () => {
-    if (roBatch.length === 0) return;
-    nodes.push(<ReadOnlyBatch key={`rob-${roBatch[0].id}`} items={[...roBatch]} subcalls={subcalls} tabId={tabId} />);
-    roBatch.length = 0;
+  // Warm turns render the same turn-level process fold as the hot zone —
+  // scrolling back must not flip a turn from folded to flat. Warm items never
+  // stream, so there is no live merging here; RO/creation tool grouping happens
+  // inside TurnCollapse.
+  let processBatch: Item[] = [];
+  let processBatchStart: string | null = null;
+  const flushProcessBatch = () => {
+    if (processBatch.length === 0) return;
+    nodes.push(
+      <TurnCollapse
+        key={`warm-process-${processBatchStart}`}
+        items={processBatch}
+        durationMs={processDurationMs(processBatch)}
+        mode={mode}
+        subcalls={subcalls}
+        tabId={tabId}
+        creationMode={creationMode}
+        preferredKind="reasoning"
+      />,
+    );
+    processBatch = [];
+    processBatchStart = null;
   };
-  const flushToolBatch = () => {
-    if (!toolBatchKind || toolBatch.length === 0) return;
-    nodes.push(<ToolGroup key={`tg-${toolBatch[0].id}`} kind={toolBatchKind} items={[...toolBatch]} subcalls={subcalls} tabId={tabId} />);
-    toolBatch.length = 0;
-    toolBatchKind = null;
+  const pushProcessItem = (it: Item) => {
+    if (!processBatchStart) processBatchStart = it.id;
+    processBatch.push(it);
   };
 
   for (let i = startIdx; i < endIdx && i < items.length; i++) {
     const it = items[i];
-
-    // Completed read-only tools → batch into ReadOnlyBatch
-    if (creationMode && it.kind === "tool" && isCreationGroupableTool(it as ToolItem)) {
-      const kind = toolGroupKind(it as ToolItem);
-      if (kind) {
-        if (toolBatchKind && toolBatchKind !== kind) flushToolBatch();
-        toolBatchKind = kind;
-        toolBatch.push(it as ToolItem);
-        continue;
-      }
-    }
-    if (!creationMode && it.kind === "tool" && !it.parentId && it.name !== "todo_write" && it.name !== "exit_plan_mode" && isReadOnlyTool(it.name)) {
-      roBatch.push(it as ToolItem);
-      continue;
-    }
-    flushToolBatch();
-    flushRO();
-
     switch (it.kind) {
       case "user": {
+        flushProcessBatch();
         pushTurnActions();
         const tn = userTurnMap.get(it.id);
         const checkpoint = tn == null ? undefined : checkpoints.get(tn);
@@ -1088,27 +1112,39 @@ function WarmTurnItems({
         break;
       }
       case "assistant": {
-        nodes.push(<AssistantMessage key={it.id} item={it} defaultExpanded={false} creationMode={creationMode} />);
+        if (it.reasoning) pushProcessItem(assistantReasoningOnly(it));
+        if (it.text.trim() !== "") {
+          flushProcessBatch();
+          nodes.push(<AssistantMessage key={it.id} item={assistantAnswerOnly(it)} defaultExpanded={false} creationMode={creationMode} />);
+        }
         if (!it.streaming && it.text.trim() !== "") {
           actionText = appendTurnActionCopyText(actionText, it.text);
           actionReady = true;
         }
         break;
       }
-      case "tool": {
-        if (it.parentId) break;
-        if (it.name === "todo_write") break;
-        if (it.name === "exit_plan_mode") break;
-        nodes.push(<ToolCard key={it.id} item={it} subcalls={subcalls.get(it.id)} tabId={tabId} />);
+      case "tool":
+        pushProcessItem(it);
         break;
-      }
-      case "phase": nodes.push(<PhaseCard key={it.id} text={it.text} />); break;
-      case "notice": nodes.push(<NoticeCard key={it.id} level={it.level} text={it.text} detail={it.detail} />); break;
-      case "compaction": nodes.push(<CompactionCard key={it.id} item={it} />); break;
+      case "phase":
+        pushProcessItem(it);
+        break;
+      case "notice":
+        // Same contract as the hot zone: warnings stay outside the fold so
+        // they remain visible once the fold is collapsed.
+        if (it.level === "warn") {
+          flushProcessBatch();
+          nodes.push(<NoticeCard key={it.id} level={it.level} text={it.text} detail={it.detail} />);
+        } else {
+          pushProcessItem(it);
+        }
+        break;
+      case "compaction":
+        pushProcessItem(it);
+        break;
     }
   }
-  flushToolBatch();
-  flushRO();
+  flushProcessBatch();
   pushTurnActions();
   return nodes;
 }
@@ -1177,7 +1213,7 @@ type TurnCollapseProps = {
   items: Item[];       // intermediate items (tools, reasoning, phase)
   durationMs: number;  // summed tool execution time across the batch; 0 when unknown
   mode: DisplayMode;
-  subcalls: Map<string, ToolItem[]>;
+  subcalls: ReadonlyMap<string, ToolItem[]>;
   tabId?: string;
   creationMode?: boolean;
   turnStartAt?: number;

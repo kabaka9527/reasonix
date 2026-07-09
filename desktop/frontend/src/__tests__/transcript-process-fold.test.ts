@@ -31,12 +31,12 @@ ok(
   "final assistant reasoning is folded while the answer renders without a second top-level reasoning panel",
 );
 ok(
-  source.includes("processBatch.push(...nonAssistantItems)") && source.includes("processBatch.push(assistantReasoningOnly(assistant))"),
+  source.includes("pushProcessItems(nonAssistantItems)") && source.includes("processBatch.push(assistantReasoningOnly(assistant))"),
   "tools and final reasoning are inserted into the same turn-level process batch",
 );
 ok(
   source.includes("Active step") &&
-    source.includes("processBatch.push(...nonAssistantItems)") &&
+    source.includes("pushProcessItems(nonAssistantItems)") &&
     source.includes("reasoningDisplay=\"hide\""),
   "live compact process stays inside the reasoning fold while streaming answer text renders outside",
 );
@@ -52,9 +52,39 @@ ok(
 ok(
   source.includes("Standard mode keeps the answer body flat") &&
     source.includes("standard-process-${processBatchStart}") &&
-    source.includes("assistantHasVisibleAnswer(assistant, live)") &&
+    source.includes("assistantHasVisibleAnswer(assistant, liveId, liveHasAnswerText)") &&
     source.includes("pushProcessItem(assistantReasoningOnly(assistant))"),
   "standard mode also folds per-turn process items into the single reasoning entry",
+);
+// The answer rendered outside the fold must never grow a second reasoning
+// panel from the live-stream merge: every answer-only LiveAssistantMessage
+// call site passes reasoningDisplay="hide".
+ok(
+  source.split("assistantAnswerOnly(assistant)").length - 1 > 0 &&
+    source.split("reasoningDisplay=\"hide\"").length - 1 >=
+      source.split("assistantAnswerOnly(assistant)").length - 1,
+  "every answer-only render site hides the live-merged reasoning panel",
+);
+// Warn-level notices must survive the fold auto-closing on completion: both
+// zones route them around the process batch instead of into it.
+ok(
+  source.includes("it.level === \"warn\"") &&
+    (source.match(/level === "warn"/g) ?? []).length >= 3,
+  "warn notices render outside the process fold in compact, standard, and warm paths",
+);
+// The hot-zone memo must depend on live presence flags only — depending on
+// live.text/live.reasoning would rebuild the hot zone on every token.
+ok(
+  source.includes("liveId, liveHasAnswerText, liveHasReasoning]") &&
+    !source.includes("live?.text, live?.reasoning]"),
+  "hot-zone memo depends on live presence flags, not per-token stream content",
+);
+// Warm turns reuse the same fold structure so scrolling back does not flip a
+// turn from folded to flat.
+ok(
+  source.includes("warm-process-${processBatchStart}") &&
+    source.includes("warmDisplayMode"),
+  "expanded warm turns render the same turn-level process fold",
 );
 ok(
   source.includes("turnStartAt={turnStartAt}") &&
