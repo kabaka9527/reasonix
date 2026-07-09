@@ -211,6 +211,79 @@ func TestHeartbeatExecuteTaskPersistsFreshConversationTopicID(t *testing.T) {
 	}
 }
 
+func TestHeartbeatExecuteTaskSkipsPendingPrompt(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	app.ctx = context.Background()
+	app.readyHook = func() {}
+	app.runtimeEvents.emit = func(context.Context, string, ...interface{}) {}
+	engine := &HeartbeatEngine{
+		app:           app,
+		pendingTopics: map[string]heartbeatPendingTopic{},
+	}
+	ctrl := &heartbeatExecuteTaskCtrlStub{status: control.RuntimeStatus{PendingPrompt: true}}
+	injected := make(chan struct{})
+
+	go func() {
+		ticker := time.NewTicker(time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-injected:
+				return
+			case <-ticker.C:
+				var cancel context.CancelFunc
+				var tabToInject *WorkspaceTab
+				app.mu.Lock()
+				for _, tab := range app.tabs {
+					if tab == nil {
+						continue
+					}
+					tab.removed = true
+					cancel = tab.buildCancel
+					tabToInject = tab
+					break
+				}
+				app.mu.Unlock()
+				if tabToInject == nil {
+					continue
+				}
+				if cancel != nil {
+					cancel()
+				}
+				app.mu.Lock()
+				if tabToInject.Ctrl == nil {
+					tabToInject.Ctrl = ctrl
+					tabToInject.Ready = true
+					tabToInject.StartupErr = ""
+					app.mu.Unlock()
+					close(injected)
+					return
+				}
+				app.mu.Unlock()
+			}
+		}
+	}()
+
+	got := engine.executeTask(HeartbeatTask{
+		ID:                     "fresh",
+		Title:                  "Fresh",
+		Prompt:                 "ping",
+		NewConversationEachRun: true,
+		ApprovalMode:           "auto",
+	})
+
+	if got.LastRunAt != 0 {
+		t.Fatalf("pending prompt should not mark heartbeat run complete, LastRunAt=%d", got.LastRunAt)
+	}
+	if len(ctrl.submitted) != 0 {
+		t.Fatalf("submitted prompts = %v, want none while prompt is pending", ctrl.submitted)
+	}
+	if ctrl.approvalMode != "" {
+		t.Fatalf("approval mode = %q, want unchanged while prompt is pending", ctrl.approvalMode)
+	}
+}
+
 func TestHeartbeatTaskDueAtHonorsIntervalTimeWindow(t *testing.T) {
 	loc := time.UTC
 	lastRun := time.Date(2026, 6, 18, 16, 0, 0, 0, loc)

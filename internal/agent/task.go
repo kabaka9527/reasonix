@@ -387,7 +387,11 @@ func (r *ReadOnlyTaskTool) Execute(ctx context.Context, args json.RawMessage) (s
 	if err != nil {
 		return "", fmt.Errorf("read-only sub-agent profile: %w", err)
 	}
-	return r.task.runSubSession(ctx, p.Prompt, subReg, subSink(ctx), maxSteps, prov, pricing, ctxWin, NewSession(DefaultReadOnlyTaskSystemPrompt), childDepth)
+	answer, err := r.task.runSubSession(ctx, p.Prompt, subReg, subSink(ctx), maxSteps, prov, pricing, ctxWin, NewSession(DefaultReadOnlyTaskSystemPrompt), childDepth)
+	if err != nil {
+		return "", err
+	}
+	return GuardSubagentHostDecisionText(answer), nil
 }
 
 // childMaxSteps resolves a sub-agent's step budget. An explicit request wins.
@@ -520,7 +524,7 @@ func (t *TaskTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 		}
 		return FormatSubagentRunResult(answer, run, false), nil
 	}
-	return answer, nil
+	return GuardSubagentHostDecisionText(answer), nil
 }
 
 func (t *TaskTool) prepareTranscriptRun(subReg *tool.Registry, modelRef, effortRef, parentSession, parentID, continueFrom, legacyForkFrom string) (*SubagentRun, error) {
@@ -828,6 +832,7 @@ func FormatSubagentReference(run *SubagentRun) string {
 }
 
 func FormatSubagentRunResult(answer string, run *SubagentRun, failed bool) string {
+	answer = GuardSubagentHostDecisionText(answer)
 	if run == nil || run.Ref == "" {
 		return answer
 	}
@@ -838,6 +843,14 @@ func FormatSubagentRunResult(answer string, run *SubagentRun, failed bool) strin
 		return "Subagent reference (failed): " + run.Ref + "\n\nFinal answer:\n" + answer
 	}
 	return FormatSubagentReference(run) + "\n\nFinal answer:\n" + answer
+}
+
+// GuardSubagentHostDecisionText appends a fixed boundary warning only when a
+// child agent result appears to discuss host approval or user-owned decisions.
+// The implementation lives in internal/tool so the skill tools share the exact
+// same phrase list and notice.
+func GuardSubagentHostDecisionText(answer string) string {
+	return tool.GuardSubagentHostDecisionText(answer)
 }
 
 // RunSubAgentWithSession continues an existing sub-agent session with prompt and

@@ -201,6 +201,39 @@ func (c *blockingApprovalController) Approve(id string, allow, session, persist 
 	c.once.Do(func() { close(c.approved) })
 }
 
+type blockingAskController struct {
+	botController
+	emit     func(event.Event)
+	emitted  chan struct{}
+	answered chan []event.AskAnswer
+	done     chan struct{}
+	once     sync.Once
+}
+
+func (c *blockingAskController) RunTurn(ctx context.Context, input string) error {
+	c.emit(event.Event{Kind: event.AskRequest, Ask: event.Ask{ID: "ask-1", Questions: []event.AskQuestion{{
+		ID:     "q1",
+		Header: "Planner",
+		Prompt: "Which plan?",
+		Options: []event.AskOption{
+			{Label: "Small patch"},
+			{Label: "Refactor"},
+		},
+	}}}})
+	close(c.emitted)
+	select {
+	case <-c.answered:
+		close(c.done)
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (c *blockingAskController) AnswerQuestion(id string, answers []event.AskAnswer) {
+	c.once.Do(func() { c.answered <- answers })
+}
+
 func TestFakeAdapterInterface(t *testing.T) {
 	fa := newFakeAdapter(PlatformQQ, "fake-qq")
 
@@ -901,6 +934,61 @@ func TestGatewayApprovalReplyUnblocksWedgedTurn(t *testing.T) {
 	case <-ctrl.done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("deadlock: /approve reply was not delivered while the turn blocked on approval")
+	}
+}
+
+func TestGatewayAskReplyUnblocksWedgedTurn(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	gw := NewGateway(GatewayConfig{Allowlist: AllowlistConfig{AllowAll: true}}, nil, logger)
+	adapter := newFakeAdapter(PlatformFeishu, "fake-feishu")
+	binding := AdapterBinding{ID: "feishu", Platform: PlatformFeishu, Adapter: adapter}
+	msg := InboundMessage{
+		Platform:     PlatformFeishu,
+		ConnectionID: "feishu",
+		ChatType:     ChatDM,
+		ChatID:       "chat",
+		UserID:       "user",
+		Text:         "choose a plan",
+	}
+	key := BuildSessionKey(msg.Session())
+	sink := &sessionEventSink{}
+	ctrl := &blockingAskController{
+		emit:     sink.Emit,
+		emitted:  make(chan struct{}),
+		answered: make(chan []event.AskAnswer, 1),
+		done:     make(chan struct{}),
+	}
+	gw.controllers[key] = &sessionState{
+		ctrl:             ctrl,
+		sink:             sink,
+		pendingApprovals: make(map[string]event.Approval),
+		pendingAsks:      make(map[string][]event.AskQuestion),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go gw.dispatchLoop(ctx, binding)
+
+	adapter.msgCh <- msg
+	select {
+	case <-ctrl.emitted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ask request was never emitted; turn did not start")
+	}
+
+	adapter.msgCh <- InboundMessage{
+		Platform:     PlatformFeishu,
+		ConnectionID: "feishu",
+		ChatType:     ChatDM,
+		ChatID:       "chat",
+		UserID:       "user",
+		Text:         "1",
+	}
+
+	select {
+	case <-ctrl.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("deadlock: ask reply was not delivered while the turn blocked on user choice")
 	}
 }
 

@@ -1518,6 +1518,74 @@ func (c *Controller) EnableInteractiveApproval() {
 	}); ok {
 		setter.SetConfigWriteApprover(configApprover)
 	}
+	if setter, ok := c.runner.(interface {
+		SetPlannerPlanApprover(agent.PlannerPlanApprover)
+	}); ok {
+		setter.SetPlannerPlanApprover(plannerPlanApprover{c: c})
+	}
+	if setter, ok := c.runner.(interface {
+		SetPlannerUserDecisionAsker(agent.PlannerUserDecisionAsker)
+	}); ok {
+		setter.SetPlannerUserDecisionAsker(plannerUserDecisionAsker{c: c})
+	}
+}
+
+type plannerPlanApprover struct {
+	c *Controller
+}
+
+func (p plannerPlanApprover) RunWithPlannerApproval(ctx context.Context, plan string, run func(context.Context) error) error {
+	c := p.c
+	allow, _, err := c.requestApprovalWithReason(ctx, planApprovalTool, "", nil, "Planner requested host approval before execution.")
+	if err != nil {
+		return err
+	}
+	if !allow {
+		return nil
+	}
+	todoArgs := c.seedPlanTodos(plan)
+	execStart := c.sessionMessageCount()
+	c.approval.setPlanAutoApprove(true)
+	defer c.approval.setPlanAutoApprove(false)
+	if err := run(ctx); err != nil {
+		return err
+	}
+	if todoArgs != "" && !c.hasTodoUpdateSince(execStart) {
+		c.completePlanTodos(todoArgs)
+	}
+	return nil
+}
+
+type plannerUserDecisionAsker struct {
+	c *Controller
+}
+
+func (p plannerUserDecisionAsker) RunWithPlannerUserDecision(ctx context.Context, _ string, question event.AskQuestion, run func(context.Context, string) error) error {
+	answers, err := p.c.Ask(ctx, []event.AskQuestion{question})
+	if err != nil {
+		return err
+	}
+	answer := plannerUserDecisionAnswer(question, answers)
+	if strings.TrimSpace(answer) == "" {
+		return nil
+	}
+	return run(ctx, answer)
+}
+
+func plannerUserDecisionAnswer(question event.AskQuestion, answers []event.AskAnswer) string {
+	for _, answer := range answers {
+		if answer.QuestionID != question.ID {
+			continue
+		}
+		selected := make([]string, 0, len(answer.Selected))
+		for _, item := range answer.Selected {
+			if s := strings.TrimSpace(item); s != "" {
+				selected = append(selected, s)
+			}
+		}
+		return strings.Join(selected, ", ")
+	}
+	return ""
 }
 
 func (c *Controller) newInteractiveGate() *permission.Gate {

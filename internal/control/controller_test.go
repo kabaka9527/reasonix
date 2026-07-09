@@ -2028,6 +2028,132 @@ func TestNewSessionResetsTwoModelPlannerContext(t *testing.T) {
 	}
 }
 
+func TestTwoModelPlannerApprovalUsesHostGate(t *testing.T) {
+	dir := t.TempDir()
+	planner := &recordingProvider{name: "planner", streams: [][]provider.Chunk{
+		textTurn("Plan:\n1. Edit main.go\n\n是否批准这个方案？"),
+	}}
+	execProv := &recordingProvider{name: "executor", streams: [][]provider.Chunk{
+		textTurn("approved execution complete"),
+	}}
+	exec := agent.New(execProv, tool.NewRegistry(), agent.NewSession("exec sys"), agent.Options{}, event.Discard)
+	coord := agent.NewCoordinator(planner, agent.NewSession("planner sys"), nil, tool.NewRegistry(), agent.Options{}, exec, 0, event.Discard, nil)
+
+	ids := make(chan string, 1)
+	var prompts int
+	c := New(Options{
+		Runner:       coord,
+		Executor:     exec,
+		SystemPrompt: "exec sys",
+		SessionDir:   dir,
+		SessionPath:  filepath.Join(dir, "session.jsonl"),
+		Label:        "test",
+		Sink: event.FuncSink(func(e event.Event) {
+			if e.Kind != event.ApprovalRequest {
+				return
+			}
+			prompts++
+			if e.Approval.Tool != planApprovalTool {
+				t.Errorf("approval tool = %q, want %q", e.Approval.Tool, planApprovalTool)
+			}
+			if !strings.Contains(e.Approval.Reason, "Planner requested") {
+				t.Errorf("approval reason = %q, want planner source", e.Approval.Reason)
+			}
+			ids <- e.Approval.ID
+		}),
+	})
+	c.EnableInteractiveApproval()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- c.Run(context.Background(), "fix the planner approval bug")
+	}()
+	id := waitApprovalID(t, ids)
+	if got := len(execProv.requests); got != 0 {
+		t.Fatalf("executor requests before approval = %d, want 0", got)
+	}
+	c.Approve(id, true, false, false)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("approved two-model turn did not finish")
+	}
+	if prompts != 1 {
+		t.Fatalf("approval prompts = %d, want 1", prompts)
+	}
+	if got := len(execProv.requests); got == 0 {
+		t.Fatal("executor did not run after approval")
+	}
+	reqText := requestMessagesText(execProv.requests[0].Messages)
+	if !strings.Contains(reqText, "Reasonix executor handoff") || !strings.Contains(reqText, "Edit main.go") {
+		t.Fatalf("approved executor request missing planner handoff:\n%s", reqText)
+	}
+}
+
+func TestTwoModelPlannerUserDecisionUsesAskGate(t *testing.T) {
+	dir := t.TempDir()
+	planner := &recordingProvider{name: "planner", streams: [][]provider.Chunk{
+		textTurn("需要用户选择方案：\n方案一：小改当前逻辑\n方案二：重构控制流\n请选择哪个方案。"),
+	}}
+	execProv := &recordingProvider{name: "executor", streams: [][]provider.Chunk{
+		textTurn("selected execution complete"),
+	}}
+	exec := agent.New(execProv, tool.NewRegistry(), agent.NewSession("exec sys"), agent.Options{}, event.Discard)
+	coord := agent.NewCoordinator(planner, agent.NewSession("planner sys"), nil, tool.NewRegistry(), agent.Options{}, exec, 0, event.Discard, nil)
+
+	asks := make(chan event.Ask, 1)
+	c := New(Options{
+		Runner:       coord,
+		Executor:     exec,
+		SystemPrompt: "exec sys",
+		SessionDir:   dir,
+		SessionPath:  filepath.Join(dir, "session.jsonl"),
+		Label:        "test",
+		Sink: event.FuncSink(func(e event.Event) {
+			if e.Kind == event.AskRequest {
+				asks <- e.Ask
+			}
+		}),
+	})
+	c.EnableInteractiveApproval()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- c.Run(context.Background(), "fix the planner decision bug")
+	}()
+	var ask event.Ask
+	select {
+	case ask = <-asks:
+	case <-time.After(2 * time.Second):
+		t.Fatal("AskRequest was not emitted")
+	}
+	if got := len(execProv.requests); got != 0 {
+		t.Fatalf("executor requests before user decision = %d, want 0", got)
+	}
+	if len(ask.Questions) != 1 || ask.Questions[0].ID != "planner_user_decision" {
+		t.Fatalf("ask questions = %+v, want planner decision question", ask.Questions)
+	}
+	c.AnswerQuestion(ask.ID, []event.AskAnswer{{QuestionID: "planner_user_decision", Selected: []string{"方案二：重构控制流"}}})
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("answered two-model turn did not finish")
+	}
+	if got := len(execProv.requests); got == 0 {
+		t.Fatal("executor did not run after user decision")
+	}
+	reqText := requestMessagesText(execProv.requests[0].Messages)
+	if !strings.Contains(reqText, "Host user answer to planner question") || !strings.Contains(reqText, "方案二") {
+		t.Fatalf("executor request missing host user answer:\n%s", reqText)
+	}
+}
+
 func TestResumeResetsTwoModelPlannerContext(t *testing.T) {
 	dir := t.TempDir()
 	planner := &recordingProvider{name: "planner", streams: [][]provider.Chunk{
