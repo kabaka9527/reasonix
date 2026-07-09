@@ -2,10 +2,12 @@ package feishu
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"io"
 	"log/slog"
-	"math/rand"
+	mrand "math/rand"
 	"net"
 	"strings"
 	"syscall"
@@ -13,6 +15,19 @@ import (
 
 	"reasonix/internal/bot"
 )
+
+// newIdempotencyKey returns a random key for the Feishu create/reply `uuid`
+// dedup field. It is generated once per logical send and reused across
+// transient retries, so a retry after the request already reached the server
+// (response read failed) does not post a duplicate visible message. An empty
+// return (rand failure) simply omits the key — retries then behave as before.
+func newIdempotencyKey() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(b[:])
+}
 
 const (
 	transientRetryAttempts  = 3
@@ -31,7 +46,7 @@ func withTransientRetry(ctx context.Context, logger *slog.Logger, op string, fn 
 		if err == nil || attempt >= transientRetryAttempts || ctx.Err() != nil || !isTransientError(err) {
 			return err
 		}
-		wait := delay + time.Duration(rand.Int63n(int64(delay/4)+1))
+		wait := delay + time.Duration(mrand.Int63n(int64(delay/4)+1))
 		logger.Warn("feishu transient error; retrying", "op", op, "attempt", attempt, "wait", wait, "err", err)
 		if !bot.SleepCtx(ctx, wait) {
 			return err

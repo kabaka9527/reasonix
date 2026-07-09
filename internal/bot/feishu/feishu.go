@@ -104,6 +104,8 @@ type adapter struct {
 	// fetchResource 覆盖消息资源下载（测试注入）；nil 时用 sdkFetchResource。
 	fetchResource func(ctx context.Context, messageID, key, typ string) ([]byte, string, error)
 
+	clientMu sync.Mutex // 保护 client 懒初始化
+
 	seenMu sync.Mutex
 	seen   map[string]bool // 消息去重
 
@@ -617,22 +619,12 @@ func (a *adapter) sendMessage(ctx context.Context, msg bot.OutboundMessage) (bot
 	if msg.Card != nil {
 		return a.sendCard(ctx, msg)
 	}
-	if len(msg.MediaURLs) == 0 {
-		return a.sendRenderedText(ctx, msg)
-	}
-	var result bot.SendResult
-	var firstErr error
-	if strings.TrimSpace(msg.Text) != "" {
-		result, firstErr = a.sendRenderedText(ctx, msg)
-	}
-	mediaResult, mediaErr := a.sendMediaURLs(ctx, msg)
-	if mediaErr != nil && firstErr == nil {
-		firstErr = mediaErr
-	}
-	if mediaResult.MessageID != "" {
-		result = mediaResult
-	}
-	return result, firstErr
+	// Outbound MediaURLs are intentionally not resolved here: doing so would let
+	// the loopback /send control caller drive arbitrary local-file reads and
+	// URL fetches (SSRF) from inside the gateway process. Outbound file/image
+	// sending is deferred until it can be built against a confined media root
+	// plus a host allowlist. QQ/WeChat ignore MediaURLs for the same reason.
+	return a.sendRenderedText(ctx, msg)
 }
 
 func (a *adapter) sendRenderedText(ctx context.Context, msg bot.OutboundMessage) (bot.SendResult, error) {
@@ -652,6 +644,13 @@ func (a *adapter) sendRenderedText(ctx context.Context, msg bot.OutboundMessage)
 func buildMarkdownCard(content string) (string, error) {
 	card := map[string]any{
 		"schema": "2.0",
+		// update_multi marks the card as a shared card that can be patched for
+		// all recipients after sending; without it Im.Message.Patch (used by
+		// EditMessage for streaming) is rejected, which would collapse
+		// streaming into a flood of new messages. See references/desktop-ui.
+		"config": map[string]any{
+			"update_multi": true,
+		},
 		"body": map[string]any{
 			"elements": []map[string]any{
 				{
@@ -681,7 +680,13 @@ func isCardLimitError(err error) bool {
 	return strings.Contains(s, "11310") || strings.Contains(s, "11325")
 }
 
+// sdkClient lazily builds the shared lark client. It is called concurrently —
+// the fetchBotOpenID goroutine, per-message resolveUserName, and per-resource
+// downloads all race on first use at startup — so the check-and-build is guarded
+// by clientMu (a bare a.client read/write would data-race, tripping -race).
 func (a *adapter) sdkClient() (*lark.Client, error) {
+	a.clientMu.Lock()
+	defer a.clientMu.Unlock()
 	if a.client != nil {
 		return a.client, nil
 	}
@@ -719,11 +724,18 @@ func (a *adapter) sendSDKContent(ctx context.Context, msg bot.OutboundMessage, m
 		}
 		a.logger.Warn("feishu reply failed; falling back to create", "message", logHash(replyTo), "err", err)
 	}
+	// Stable across retries so a retry after a post-commit connection drop does
+	// not send a duplicate visible message (Feishu dedups on uuid).
+	uuid := newIdempotencyKey()
 	var result bot.SendResult
 	err = withTransientRetry(ctx, a.logger, "create message", func(ctx context.Context) error {
+		body := larkim.NewCreateMessageReqBodyBuilder().ReceiveId(chatID).MsgType(msgType).Content(content)
+		if uuid != "" {
+			body = body.Uuid(uuid)
+		}
 		req := larkim.NewCreateMessageReqBuilder().
 			ReceiveIdType(larkim.CreateMessageV1ReceiveIDTypeChatId).
-			Body(larkim.NewCreateMessageReqBodyBuilder().ReceiveId(chatID).MsgType(msgType).Content(content).Build()).
+			Body(body.Build()).
 			Build()
 		resp, err := client.Im.Message.Create(ctx, req)
 		if err != nil {
@@ -751,11 +763,16 @@ func (a *adapter) replySDKContent(ctx context.Context, replyTo, msgType, content
 	if err != nil {
 		return bot.SendResult{}, err
 	}
+	uuid := newIdempotencyKey()
 	var result bot.SendResult
 	err = withTransientRetry(ctx, a.logger, "reply message", func(ctx context.Context) error {
+		body := larkim.NewReplyMessageReqBodyBuilder().MsgType(msgType).Content(content)
+		if uuid != "" {
+			body = body.Uuid(uuid)
+		}
 		req := larkim.NewReplyMessageReqBuilder().
 			MessageId(replyTo).
-			Body(larkim.NewReplyMessageReqBodyBuilder().MsgType(msgType).Content(content).Build()).
+			Body(body.Build()).
 			Build()
 		resp, err := client.Im.Message.Reply(ctx, req)
 		if err != nil {

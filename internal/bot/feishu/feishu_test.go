@@ -501,7 +501,10 @@ func TestBuildMarkdownCard(t *testing.T) {
 	}
 	var payload struct {
 		Schema string `json:"schema"`
-		Body   struct {
+		Config struct {
+			UpdateMulti bool `json:"update_multi"`
+		} `json:"config"`
+		Body struct {
 			Elements []struct {
 				Tag     string `json:"tag"`
 				Content string `json:"content"`
@@ -513,6 +516,10 @@ func TestBuildMarkdownCard(t *testing.T) {
 	}
 	if payload.Schema != "2.0" {
 		t.Fatalf("schema = %q, want 2.0", payload.Schema)
+	}
+	// update_multi must be set or Im.Message.Patch (streaming) is rejected.
+	if !payload.Config.UpdateMulti {
+		t.Fatal("card config.update_multi = false, want true so the card is patchable")
 	}
 	if len(payload.Body.Elements) != 1 || payload.Body.Elements[0].Tag != "markdown" {
 		t.Fatalf("elements = %#v, want one markdown element", payload.Body.Elements)

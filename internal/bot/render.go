@@ -208,12 +208,23 @@ func (s *renderSink) Emit(e event.Event) {
 
 func (s *renderSink) flush() {
 	for strings.TrimSpace(s.buf.String()) != "" {
-		idx := renderFlushIndex(s.buf.String(), renderSoftFlushAfter)
-		if idx <= 0 {
-			idx = byteIndexForRuneLimit(s.buf.String(), renderMaxChunkRunes)
+		raw := s.buf.String()
+		// When streaming into a live message, finalize the whole remaining text
+		// with one edit instead of splitting at a semantic boundary — otherwise
+		// a final answer that does not end on a boundary (code block, list, URL)
+		// gets shrunk in place and its tail re-sent as a separate message,
+		// defeating the point of in-place streaming. Only fall back to boundary
+		// chunking when the remainder genuinely exceeds the hard cap.
+		if s.editor != nil && s.liveMsgID != "" && len([]rune(raw)) < renderHardChunkRunes {
+			s.flushPrefix(len(raw))
+			continue
 		}
-		if idx <= 0 || idx > len(s.buf.String()) {
-			idx = len(s.buf.String())
+		idx := renderFlushIndex(raw, renderSoftFlushAfter)
+		if idx <= 0 {
+			idx = byteIndexForRuneLimit(raw, renderMaxChunkRunes)
+		}
+		if idx <= 0 || idx > len(raw) {
+			idx = len(raw)
 		}
 		s.flushPrefix(idx)
 	}
@@ -232,6 +243,12 @@ func (s *renderSink) flushPrefix(idx int) {
 		s.lastFlush = time.Now()
 		return
 	}
+	// resumeFrom marks where the not-yet-delivered remainder starts. On success
+	// it is idx (the block boundary). On edit failure the live message is frozen
+	// at raw[:liveSentBytes], so anything already shown past idx must NOT be
+	// re-queued — the resume point becomes max(idx, liveSentBytes), otherwise the
+	// [idx, liveSentBytes] span is both displayed and re-sent (duplication).
+	resumeFrom := idx
 	if s.liveMsgID != "" {
 		// 当前块已有 live 消息：把最终内容原地编辑进去，而不是再发一条。
 		if err := s.editLive(text); err != nil {
@@ -239,13 +256,19 @@ func (s *renderSink) flushPrefix(idx int) {
 			if tail := strings.TrimSpace(raw[min(s.liveSentBytes, idx):idx]); tail != "" {
 				_ = s.send(s.textMessage(tail))
 			}
+			if s.liveSentBytes > resumeFrom {
+				resumeFrom = s.liveSentBytes
+			}
 		}
 		s.liveMsgID = ""
 		s.liveSentBytes = 0
 	} else {
 		_ = s.send(s.textMessage(text))
 	}
-	remaining := raw[idx:]
+	if resumeFrom > len(raw) {
+		resumeFrom = len(raw)
+	}
+	remaining := raw[resumeFrom:]
 	s.buf.Reset()
 	s.buf.WriteString(remaining)
 	s.lastFlush = time.Now()

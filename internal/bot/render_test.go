@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -366,6 +367,65 @@ func TestRenderSinkStreamingHardCapRotatesBlocks(t *testing.T) {
 	sent := adapter.sentMessages()
 	if len(sent) < 2 {
 		t.Fatalf("sent count = %d, want new message for the next block", len(sent))
+	}
+}
+
+// failingEditorAdapter accepts the initial Send (returns a message id so
+// streaming engages) but fails every edit, simulating a rate-limited / recalled
+// live message mid-turn.
+type failingEditorAdapter struct {
+	*fakeAdapter
+}
+
+func (f *failingEditorAdapter) EditMessage(ctx context.Context, id string, msg OutboundMessage) error {
+	return fmt.Errorf("simulated edit failure")
+}
+
+func TestRenderSinkStreamingEditFailureDoesNotDuplicate(t *testing.T) {
+	adapter := &failingEditorAdapter{fakeAdapter: newFakeAdapter(PlatformFeishu, "fake-feishu")}
+	sink := newRenderSink(context.Background(), adapter, "feishu-feishu", "feishu", "chat-1", ChatDM, "user-1", "msg-1", slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil)
+
+	// Stream a first chunk so a live message is created (liveSentBytes == full).
+	sink.lastFlush = time.Now().Add(-2 * renderSoftFlushAfter)
+	head := strings.Repeat("a", 2000)
+	sink.Emit(event.Event{Kind: event.Text, Text: head})
+	if sink.liveMsgID == "" {
+		t.Fatalf("streaming did not engage; sent=%d", len(adapter.sentMessages()))
+	}
+	// Push past the hard cap so flushPrefix runs with idx < liveSentBytes, then
+	// finish. Every edit fails, so rotation must not re-queue already-shown text.
+	tail := strings.Repeat("b", renderHardChunkRunes)
+	sink.Emit(event.Event{Kind: event.Text, Text: tail})
+	sink.Emit(event.Event{Kind: event.TurnDone})
+
+	var shown strings.Builder
+	shown.WriteString(head) // live message frozen at last successful state
+	for _, m := range adapter.sentMessages()[1:] {
+		shown.WriteString(m.Text)
+	}
+	wantRunes := len([]rune(head + tail))
+	if gotRunes := len([]rune(shown.String())); gotRunes > wantRunes {
+		t.Fatalf("duplication: user would see %d runes, expected at most %d (%d duplicated)", gotRunes, wantRunes, gotRunes-wantRunes)
+	}
+}
+
+func TestRenderSinkStreamingFinalizesInOneEditWithoutSplit(t *testing.T) {
+	adapter := newFakeEditorAdapter()
+	sink := newRenderSink(context.Background(), adapter, "feishu-feishu", "feishu", "chat-1", ChatDM, "user-1", "msg-1", slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil)
+
+	// A final answer that does NOT end on a semantic boundary (ends inside a
+	// code fence) must be finalized as a single in-place edit, not shrunk +
+	// tail-as-new-message.
+	sink.lastFlush = time.Now().Add(-2 * renderSoftFlushAfter)
+	sink.Emit(event.Event{Kind: event.Text, Text: "结论如下。这里是代码:\n```go\nfmt.Println(\"x\")\n```"})
+	sink.Emit(event.Event{Kind: event.TurnDone})
+
+	if sent := adapter.sentMessages(); len(sent) != 1 {
+		t.Fatalf("sent %d messages, want exactly one live message (no split): %+v", len(sent), sent)
+	}
+	edits := adapter.editRecords()
+	if len(edits) == 0 || !strings.Contains(edits[len(edits)-1].text, "```") {
+		t.Fatalf("final edit should carry the full text including the code fence: %+v", edits)
 	}
 }
 
