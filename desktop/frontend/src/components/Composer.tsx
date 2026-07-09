@@ -8,7 +8,7 @@ import { app, onFilesDropped } from "../lib/bridge";
 import { canUsePromptHistory, isFnKeyEvent, promptHistoryDirectionFromEvent } from "../lib/composerKeyboard";
 import { cacheGeneration, loadOlder } from "../lib/composerHistory";
 import { SPINNER_WORDS, useI18n } from "../lib/i18n";
-import { detectShortcutPlatform, matchesShortcut } from "../lib/keyboardShortcuts";
+import { detectShortcutPlatform, formatShortcutCombo, matchesShortcut } from "../lib/keyboardShortcuts";
 import { clearLayoutSize, loadOptionalLayoutSize, saveLayoutSize } from "../lib/layoutPreferences";
 import { createRafResizeUpdater } from "../lib/resizeDrag";
 import { useToast } from "../lib/toast";
@@ -1592,8 +1592,11 @@ export function Composer({
       try {
         if (typeof window !== "undefined" && (await window.runtime?.ClipboardSetText?.(selection.selected))) {
           /* ok */
-        } else {
-          fallbackCopyText(selection.selected);
+        } else if (!fallbackCopyText(selection.selected)) {
+          // Every clipboard path failed. Cutting now would delete text that
+          // never reached the clipboard, so keep the draft intact.
+          focusInputRange(selection.from, selection.to);
+          return;
         }
       } catch {
         focusInputRange(selection.from, selection.to);
@@ -1629,6 +1632,15 @@ export function Composer({
     }
     try {
       const pasted = await navigator.clipboard.readText();
+      if (pasted === "") {
+        // Match the keyboard paste handler: an empty text read means "nothing
+        // to insert" (empty clipboard, files, or unsupported types) — never
+        // replace the current selection with nothing. An image may still be
+        // attachable through the native clipboard path.
+        focusInputRange(selection.from, selection.to);
+        void attachNativeClipboardImage(false, activeDraftKeyRef.current);
+        return;
+      }
       insertPastedText(pasted, selection.from, selection.to);
     } catch {
       focusInputRange(selection.from, selection.to);
@@ -2323,32 +2335,39 @@ export function Composer({
 
   const inputSelection = getInputSelection();
   const hasInputSelection = inputSelection.from !== inputSelection.to;
+  // Platform-correct hint: ⌘ on macOS, Ctrl elsewhere — same formatter the
+  // shortcut settings UI uses.
+  const editMenuShortcut = (key: string) =>
+    formatShortcutCombo(
+      shortcutPlatform === "darwin" ? { key, meta: true } : { key, ctrl: true },
+      shortcutPlatform,
+    );
   const inputMenuItems: ContextMenuItem[] = [
     {
       key: "cut",
       label: t("common.cut"),
-      shortcut: "⌘X",
+      shortcut: editMenuShortcut("x"),
       disabled: disabled || !hasInputSelection,
       onSelect: () => void copyComposerSelection(true),
     },
     {
       key: "copy",
       label: t("common.copy"),
-      shortcut: "⌘C",
+      shortcut: editMenuShortcut("c"),
       disabled: !hasInputSelection,
       onSelect: () => void copyComposerSelection(),
     },
     {
       key: "paste",
       label: t("common.paste"),
-      shortcut: "⌘V",
+      shortcut: editMenuShortcut("v"),
       disabled,
       onSelect: () => void pasteIntoComposer(),
     },
     {
       key: "select-all",
       label: t("common.selectAll"),
-      shortcut: "⌘A",
+      shortcut: editMenuShortcut("a"),
       disabled: text.length === 0,
       onSelect: selectAllComposerText,
     },
