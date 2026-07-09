@@ -1486,3 +1486,147 @@ func TestCoordinatorFailedTurnRollbackKeepsCompaction(t *testing.T) {
 		t.Fatalf("planner session ends in a plain user message after rollback: %q", last.Content)
 	}
 }
+
+// TestCoordinatorPersistsDeniedPlanTurnToExecutorSession pins the denial
+// bookkeeping: a plan the user declines must still land in the executor
+// session (like the no-op path) so the turn survives save/reload, with a note
+// telling the next executor turn that nothing ran, plus a user-facing notice.
+func TestCoordinatorPersistsDeniedPlanTurnToExecutorSession(t *testing.T) {
+	planner := &mockProvider{name: "planner", chunks: []provider.Chunk{
+		{Type: provider.ChunkText, Text: "Plan: rewrite auth.\n[planner_requires_approval]"},
+		{Type: provider.ChunkDone},
+	}}
+	exec := &mockProvider{name: "executor", chunks: []provider.Chunk{
+		{Type: provider.ChunkText, Text: "should not run"},
+		{Type: provider.ChunkDone},
+	}}
+	sink := &recordSink{}
+	executor := New(exec, tool.NewRegistry(), NewSession("exec-sys"), Options{}, sink)
+	coord := NewCoordinator(planner, NewSession("planner-sys"), nil, nil, Options{}, executor, 0, sink, nil)
+	gate := &coordinatorApprovalGate{allow: false}
+	coord.SetPlannerPlanApprover(gate)
+
+	if err := coord.Run(context.Background(), "rewrite auth"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if gate.calls != 1 {
+		t.Fatalf("approval gate calls = %d, want 1", gate.calls)
+	}
+	if len(exec.requests) != 0 {
+		t.Fatal("executor must not run when the plan is denied")
+	}
+	msgs := executor.session.Messages
+	if len(msgs) < 2 {
+		t.Fatalf("executor session messages = %d, want the denied turn persisted", len(msgs))
+	}
+	last := msgs[len(msgs)-1]
+	if last.Role != provider.RoleAssistant || !strings.Contains(last.Content, plannerPlanNotApprovedNote) {
+		t.Fatalf("last executor message = %q (%s), want plan with not-approved note", last.Content, last.Role)
+	}
+	prev := msgs[len(msgs)-2]
+	if prev.Role != provider.RoleUser || !strings.Contains(prev.Content, "rewrite auth") {
+		t.Fatalf("persisted user turn = %q (%s), want original input", prev.Content, prev.Role)
+	}
+	foundNotice := false
+	for _, e := range sink.kinds(event.Notice) {
+		if strings.Contains(e.Text, "not approved") {
+			foundNotice = true
+		}
+	}
+	if !foundNotice {
+		t.Fatal("denied plan should emit a user-facing notice")
+	}
+}
+
+// TestCoordinatorPersistsUnansweredDecisionTurnToExecutorSession is the same
+// contract for the ask path: a cancelled/unanswered planner question must not
+// erase the turn from the persisted executor session.
+func TestCoordinatorPersistsUnansweredDecisionTurnToExecutorSession(t *testing.T) {
+	planner := &mockProvider{name: "planner", chunks: []provider.Chunk{
+		{Type: provider.ChunkText, Text: "Plan draft.\n<planner-ask>\nquestion: Which database?\noption: sqlite\noption: postgres\n</planner-ask>"},
+		{Type: provider.ChunkDone},
+	}}
+	exec := &mockProvider{name: "executor", chunks: []provider.Chunk{
+		{Type: provider.ChunkText, Text: "should not run"},
+		{Type: provider.ChunkDone},
+	}}
+	sink := &recordSink{}
+	executor := New(exec, tool.NewRegistry(), NewSession("exec-sys"), Options{}, sink)
+	coord := NewCoordinator(planner, NewSession("planner-sys"), nil, nil, Options{}, executor, 0, sink, nil)
+	gate := &coordinatorDecisionGate{answer: ""}
+	coord.SetPlannerUserDecisionAsker(gate)
+
+	if err := coord.Run(context.Background(), "set up storage"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if gate.calls != 1 {
+		t.Fatalf("decision gate calls = %d, want 1", gate.calls)
+	}
+	if len(exec.requests) != 0 {
+		t.Fatal("executor must not run without a user answer")
+	}
+	msgs := executor.session.Messages
+	if len(msgs) < 2 {
+		t.Fatalf("executor session messages = %d, want the unanswered turn persisted", len(msgs))
+	}
+	last := msgs[len(msgs)-1]
+	if last.Role != provider.RoleAssistant || !strings.Contains(last.Content, plannerDecisionUnansweredNote) {
+		t.Fatalf("last executor message = %q, want plan with unanswered-decision note", last.Content)
+	}
+}
+
+// TestCoordinatorSkipsApprovalGateForNegatedApprovalWording pins the negation
+// veto: a plan that explicitly rules out an approval round must hand off
+// directly instead of raising a needless approval prompt.
+func TestCoordinatorSkipsApprovalGateForNegatedApprovalWording(t *testing.T) {
+	planner := &mockProvider{name: "planner", chunks: []provider.Chunk{
+		{Type: provider.ChunkText, Text: "Plan:\n1. 修改 config.go\n2. 无需等待用户批准，直接执行修改"},
+		{Type: provider.ChunkDone},
+	}}
+	exec := &mockProvider{name: "executor", chunks: []provider.Chunk{
+		{Type: provider.ChunkText, Text: "Done."},
+		{Type: provider.ChunkDone},
+	}}
+	executor := New(exec, tool.NewRegistry(), NewSession("exec-sys"), Options{}, event.Discard)
+	coord := NewCoordinator(planner, NewSession("planner-sys"), nil, nil, Options{}, executor, 0, event.Discard, nil)
+	gate := &coordinatorApprovalGate{allow: false}
+	coord.SetPlannerPlanApprover(gate)
+
+	if err := coord.Run(context.Background(), "tweak config"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if gate.calls != 0 {
+		t.Fatalf("approval gate calls = %d, want 0 for negated approval wording", gate.calls)
+	}
+	if len(exec.requests) == 0 {
+		t.Fatal("executor should run directly for negated approval wording")
+	}
+}
+
+// TestCoordinatorDoesNotAskForTargetConfirmationWording pins the pruned
+// decision phrases: ordinary verification wording such as "确认目标行为不变"
+// must not conjure an ask dialog.
+func TestCoordinatorDoesNotAskForTargetConfirmationWording(t *testing.T) {
+	planner := &mockProvider{name: "planner", chunks: []provider.Chunk{
+		{Type: provider.ChunkText, Text: "Plan:\n1. 修改 handler.go\n2. 运行测试确认目标行为不变\n3. 更新用户选择器组件"},
+		{Type: provider.ChunkDone},
+	}}
+	exec := &mockProvider{name: "executor", chunks: []provider.Chunk{
+		{Type: provider.ChunkText, Text: "Done."},
+		{Type: provider.ChunkDone},
+	}}
+	executor := New(exec, tool.NewRegistry(), NewSession("exec-sys"), Options{}, event.Discard)
+	coord := NewCoordinator(planner, NewSession("planner-sys"), nil, nil, Options{}, executor, 0, event.Discard, nil)
+	gate := &coordinatorDecisionGate{answer: "should not be used"}
+	coord.SetPlannerUserDecisionAsker(gate)
+
+	if err := coord.Run(context.Background(), "refactor handler"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if gate.calls != 0 {
+		t.Fatalf("decision gate calls = %d, want 0 for ordinary verification wording", gate.calls)
+	}
+	if len(exec.requests) == 0 {
+		t.Fatal("executor should run for ordinary plan wording")
+	}
+}

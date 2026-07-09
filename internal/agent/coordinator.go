@@ -321,21 +321,79 @@ func (c *Coordinator) Run(ctx context.Context, input string) error {
 		return c.executor.Run(ctx, formatHandoff(input, planText, executorToolHandoffContext(c.executor)))
 	}
 	if c.plannerPlanApprover != nil && plannerPlanRequestsApproval(plan) {
-		return c.plannerPlanApprover.RunWithPlannerApproval(ctx, plan, func(ctx context.Context) error {
+		executed := false
+		err := c.plannerPlanApprover.RunWithPlannerApproval(ctx, plan, func(ctx context.Context) error {
+			executed = true
 			return runExecutorWithPlan(ctx, plan)
 		})
+		if err == nil && !executed && ctx.Err() == nil {
+			// The user declined the plan. Persist the exchange like the no-op
+			// path does — a denied turn must survive session save/reload, and
+			// the note tells the next executor turn that nothing ran.
+			c.persistExecutorNoOp(ctx, input, plan+"\n\n"+plannerPlanNotApprovedNote)
+			c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: plannerPlanNotApprovedNotice, Source: event.UsageSourcePlanner})
+		}
+		return err
 	}
 	if c.plannerUserDecisionAsker != nil {
 		if question, ok := plannerPlanRequestsUserDecision(plan); ok {
-			return c.plannerUserDecisionAsker.RunWithPlannerUserDecision(ctx, plan, question, func(ctx context.Context, answer string) error {
+			executed := false
+			err := c.plannerUserDecisionAsker.RunWithPlannerUserDecision(ctx, plan, question, func(ctx context.Context, answer string) error {
 				if strings.TrimSpace(answer) == "" {
 					return nil
 				}
+				executed = true
 				return runExecutorWithPlan(ctx, planWithHostUserAnswer(plan, answer))
 			})
+			if err == nil && !executed && ctx.Err() == nil {
+				c.persistExecutorNoOp(ctx, input, plan+"\n\n"+plannerDecisionUnansweredNote)
+				c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: plannerDecisionUnansweredNotice, Source: event.UsageSourcePlanner})
+			}
+			return err
 		}
 	}
 	return runExecutorWithPlan(ctx, plan)
+}
+
+// Persisted-session notes and user-facing notices for planner turns that ended
+// without an executor run. The notes become the turn's assistant message in the
+// executor session, so the next turn's executor knows nothing was executed.
+const (
+	plannerPlanNotApprovedNote      = "(The user did not approve this plan; execution was not started.)"
+	plannerPlanNotApprovedNotice    = "Plan not approved; nothing was executed. Reply to continue."
+	plannerDecisionUnansweredNote   = "(The user did not provide the requested decision; execution was not started.)"
+	plannerDecisionUnansweredNotice = "Waiting for your decision; nothing was executed. Reply to continue."
+)
+
+// plannerApprovalPhrases is the fallback for planners that ignore the
+// structured marker. Claims of past approval ("用户已批准", "already approved")
+// are deliberately included: the planner cannot know host approval state, so a
+// claimed approval is re-gated instead of trusted.
+var plannerApprovalPhrases = []string{
+	"是否批准",
+	"等待用户批准",
+	"等待您的批准",
+	"待用户批准",
+	"批准这个方案",
+	"批准该方案",
+	"批准此方案",
+	"批准这个计划",
+	"批准该计划",
+	"批准此计划",
+	"批准方案后",
+	"批准计划后",
+	"用户已批准",
+	"用户已经批准",
+	"已经获得批准",
+	"approve this plan",
+	"approve the plan",
+	"approval before",
+	"waiting for approval",
+	"awaiting approval",
+	"wait for user approval",
+	"user approved",
+	"already approved",
+	"has approved",
 }
 
 func plannerPlanRequestsApproval(plan string) bool {
@@ -346,33 +404,40 @@ func plannerPlanRequestsApproval(plan string) bool {
 	if strings.ToLower(lastNonEmptyLine(lower)) == plannerRequiresApprovalMarker {
 		return true
 	}
-	for _, phrase := range []string{
-		"是否批准",
-		"等待用户批准",
-		"等待您的批准",
-		"待用户批准",
-		"批准这个方案",
-		"批准该方案",
-		"批准此方案",
-		"批准这个计划",
-		"批准该计划",
-		"批准此计划",
-		"批准方案后",
-		"批准计划后",
-		"用户已批准",
-		"用户已经批准",
-		"已经获得批准",
-		"approve this plan",
-		"approve the plan",
-		"approval before",
-		"waiting for approval",
-		"awaiting approval",
-		"wait for user approval",
-		"user approved",
-		"already approved",
-		"has approved",
-	} {
-		if strings.Contains(lower, phrase) {
+	// Match per line so a nearby negation ("无需等待用户批准", "no need to wait
+	// for approval") exempts only its own phrase, not the whole plan.
+	for _, rawLine := range strings.Split(lower, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" {
+			continue
+		}
+		for _, phrase := range plannerApprovalPhrases {
+			idx := strings.Index(line, phrase)
+			if idx < 0 {
+				continue
+			}
+			if approvalMentionNegated(line[:idx]) {
+				continue
+			}
+			return true
+		}
+	}
+	return false
+}
+
+// approvalMentionNegated reports whether the text immediately before a matched
+// approval phrase negates it, so plans that explicitly rule out an approval
+// round ("无需等待用户批准，直接执行") do not trigger a needless one. Only the
+// nearby prefix counts; a negation earlier in the line about something else
+// must not disarm the gate. Erring toward gating is fine — the failure mode is
+// one extra approval prompt, never a silent execution.
+func approvalMentionNegated(prefix string) bool {
+	const window = 30
+	if len(prefix) > window {
+		prefix = prefix[len(prefix)-window:]
+	}
+	for _, neg := range []string{"无需", "无须", "不需要", "不需", "不必", "不用", "no need", "not require", "not required", "without"} {
+		if strings.Contains(prefix, neg) {
 			return true
 		}
 	}
@@ -388,14 +453,17 @@ func plannerPlanRequestsUserDecision(plan string) (event.AskQuestion, bool) {
 		return q, true
 	}
 	lower := strings.ToLower(trimmed)
+	// Directive asks and claimed user choices only. Bare mentions ("用户选择",
+	// "确认目标", "user confirmation") are deliberately absent: ordinary plan
+	// wording such as "运行测试确认目标行为不变" or "update the user selection
+	// component" must not conjure an ask dialog.
 	decisionPhrases := []string{
 		"需要用户选择",
 		"让用户选择",
 		"请用户选择",
-		"用户选择",
+		"等待用户选择",
 		"用户已选择",
 		"用户已经选择",
-		"你选择",
 		"请选择",
 		"选哪个",
 		"哪种方案",
@@ -403,10 +471,7 @@ func plannerPlanRequestsUserDecision(plan string) (event.AskQuestion, bool) {
 		"哪一个方案",
 		"需要用户确认",
 		"请用户确认",
-		"用户确认",
-		"确认范围",
-		"确认目标",
-		"确认路径",
+		"等待用户确认",
 		"需要用户提供",
 		"请用户提供",
 		"等待用户提供",
@@ -421,7 +486,6 @@ func plannerPlanRequestsUserDecision(plan string) (event.AskQuestion, bool) {
 		"which plan",
 		"please choose",
 		"please confirm",
-		"user confirmation",
 		"needs user confirmation",
 		"need the user to provide",
 		"ask the user to provide",
