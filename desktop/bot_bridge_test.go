@@ -120,6 +120,126 @@ func testWatchRoute() bot.DesktopWatchRoute {
 	}
 }
 
+func testGroupRoute() bot.DesktopWatchRoute {
+	r := testWatchRoute()
+	r.ChatType = bot.ChatGroup
+	r.ChatID = "group-god"
+	return r
+}
+
+func TestBridgeTakeoverRejectsGroupChat(t *testing.T) {
+	env := newBridgeTestEnvSessions([]bot.DesktopSessionInfo{{TabID: "tab-1", Label: "会话一", Ready: true}})
+	if _, err := env.hub.Takeover(testGroupRoute(), "tab-1"); err == nil {
+		t.Fatal("takeover from a group chat must be rejected (non-admin members could otherwise drive it)")
+	}
+	if _, err := env.hub.Takeover(testWatchRoute(), "tab-1"); err != nil {
+		t.Fatalf("DM takeover should work: %v", err)
+	}
+}
+
+func TestBridgeTakeoverSwitchAnnouncesReleaseToOldTab(t *testing.T) {
+	env := newBridgeTestEnvSessions([]bot.DesktopSessionInfo{
+		{TabID: "tab-a", Label: "A", Ready: true},
+		{TabID: "tab-b", Label: "B", Ready: true},
+	})
+	route := testWatchRoute()
+	if _, err := env.hub.Takeover(route, "tab-a"); err != nil {
+		t.Fatalf("takeover A: %v", err)
+	}
+	if got := <-env.announced; got[0] != "tab-a" {
+		t.Fatalf("first announce = %v, want tab-a takeover", got)
+	}
+	if _, err := env.hub.Takeover(route, "tab-b"); err != nil {
+		t.Fatalf("switch to B: %v", err)
+	}
+	seen := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		select {
+		case got := <-env.announced:
+			seen[got[0]] = true
+		case <-time.After(time.Second):
+			t.Fatalf("missing announce after switch; seen=%v", seen)
+		}
+	}
+	if !seen["tab-a"] || !seen["tab-b"] {
+		t.Fatalf("switch should announce release to tab-a and takeover to tab-b; seen=%v", seen)
+	}
+}
+
+func TestBridgeDriveInputBusyReturnsBusyMessage(t *testing.T) {
+	env := newBridgeTestEnvSessions([]bot.DesktopSessionInfo{{TabID: "tab-1", Label: "会话一", Ready: true}})
+	route := testWatchRoute()
+	if _, err := env.hub.Takeover(route, "tab-1"); err != nil {
+		t.Fatalf("Takeover: %v", err)
+	}
+	<-env.announced
+	env.driveErr = errDriveBusy
+	_, err := env.hub.DriveInput(route, "hi")
+	if err == nil || !strings.Contains(err.Error(), "正在执行中") {
+		t.Fatalf("busy drive should surface a clean busy message, got %v", err)
+	}
+}
+
+func TestBridgeApprovalRedactsSubjectInGroup(t *testing.T) {
+	env := newBridgeTestEnvSessions([]bot.DesktopSessionInfo{{TabID: "tab-1", Label: "会话一"}})
+	env.hub.SetWatch(testGroupRoute(), true)
+	<-env.persisted
+	env.hub.observe("tab-1", event.Event{Kind: event.ApprovalRequest, Approval: event.Approval{ID: "a1", Tool: "bash", Subject: "rm -rf /secret"}})
+	call := env.waitNotification(t)
+	if strings.Contains(call.msg.Text, "rm -rf /secret") {
+		t.Fatalf("group notification leaked the command line: %q", call.msg.Text)
+	}
+	if call.msg.Card != nil {
+		for _, el := range call.msg.Card.Elements {
+			if strings.Contains(el.Content, "rm -rf /secret") {
+				t.Fatal("group card leaked the command line")
+			}
+		}
+	}
+}
+
+func TestBridgeApprovalShowsSubjectInDM(t *testing.T) {
+	env := newBridgeTestEnvSessions([]bot.DesktopSessionInfo{{TabID: "tab-1", Label: "会话一"}})
+	env.hub.SetWatch(testWatchRoute(), true)
+	<-env.persisted
+	env.hub.observe("tab-1", event.Event{Kind: event.ApprovalRequest, Approval: event.Approval{ID: "a1", Tool: "bash", Subject: "rm -rf build"}})
+	call := env.waitNotification(t)
+	if !strings.Contains(call.msg.Text, "rm -rf build") {
+		t.Fatalf("DM notification should show the command line: %q", call.msg.Text)
+	}
+}
+
+func TestBridgeSessionsIncludePendingIDs(t *testing.T) {
+	env := newBridgeTestEnvSessions([]bot.DesktopSessionInfo{{TabID: "tab-1", Label: "会话一"}})
+	env.hub.observe("tab-1", event.Event{Kind: event.ApprovalRequest, Approval: event.Approval{ID: "a1", Tool: "bash"}})
+	env.hub.observe("tab-1", event.Event{Kind: event.AskRequest, Ask: event.Ask{ID: "q1", Questions: []event.AskQuestion{{ID: "x", Prompt: "?"}}}})
+	found := map[string]bool{}
+	for _, s := range env.hub.Sessions() {
+		if s.TabID != "tab-1" {
+			continue
+		}
+		for _, p := range s.Pending {
+			found[p.ID] = true
+		}
+	}
+	if !found["a1"] || !found["q1"] {
+		t.Fatalf("Sessions() should surface pending approval and ask ids; got %v", found)
+	}
+}
+
+func TestBridgePersistDropsStaleSnapshot(t *testing.T) {
+	env := newBridgeTestEnvSessions(nil)
+	// Two subscribes: the second (newer seq) must be the persisted result even
+	// though we invoke the seed-restore afterward.
+	env.hub.SetWatch(testWatchRoute(), true)
+	<-env.persisted
+	env.hub.SetWatch(testGroupRoute(), true)
+	routes := <-env.persisted
+	if len(routes) != 2 {
+		t.Fatalf("persisted routes = %d, want both subscriptions", len(routes))
+	}
+}
+
 func TestBridgeApprovalNotifiesWatchersAndRoutesApproval(t *testing.T) {
 	env := newBridgeTestEnv([]TabMeta{{ID: "tab-1", Label: "修复登录"}})
 	env.hub.SetWatch(testWatchRoute(), true)

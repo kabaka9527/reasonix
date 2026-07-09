@@ -123,6 +123,21 @@ func TestHandleDesktopCommandStatusListsSessions(t *testing.T) {
 	}
 }
 
+func TestHandleDesktopCommandStatusListsPendingIDs(t *testing.T) {
+	bridge := newFakeDesktopBridge()
+	bridge.sessions = []DesktopSessionInfo{{
+		TabID: "tab-1", Label: "修复登录", Ready: true, PendingPrompt: true,
+		Pending: []DesktopPendingInfo{{ID: "appr-9", Kind: "approval", Tool: "bash"}},
+	}}
+	gw := &BotGateway{cfg: GatewayConfig{Desktop: bridge}}
+	got := gw.handleDesktopCommand(desktopTestMessage("/desktop status"))
+	// The pending id must be visible so a user whose push was dropped can still
+	// run /desktop approve <id>.
+	if !strings.Contains(got, "appr-9") {
+		t.Fatalf("status = %q, want it to list the pending approval id", got)
+	}
+}
+
 func TestHandleDesktopCommandStatusEmpty(t *testing.T) {
 	gw := &BotGateway{cfg: GatewayConfig{Desktop: newFakeDesktopBridge()}}
 	got := gw.handleDesktopCommand(desktopTestMessage("/desktop"))

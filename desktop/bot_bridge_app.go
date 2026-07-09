@@ -115,8 +115,10 @@ func (a *App) bridgeDrive(tabID, text string, route bot.DesktopWatchRoute) error
 	a.mu.RLock()
 	tab := a.tabs[tabID]
 	var sink *tabEventSink
+	var ctrl control.SessionAPI
 	if tab != nil {
 		sink = tab.sink
+		ctrl = tab.Ctrl
 	}
 	a.mu.RUnlock()
 	if tab == nil || sink == nil {
@@ -124,6 +126,14 @@ func (a *App) bridgeDrive(tabID, text string, route bot.DesktopWatchRoute) error
 	}
 	if a.tabIsReadOnly(tab) {
 		return fmt.Errorf("会话是只读的（外部 transcript），无法驱动")
+	}
+	// Fresh busy check (the DriveInput-side check uses a slow ListTabs snapshot).
+	// SubmitDisplay silently no-ops when the controller is already running, so if
+	// we attached the forwarder and submitted into a busy controller, the message
+	// would be dropped AND the forwarder would linger onto the next (foreign)
+	// turn. Bail before attaching.
+	if ctrl != nil && ctrl.RuntimeStatus().Running {
+		return errDriveBusy
 	}
 	target := botForwardTarget{
 		ConnID:   route.ConnectionID,
@@ -135,6 +145,14 @@ func (a *App) bridgeDrive(tabID, text string, route bot.DesktopWatchRoute) error
 	if err := a.submitToTab(tabID, text, true); err != nil {
 		sink.SetBotSink(nil)
 		return err
+	}
+	// Confirm the submit actually started a turn. If nothing is running now, the
+	// controller was busy/rotating in the tiny window after the check above and
+	// the submit no-oped — detach so a later turn's output does not leak, and
+	// report busy instead of silently swallowing the message.
+	if ctrl != nil && !ctrl.RuntimeStatus().Running {
+		sink.SetBotSink(nil)
+		return errDriveBusy
 	}
 	return nil
 }

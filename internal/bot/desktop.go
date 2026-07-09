@@ -19,6 +19,16 @@ type DesktopSessionInfo struct {
 	PendingPrompt bool
 	// Detached 标记后台运行的会话（已从可见 tab 分离，controller 仍存活）。
 	Detached bool
+	// Pending 列出该会话当前待处理的审批/问答，便于用户在推送丢失时仍能
+	// 用 /desktop approve|answer <id> 处理。
+	Pending []DesktopPendingInfo
+}
+
+// DesktopPendingInfo 是一条待处理的审批或问答的摘要。
+type DesktopPendingInfo struct {
+	ID   string
+	Kind string // "approval" | "ask"
+	Tool string
 }
 
 // DesktopWatchRoute 标识一个订阅了桌面事件的 bot 聊天。
@@ -226,6 +236,17 @@ func formatDesktopSessions(sessions []DesktopSessionInfo) string {
 			fmt.Fprintf(&b, "\n  项目: %s", ws)
 		}
 		fmt.Fprintf(&b, "\n  tab: %s", s.TabID)
+		for _, p := range s.Pending {
+			kind := "审批"
+			if p.Kind == "ask" {
+				kind = "提问"
+			}
+			line := fmt.Sprintf("\n  待%s: %s", kind, p.ID)
+			if tool := strings.TrimSpace(p.Tool); tool != "" {
+				line += " (" + tool + ")"
+			}
+			b.WriteString(line)
+		}
 	}
 	b.WriteString("\n\n用 /desktop watch on 订阅审批与完成事件；/desktop takeover <tab> 接管某个会话。")
 	return b.String()
