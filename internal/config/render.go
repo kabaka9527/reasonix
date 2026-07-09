@@ -577,9 +577,6 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		if len(c.Bot.Feishu.OutboundMediaRoots) > 0 {
 			fmt.Fprintf(&b, "outbound_media_roots = %s\n", renderStringArray(c.Bot.Feishu.OutboundMediaRoots))
 		}
-		if len(c.Bot.Feishu.OutboundMediaAllowedHosts) > 0 {
-			fmt.Fprintf(&b, "outbound_media_allowed_hosts = %s\n", renderStringArray(c.Bot.Feishu.OutboundMediaAllowedHosts))
-		}
 		b.WriteString("\n[bot.weixin]\n")
 		fmt.Fprintf(&b, "enabled = %v\n", c.Bot.Weixin.Enabled)
 		fmt.Fprintf(&b, "account_id = %q\n", c.Bot.Weixin.AccountID)

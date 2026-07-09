@@ -622,9 +622,9 @@ func (a *adapter) sendMessage(ctx context.Context, msg bot.OutboundMessage) (bot
 	if len(msg.MediaURLs) == 0 {
 		return a.sendRenderedText(ctx, msg)
 	}
-	// Outbound MediaURLs are resolved under a strict policy (confined local
-	// roots + host allow-list + SSRF guard, all off by default) — see
-	// outbound_media.go. Send any text first, then each media item.
+	// Outbound MediaURLs are resolved under a strict policy (absolute paths
+	// confined to configured roots, off by default) — see outbound_media.go.
+	// Send any text first, then each media item.
 	var result bot.SendResult
 	var firstErr error
 	if strings.TrimSpace(msg.Text) != "" {
