@@ -1481,6 +1481,30 @@ func TestSaveToExistingProjectRemovesIneffectiveWindowsBashEnforce(t *testing.T)
 	}
 }
 
+func TestSaveToExistingProjectRemovesIneffectiveWindowsBashEnforceWhenTargetIsOff(t *testing.T) {
+	setRuntimeGOOS(t, "windows")
+	projectPath := filepath.Join(t.TempDir(), "reasonix.toml")
+	if err := os.WriteFile(projectPath, []byte("[sandbox]\nbash = \"enforce\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Default()
+	cfg.Sandbox.Bash = "off"
+	if err := cfg.SaveTo(projectPath); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+	body, err := os.ReadFile(projectPath)
+	if err != nil {
+		t.Fatalf("read project config: %v", err)
+	}
+	if strings.Contains(string(body), `[sandbox]`) || strings.Contains(string(body), `bash = "enforce"`) {
+		t.Fatalf("ineffective Windows project bash enforce should be removed even when the target mode is raw off:\n%s", body)
+	}
+	if _, err := toml.Decode(string(body), &Config{}); err != nil {
+		t.Fatalf("saved project config does not parse: %v", err)
+	}
+}
+
 func TestSaveToExistingProjectRemovesOnlyIneffectiveWindowsBashEnforce(t *testing.T) {
 	setRuntimeGOOS(t, "windows")
 	projectPath := filepath.Join(t.TempDir(), "reasonix.toml")

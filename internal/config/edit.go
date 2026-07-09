@@ -965,7 +965,7 @@ func shouldRemoveIneffectiveProjectSandboxBash(body string, c *Config) bool {
 	if c == nil || runtimeGOOS != "windows" {
 		return false
 	}
-	if strings.TrimSpace(c.Sandbox.Bash) != "enforce" || c.BashMode() != "off" {
+	if c.BashMode() != "off" {
 		return false
 	}
 	value, ok := tomlSectionKeyValue(body, "sandbox", "bash")
