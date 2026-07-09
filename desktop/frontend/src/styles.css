@@ -2033,7 +2033,6 @@ a[href] {
   padding: 12px 10px calc(12px + var(--statusbar-height));
   background: var(--sidebar-bg);
   border-right: 1px solid var(--border-soft);
-  --wails-draggable: drag;
   user-select: none;
   overflow: hidden;
 }
