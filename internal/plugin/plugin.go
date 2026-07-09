@@ -1348,8 +1348,10 @@ func (t *remoteTool) Execute(ctx context.Context, args json.RawMessage) (string,
 func parseToolResult(res json.RawMessage) (string, error) {
 	var out struct {
 		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
+			Type     string `json:"type"`
+			Text     string `json:"text"`
+			Data     string `json:"data"`
+			MimeType string `json:"mimeType"`
 		} `json:"content"`
 		IsError bool `json:"isError"`
 	}
@@ -1358,8 +1360,15 @@ func parseToolResult(res json.RawMessage) (string, error) {
 	}
 	var sb strings.Builder
 	for _, c := range out.Content {
-		if c.Type == "text" {
+		switch c.Type {
+		case "text":
 			sb.WriteString(c.Text)
+		case "image":
+			mime := c.MimeType
+			if mime == "" {
+				mime = "image/png"
+			}
+			sb.WriteString("![Image](data:" + mime + ";base64," + c.Data + ")")
 		}
 	}
 	text := sb.String()
