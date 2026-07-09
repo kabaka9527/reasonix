@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/BurntSushi/toml"
+	fileencoding "reasonix/internal/fileutil/encoding"
 )
 
 // legacyConfig is the subset of the v0.x (~/.reasonix/config.json) schema this
@@ -114,7 +114,7 @@ func MigrateLegacyIfNeededForRoot(root string) (*MigrationResult, error) {
 		return res, err
 	}
 	src := filepath.Join(home, ".reasonix", "config.json")
-	data, err := os.ReadFile(src)
+	data, err := fileencoding.ReadFileUTF8(src)
 	if err != nil {
 		return nil, nil
 	}
@@ -294,7 +294,7 @@ func loadPluginEntriesFromTOML(path string) []PluginEntry {
 		return nil
 	}
 	var cfg Config
-	if _, err := toml.DecodeFile(path, &cfg); err != nil {
+	if _, err := decodeTOMLFile(path, &cfg); err != nil {
 		return nil
 	}
 	out := make([]PluginEntry, 0, len(cfg.Plugins))
@@ -309,7 +309,7 @@ func loadLegacyConfigPlugins(path string) []PluginEntry {
 	if strings.TrimSpace(path) == "" {
 		return nil
 	}
-	data, err := os.ReadFile(path)
+	data, err := fileencoding.ReadFileUTF8(path)
 	if err != nil {
 		return nil
 	}
@@ -359,7 +359,7 @@ func migrateLegacyCredentialsIfNeededForRoot(root string) error {
 		if src == "" {
 			continue
 		}
-		data, err := os.ReadFile(src)
+		data, err := fileencoding.ReadFileUTF8(src)
 		if err != nil {
 			continue
 		}

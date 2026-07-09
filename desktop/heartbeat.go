@@ -88,7 +88,7 @@ func (e *HeartbeatEngine) configPath() string {
 
 // loadTasks reads tasks from disk.
 func (e *HeartbeatEngine) loadTasks() []HeartbeatTask {
-	b, err := os.ReadFile(e.configPath())
+	b, err := readFileUTF8(e.configPath())
 	if err != nil {
 		return nil
 	}

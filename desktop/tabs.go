@@ -3898,7 +3898,7 @@ func (a *App) removeTabOrderLocked(tabID string) {
 
 func loadTabsFile() desktopTabsFile {
 	path := filepath.Join(desktopConfigDir(), tabsFileName)
-	b, err := os.ReadFile(path)
+	b, err := readFileUTF8(path)
 	if err != nil {
 		return desktopTabsFile{}
 	}
@@ -3995,7 +3995,7 @@ func writeLegacyProjectSidebarRecoveryMarker(path string) error {
 
 func loadProjectsFile() desktopProjectFile {
 	path := filepath.Join(desktopConfigDir(), desktopProjectsFile)
-	b, err := os.ReadFile(path)
+	b, err := readFileUTF8(path)
 	if err != nil {
 		return desktopProjectFile{}
 	}
@@ -4627,7 +4627,7 @@ var readFileWithTimeoutSlots = make(chan struct{}, 16)
 
 func readFileWithTimeout(path string, timeout time.Duration) ([]byte, error) {
 	if timeout <= 0 {
-		return os.ReadFile(path)
+		return readFileUTF8(path)
 	}
 	select {
 	case readFileWithTimeoutSlots <- struct{}{}:
@@ -4640,7 +4640,7 @@ func readFileWithTimeout(path string, timeout time.Duration) ([]byte, error) {
 	}
 	ch := make(chan result, 1)
 	go func() {
-		data, err := os.ReadFile(path)
+		data, err := readFileUTF8(path)
 		<-readFileWithTimeoutSlots
 		ch <- result{data: data, err: err}
 	}()
@@ -4703,7 +4703,7 @@ func loadTopicAutoTitleMeta(workspaceRoot string) map[string]topicAutoTitleMeta 
 
 func loadStringMapForUpdate(path string) (map[string]string, error) {
 	m := map[string]string{}
-	b, err := os.ReadFile(path)
+	b, err := readFileUTF8(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return m, nil
@@ -4719,7 +4719,7 @@ func loadStringMapForUpdate(path string) (map[string]string, error) {
 func loadTopicAutoTitleMetaForUpdate(workspaceRoot string) (map[string]topicAutoTitleMeta, error) {
 	m := map[string]topicAutoTitleMeta{}
 	path := topicAutoTitleMetaPath(workspaceRoot)
-	b, err := os.ReadFile(path)
+	b, err := readFileUTF8(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return m, nil
@@ -4734,7 +4734,7 @@ func loadTopicAutoTitleMetaForUpdate(workspaceRoot string) (map[string]topicAuto
 
 func loadInt64MapForUpdate(path string) (map[string]int64, error) {
 	m := map[string]int64{}
-	b, err := os.ReadFile(path)
+	b, err := readFileUTF8(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return m, nil
@@ -5191,7 +5191,7 @@ func saveTelemetry(path string, snapshot tabTelemetrySnapshot) error {
 }
 
 func loadTelemetry(path string) tabTelemetrySnapshot {
-	b, err := os.ReadFile(path)
+	b, err := readFileUTF8(path)
 	if err != nil {
 		return tabTelemetrySnapshot{Version: 2, ReadFiles: []readFileRecord{}}
 	}
@@ -7616,7 +7616,7 @@ func runningTabSessionGoal(sessionPath, fallback string) string {
 	if fallback == "" {
 		return ""
 	}
-	data, err := os.ReadFile(store.SessionGoalState(sessionPath))
+	data, err := readFileUTF8(store.SessionGoalState(sessionPath))
 	if err != nil {
 		return fallback
 	}

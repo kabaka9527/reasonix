@@ -13,6 +13,7 @@ import (
 
 	"reasonix/internal/config"
 	"reasonix/internal/control"
+	fileencoding "reasonix/internal/fileutil/encoding"
 	"reasonix/internal/hook"
 	"reasonix/internal/provider"
 	"reasonix/internal/sandbox"
@@ -1156,6 +1157,46 @@ func TestSaveHooksSettingsPreservesUnknownSettingsKeys(t *testing.T) {
 	view := app.HooksSettings("global")
 	if len(view.Hooks) != 1 || view.Hooks[0].Event != string(hook.PreToolUse) || view.Hooks[0].Command != "echo guard" {
 		t.Fatalf("HooksSettings = %+v, want saved PreToolUse hook", view)
+	}
+}
+
+func TestSaveHooksSettingsDecodesLegacyEncodedGlobalSettings(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	path := hook.GlobalSettingsPath("")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{"label":"中文","hooks":{"Stop":[{"command":"echo 旧"}]}}`
+	if err := os.WriteFile(path, fileencoding.Encode(legacy, fileencoding.GB18030), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := NewApp()
+	before := app.HooksSettings("global")
+	if len(before.Hooks) != 1 || before.Hooks[0].Command != "echo 旧" {
+		t.Fatalf("HooksSettings before save = %+v, want decoded legacy hook", before.Hooks)
+	}
+	if err := app.SaveHooksSettings("global", []HookConfigView{{
+		Event:   string(hook.PreToolUse),
+		Command: "echo 新",
+	}}); err != nil {
+		t.Fatalf("SaveHooksSettings: %v", err)
+	}
+
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatalf("saved settings should be valid UTF-8 JSON: %v", err)
+	}
+	if string(raw["label"]) != `"中文"` {
+		t.Fatalf("label key was not preserved after decoding legacy settings: %s", raw["label"])
+	}
+	view := app.HooksSettings("global")
+	if len(view.Hooks) != 1 || view.Hooks[0].Command != "echo 新" {
+		t.Fatalf("HooksSettings after save = %+v, want new decoded hook", view.Hooks)
 	}
 }
 
