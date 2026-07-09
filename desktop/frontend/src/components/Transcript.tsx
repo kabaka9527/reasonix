@@ -129,6 +129,10 @@ export function Transcript({
     scrollRef,
     stick,
     onScroll,
+    onWheelIntent,
+    onTouchStartIntent,
+    onTouchMoveIntent,
+    onKeyScrollIntent,
     isAtBottom,
     smoothScrollTo,
     scrollToBottomAfterLayout,
@@ -147,6 +151,25 @@ export function Transcript({
 
   const [displayMode, setDisplayMode] = useState<DisplayMode>(() => getDisplayMode());
   useEffect(() => onDisplayModeChange((mode) => setDisplayMode(mode)), []);
+
+  const cancelStreamingAutoScroll = useCallback(() => {
+    if (autoScrollFrame.current !== null) {
+      cancelAnimationFrame(autoScrollFrame.current);
+      autoScrollFrame.current = null;
+    }
+  }, []);
+
+  const handleWheelIntent = useCallback((event: React.WheelEvent<HTMLElement>) => {
+    if (onWheelIntent(event)) cancelStreamingAutoScroll();
+  }, [cancelStreamingAutoScroll, onWheelIntent]);
+
+  const handleTouchMoveIntent = useCallback((event: React.TouchEvent<HTMLElement>) => {
+    if (onTouchMoveIntent(event)) cancelStreamingAutoScroll();
+  }, [cancelStreamingAutoScroll, onTouchMoveIntent]);
+
+  const handleKeyScrollIntent = useCallback((event: React.KeyboardEvent<HTMLElement>) => {
+    if (onKeyScrollIntent(event)) cancelStreamingAutoScroll();
+  }, [cancelStreamingAutoScroll, onKeyScrollIntent]);
 
   const questions = useMemo<QuestionAnchor[]>(() => {
     const anchors: QuestionAnchor[] = [];
@@ -608,6 +631,10 @@ export function Transcript({
         className={`transcript${empty ? " transcript--empty" : ""}`}
         ref={scrollRef}
         onScroll={onScroll}
+        onWheelCapture={handleWheelIntent}
+        onTouchStartCapture={onTouchStartIntent}
+        onTouchMoveCapture={handleTouchMoveIntent}
+        onKeyDownCapture={handleKeyScrollIntent}
       >
         {empty && !hydrating && <Welcome onPrompt={onPrompt} variant={welcomeVariant} />}
 
