@@ -966,7 +966,20 @@ export function reducer(s: State, a: Action): State {
       ? { ...s, hydrating: false, hydrateReason: undefined, hydrateError: undefined, hydrateHistoryLoaded: undefined, hydratePlaceholderItems: undefined }
       : s;
     case "hydrate_error": return { ...s, hydrating: false, hydrateReason: a.reason, hydrateError: a.error, hydrateHistoryLoaded: undefined, hydratePlaceholderItems: undefined };
-    case "backend_activation_start": return s.backendActivationPending ? s : { ...s, backendActivationPending: true };
+    case "backend_activation_start": return {
+      ...s,
+      // The target tab may contain a prompt event that was routed there while
+      // frontend selection was ahead of backend activation. Reset that
+      // uncertain lifecycle first; optimistic backend metadata is applied
+      // immediately afterwards and restores a genuinely running target.
+      backendActivationPending: true,
+      pendingPrompt: false,
+      approval: undefined,
+      ask: undefined,
+      running: false,
+      turnActive: false,
+      cancellable: false,
+    };
     case "backend_activation_done": return s.backendActivationPending ? { ...s, backendActivationPending: false } : s;
     case "message_action_start": return { ...s, messageAction: a.action };
     case "message_action_done": return { ...s, messageAction: undefined };
@@ -1690,7 +1703,11 @@ export function useController() {
       for (const { tabId, e } of batch) dispatchTo(tabId, { type: "event", e });
     });
     const off = onEvent((e) => {
-      const targetTabId = e.tabId || activeTabIdRef.current;
+      // Untagged compatibility events belong to the tab that the backend has
+      // actually activated, not the frontend's optimistic selection. During a
+      // slow SetActiveTab these can differ, and routing to the optimistic tab
+      // leaks the previous session's approval/ask gate into the new composer.
+      const targetTabId = e.tabId || backendActiveTabIdRef.current || activeTabIdRef.current;
       if (!targetTabId) return;
       if (
         e.kind === "turn_started" ||
