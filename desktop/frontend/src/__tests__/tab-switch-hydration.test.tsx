@@ -134,6 +134,7 @@ const tabE = tabMeta("tab-e");
 const tabF = tabMeta("tab-f");
 const tabG = tabMeta("tab-g");
 const tabH = tabMeta("tab-h");
+const tabI = tabMeta("tab-i", { running: true, pendingPrompt: true, cancellable: true });
 let backendActiveId = "tab-a";
 const historyB = deferred<HistoryMessage[]>();
 const historyD = deferred<HistoryMessage[]>();
@@ -153,9 +154,10 @@ let holdNextMetaForH = false;
 let holdNextHistoryForH = false;
 let setActiveCalls = 0;
 let newSessionCalls = 0;
+let replayPendingPromptCalls = 0;
 let failSetActiveFor = "";
 const runningTabs = new Set<string>();
-const tabsById = new Map([tabA, tabB, tabC, tabD, tabE, tabF, tabG, tabH].map((tab) => [tab.id, tab]));
+const tabsById = new Map([tabA, tabB, tabC, tabD, tabE, tabF, tabG, tabH, tabI].map((tab) => [tab.id, tab]));
 const eventHandlers: Array<(e: WireEvent) => void> = [];
 const readyHandlers: Array<(tabId?: string) => void> = [];
 
@@ -236,7 +238,18 @@ window.go = {
         runningTabs.add("tab-e");
         return { ...tabE, active: true, running: true };
       },
-      ReplayPendingPrompts: async () => {},
+      ReplayPendingPrompts: async () => {
+        replayPendingPromptCalls += 1;
+        const active = tabsById.get(backendActiveId);
+        if (!active?.pendingPrompt) return;
+        for (const handler of eventHandlers) {
+          handler({
+            kind: "approval_request",
+            tabId: backendActiveId,
+            approval: { id: `pending-${backendActiveId}`, tool: "bash", subject: `pending ${backendActiveId}` },
+          });
+        }
+      },
       SetActiveTab: async (tabID: string) => {
         setActiveCalls += 1;
         if (tabID === "tab-b") await setActiveBGate.promise;
@@ -278,6 +291,13 @@ await act(async () => {
 });
 await waitFor("initial active tab", () => controller?.activeTabId === "tab-a" && controller.state.items.length === 1);
 
+await act(async () => {
+  for (const handler of eventHandlers) {
+    handler({ kind: "approval_request", tabId: "tab-b", approval: { id: "stale-tab-b", tool: "bash", subject: "stale tab B" } });
+  }
+  await flushPromises();
+});
+
 let switchToB: Promise<TabMeta[] | undefined> | undefined;
 await act(async () => {
   switchToB = controller?.switchTab("tab-b", tabB);
@@ -291,6 +311,17 @@ eq(controller?.state.items.length, 0, "uncached target tab does not keep the pre
 eq(controller?.state.hydrating, true, "target tab shows lightweight hydration state while backend activation is pending");
 eq(controller?.state.backendActivationPending, true, "target tab gates unscoped actions while backend activation is pending");
 ok(!historyCalls.includes("tab-b"), "HistoryForTab is not requested before SetActiveTab completes");
+eq(controller?.state.approval?.id, undefined, "tab activation clears a stale approval already stored on the target tab");
+eq(controller?.state.running, false, "tab activation clears the stale prompt lifecycle before backend status arrives");
+
+await act(async () => {
+  for (const handler of eventHandlers) {
+    handler({ kind: "approval_request", approval: { id: "old-backend-approval", tool: "bash", subject: "old backend approval" } });
+  }
+  await flushPromises();
+});
+eq(controller?.state.approval?.id, undefined, "tab-less events stay with the confirmed backend tab during optimistic activation");
+eq(controller?.state.running, false, "tab-less old-backend prompts cannot lock the optimistic target tab");
 
 let newSessionWhileSwitching: Promise<void> | undefined;
 await act(async () => {
@@ -372,6 +403,25 @@ await act(async () => {
   await flushPromises();
 });
 await waitFor("tab-a restored after backend-running switch", () => controller?.activeTabId === "tab-a" && controller.state.items.some((item) => item.kind === "user" && item.text === "cached A"));
+
+runningTabs.add("tab-i");
+const replayCallsBeforePendingSwitch = replayPendingPromptCalls;
+await act(async () => {
+  await controller?.switchTab("tab-i", tabI);
+  await flushPromises();
+});
+eq(controller?.activeTabId, "tab-i", "switching to a prompt-blocked tab activates the requested tab");
+ok(replayPendingPromptCalls > replayCallsBeforePendingSwitch, "pending backend prompts are replayed after tab activation");
+eq(controller?.state.approval?.id, "pending-tab-i", "a genuine pending approval survives the later hydration start");
+eq(controller?.state.running, true, "a genuine pending approval keeps the target tab running");
+tabsById.set("tab-i", { ...tabI, pendingPrompt: false, running: false, cancellable: false });
+runningTabs.delete("tab-i");
+await act(async () => {
+  for (const handler of eventHandlers) handler({ kind: "turn_done", tabId: "tab-i" });
+  await controller?.switchTab("tab-a", tabA);
+  await flushPromises();
+});
+await waitFor("tab-a restored after pending-prompt switch", () => controller?.activeTabId === "tab-a" && controller.state.items.some((item) => item.kind === "user" && item.text === "cached A"));
 
 let switchToF: Promise<TabMeta[] | undefined> | undefined;
 await act(async () => {
