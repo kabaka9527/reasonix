@@ -2010,7 +2010,8 @@ func (a *App) Fork(turn int) (TabMeta, error) {
 }
 
 // ForkForTab forks the requested source tab even if focus changes before the
-// backend begins processing the request.
+// backend begins processing the request. The fork becomes active only while the
+// source tab still owns focus, so a later tab selection remains authoritative.
 func (a *App) ForkForTab(tabID string, turn int) (TabMeta, error) {
 	sourceTab, ctrl := a.tabAndCtrlByID(tabID)
 	if sourceTab == nil || ctrl == nil {
@@ -2082,9 +2083,12 @@ func (a *App) ForkForTab(tabID string, turn int) (TabMeta, error) {
 	tab.sink = &tabEventSink{tabID: newTabID, app: a}
 	a.tabs[newTabID] = tab
 	a.tabOrder = append(a.tabOrder, newTabID)
-	a.activeTabID = newTabID
+	activateFork := a.activeTabID == sourceTab.ID
+	if activateFork {
+		a.activeTabID = newTabID
+	}
 	a.saveTabsLocked()
-	meta := a.tabMeta(tab, true)
+	meta := a.tabMeta(tab, activateFork)
 	a.mu.Unlock()
 
 	a.emitProjectTreeChanged()

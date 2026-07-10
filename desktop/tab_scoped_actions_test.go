@@ -3,8 +3,11 @@ package main
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
+	"time"
 
+	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/provider"
 )
@@ -43,6 +46,9 @@ func (c *tabScopedActionController) History() []provider.Message {
 func (c *tabScopedActionController) WorkspaceRoot() string { return "" }
 func (c *tabScopedActionController) SessionDir() string    { return "" }
 func (c *tabScopedActionController) SessionPath() string   { return "" }
+func (c *tabScopedActionController) Snapshot() error       { return nil }
+func (c *tabScopedActionController) SetDisplayRecorder(func(content, display string)) {
+}
 func (c *tabScopedActionController) NewSession() error {
 	c.newSessionCalls++
 	c.history = []provider.Message{{Role: provider.RoleSystem, Content: "system"}}
@@ -72,6 +78,19 @@ func (c *tabScopedActionController) SummarizeFrom(_ context.Context, _ int) erro
 func (c *tabScopedActionController) SummarizeUpTo(_ context.Context, _ int) error {
 	c.summarizeUpTo++
 	return nil
+}
+
+type blockingForkTabController struct {
+	*tabScopedActionController
+	path    string
+	started chan struct{}
+	release chan struct{}
+}
+
+func (c *blockingForkTabController) ForkSession(_ int, _ string) (string, error) {
+	close(c.started)
+	<-c.release
+	return c.path, nil
 }
 
 func TestTabScopedSessionActionsIgnoreFocusedTab(t *testing.T) {
@@ -120,5 +139,59 @@ func TestTabScopedSessionActionsIgnoreFocusedTab(t *testing.T) {
 	}
 	if app.activeTabID != "focused" {
 		t.Fatalf("active tab = %q, want focused", app.activeTabID)
+	}
+}
+
+func TestForkForTabDoesNotOverrideLaterActiveTab(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	ctrl := &blockingForkTabController{
+		tabScopedActionController: newTabScopedActionController(),
+		path:                      filepath.Join(config.SessionDir(), "fork.jsonl"),
+		started:                   make(chan struct{}),
+		release:                   make(chan struct{}),
+	}
+	app := NewApp()
+	app.setTestCtrl(ctrl, "")
+	app.tabs["test"].TopicTitle = "Source topic"
+	app.tabs["other"] = &WorkspaceTab{ID: "other", Scope: "global", Ready: true, disabledMCP: map[string]ServerView{}}
+	app.tabOrder = []string{"test", "other"}
+
+	type forkResult struct {
+		meta TabMeta
+		err  error
+	}
+	result := make(chan forkResult, 1)
+	go func() {
+		meta, err := app.ForkForTab("test", 1)
+		result <- forkResult{meta: meta, err: err}
+	}()
+
+	select {
+	case <-ctrl.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for ForkSession")
+	}
+	if err := app.SetActiveTab("other"); err != nil {
+		t.Fatalf("SetActiveTab(other): %v", err)
+	}
+	close(ctrl.release)
+
+	var got forkResult
+	select {
+	case got = <-result:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for ForkForTab")
+	}
+	if got.err != nil {
+		t.Fatalf("ForkForTab: %v", got.err)
+	}
+	if got.meta.ID == "" || got.meta.ID == "test" {
+		t.Fatalf("fork tab ID = %q, want a fresh tab", got.meta.ID)
+	}
+	if got.meta.Active {
+		t.Fatalf("fork meta active = true, want false after later tab switch")
+	}
+	if app.activeTabID != "other" {
+		t.Fatalf("active tab = %q, want later selection %q", app.activeTabID, "other")
 	}
 }

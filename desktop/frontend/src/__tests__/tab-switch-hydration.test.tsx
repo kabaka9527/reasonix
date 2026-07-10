@@ -134,6 +134,7 @@ const tabE = tabMeta("tab-e");
 const tabF = tabMeta("tab-f");
 const tabG = tabMeta("tab-g");
 const tabH = tabMeta("tab-h");
+const tabI = tabMeta("tab-i");
 let backendActiveId = "tab-a";
 const historyB = deferred<HistoryMessage[]>();
 const historyD = deferred<HistoryMessage[]>();
@@ -144,6 +145,7 @@ const setActiveBGate = deferred<void>();
 const setActiveEGate = deferred<void>();
 const setActiveFGate = deferred<void>();
 const submitTabCGate = deferred<void>();
+const forkResultGate = deferred<void>();
 const historyCalls: string[] = [];
 const cancelCalls: string[] = [];
 let contextDCalls = 0;
@@ -155,6 +157,8 @@ let setActiveCalls = 0;
 let newSessionCalls = 0;
 const newSessionTargets: string[] = [];
 let failSetActiveFor = "";
+let holdNextForkResult = false;
+let forkStarted = false;
 const runningTabs = new Set<string>();
 const tabsById = new Map([tabA, tabB, tabC, tabD, tabE, tabF, tabG, tabH].map((tab) => [tab.id, tab]));
 const eventHandlers: Array<(e: WireEvent) => void> = [];
@@ -211,6 +215,7 @@ window.go = {
           return historyH.promise;
         }
         if (tabID === "tab-h") return [userMessage("history H")];
+        if (tabID === "tab-i") return [userMessage("fork I")];
         return [userMessage("cached A")];
       },
       HistoryPageForTab: async (tabID: string) => {
@@ -242,10 +247,16 @@ window.go = {
         return { ...tabE, active: true, running: true };
       },
       ForkForTab: async () => {
-        tabsById.set("tab-e", tabE);
-        backendActiveId = "tab-e";
-        runningTabs.add("tab-e");
-        return { ...tabE, active: true, running: true };
+        const fork = holdNextForkResult ? tabI : tabE;
+        tabsById.set(fork.id, fork);
+        backendActiveId = fork.id;
+        runningTabs.add(fork.id);
+        if (holdNextForkResult) {
+          holdNextForkResult = false;
+          forkStarted = true;
+          await forkResultGate.promise;
+        }
+        return { ...fork, active: true, running: true };
       },
       ReplayPendingPrompts: async () => {},
       SetActiveTab: async (tabID: string) => {
@@ -537,6 +548,30 @@ await act(async () => {
   await flushPromises();
 });
 eq(contextDCalls, contextCallsBeforeInactiveD, "inactive topic skips ancillary hydration after quick tab switch");
+
+holdNextForkResult = true;
+let delayedFork: Promise<boolean> | undefined;
+await act(async () => {
+  delayedFork = controller?.rewind(0, "fork");
+  await flushPromises();
+});
+await waitFor("delayed fork result", () => forkStarted && backendActiveId === "tab-i");
+await act(async () => {
+  await controller?.switchTab("tab-d", tabD);
+  await controller?.switchTab("tab-a", tabA);
+  await flushPromises();
+});
+eq(controller?.activeTabId, "tab-a", "later A→D→A navigation returns to the source tab before fork completion");
+eq(backendActiveId, "tab-a", "later A→D→A navigation owns backend focus before fork completion");
+await act(async () => {
+  forkResultGate.resolve();
+  await delayedFork;
+  await flushPromises();
+});
+eq(controller?.activeTabId, "tab-a", "late fork completion does not override newer ABA navigation");
+eq(backendActiveId, "tab-a", "late fork completion reasserts the latest backend tab");
+ok(!historyCalls.includes("tab-i"), "stale fork result is not hydrated as the visible tab");
+runningTabs.delete("tab-i");
 
 tabsById.set("tab-d", { ...tabD, sessionPath: `${tabD.workspaceRoot}/sessions/next-tab-d.jsonl` });
 const historyCallsBeforeReboundD = historyCalls.length;
