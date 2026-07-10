@@ -3802,6 +3802,7 @@ export default function App() {
                   refreshKey={dockRefreshKey}
                   initialViewMode={rightDockMode === "changed" ? "changed" : "files"}
                   showViewTabs={false}
+                  creationMode={sidebarCreation}
                 />
               )}
             </div>
