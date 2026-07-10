@@ -266,27 +266,17 @@ func (c *client) buildRequest(req provider.Request) anthRequest {
 				}
 			}
 		case provider.RoleTool:
-			if m.Content == "" {
-				appendBlocks("user", contentBlock{Type: "tool_result", ToolUseID: m.ToolCallID, Content: "(no output)"})
-			} else if c.vision {
-				textParts, images := provider.SplitToolResultContent(m.Content)
-				if len(images) == 0 {
-					appendBlocks("user", contentBlock{Type: "tool_result", ToolUseID: m.ToolCallID, Content: m.Content})
-				} else {
-					var blocks []contentBlock
-					for _, tp := range textParts {
-						if tp != "" {
-							blocks = append(blocks, contentBlock{Type: "text", Text: tp})
-						}
-					}
-					for _, img := range images {
-						blocks = append(blocks, contentBlock{Type: "image", Source: &imageSource{Type: "base64", MediaType: img.MimeType, Data: img.Data}})
-					}
-					appendBlocks("user", contentBlock{Type: "tool_result", ToolUseID: m.ToolCallID, Content: blocks})
-				}
-			} else {
-				appendBlocks("user", contentBlock{Type: "tool_result", ToolUseID: m.ToolCallID, Content: m.Content})
+			content := m.Content
+			if content == "" {
+				content = "(no output)" // tool_result content must be non-empty
 			}
+			block := contentBlock{Type: "tool_result", ToolUseID: m.ToolCallID, Content: content}
+			if c.vision {
+				if blocks := toolResultBlocks(content, m.Images); blocks != nil {
+					block.Content = blocks
+				}
+			}
+			appendBlocks("user", block)
 		case provider.RoleAssistant:
 			var blocks []contentBlock
 			// Replay the signed thinking block first (Anthropic requires it precede
@@ -625,7 +615,7 @@ type contentBlock struct {
 	Name         string          `json:"name,omitempty"`        // tool_use
 	Input        json.RawMessage `json:"input,omitempty"`       // tool_use
 	ToolUseID    string          `json:"tool_use_id,omitempty"` // tool_result
-	Content      any             `json:"content,omitempty"`     // tool_result: string or []contentBlock for images
+	Content      any             `json:"content,omitempty"`     // tool_result: string, or []contentBlock when the result carries images
 	Source       *imageSource    `json:"source,omitempty"`      // image
 	CacheControl *cacheControl   `json:"cache_control,omitempty"`
 }
@@ -634,6 +624,23 @@ type imageSource struct {
 	Type      string `json:"type"` // "base64"
 	MediaType string `json:"media_type"`
 	Data      string `json:"data"`
+}
+
+// toolResultBlocks builds array content for a tool_result whose message carries
+// images: the text first, then one image block per parseable data URL. It
+// returns nil when nothing parses, so text-only results keep plain string
+// content — byte-identical serialization to previous releases.
+func toolResultBlocks(text string, images []string) []contentBlock {
+	var imgs []contentBlock
+	for _, url := range images {
+		if mt, data, ok := provider.ParseImageDataURL(url); ok {
+			imgs = append(imgs, contentBlock{Type: "image", Source: &imageSource{Type: "base64", MediaType: mt, Data: data}})
+		}
+	}
+	if imgs == nil {
+		return nil
+	}
+	return append([]contentBlock{{Type: "text", Text: text}}, imgs...)
 }
 
 type anthTool struct {

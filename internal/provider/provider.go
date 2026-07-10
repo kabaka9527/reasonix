@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"sort"
 	"strings"
 	"unicode"
@@ -31,7 +30,7 @@ const (
 type Message struct {
 	Role             Role     `json:"role"`
 	Content          string   `json:"content,omitempty"`
-	Images           []string `json:"images,omitempty"`            // data URLs (data:<mime>;base64,…); embedded only for vision-capable models
+	Images           []string `json:"images,omitempty"`            // data URLs (data:<mime>;base64,…) on user (attachments) and tool (MCP image results) messages; embedded only for vision-capable models
 	ReasoningContent string   `json:"reasoning_content,omitempty"` // assistant: thinking-mode chain-of-thought, round-tripped on multi-turn
 	// ReasoningSignature is an opaque, provider-issued proof that ReasoningContent
 	// is genuine model output. Anthropic requires the signed thinking block be
@@ -76,50 +75,6 @@ func ParseImageDataURL(dataURL string) (mediaType, base64Data string, ok bool) {
 		return "", "", false
 	}
 	return mt, payload, true
-}
-
-// ToolImage represents an image extracted from a tool result's markdown data URI.
-type ToolImage struct {
-	MimeType string
-	Data     string // base64-encoded payload
-}
-
-// toolImageRe matches ![Image](data:...) embedded in tool result text.
-var toolImageRe = regexp.MustCompile(`!\[Image\]\(data:([^;]+);base64,([^)]+)\)`)
-
-// SplitToolResultContent extracts markdown-embedded images from tool result
-// content and returns the text parts and image metadata separately. Providers
-// that support structured image content can use the returned images to build
-// proper image blocks (image_url for OpenAI, image source for Anthropic)
-// instead of sending raw base64 as text.
-func SplitToolResultContent(content string) (textParts []string, images []ToolImage) {
-	if !strings.Contains(content, "![Image](data:") {
-		return []string{content}, nil
-	}
-	matches := toolImageRe.FindAllStringSubmatchIndex(content, -1)
-	if len(matches) == 0 {
-		return []string{content}, nil
-	}
-	pos := 0
-	for _, m := range matches {
-		// Text before this image
-		if m[0] > pos {
-			textParts = append(textParts, content[pos:m[0]])
-		}
-		// Extract image data
-		mimeType := content[m[2]:m[3]]
-		data := content[m[4]:m[5]]
-		images = append(images, ToolImage{MimeType: mimeType, Data: data})
-		pos = m[1]
-	}
-	// Trailing text after last image
-	if pos < len(content) {
-		textParts = append(textParts, content[pos:])
-	}
-	if len(textParts) == 0 {
-		textParts = nil
-	}
-	return
 }
 
 // ToolCall is a tool invocation requested by the model. Arguments is raw JSON.
