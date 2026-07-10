@@ -133,9 +133,10 @@ console.log("\nhistory panel recovery-copy bulk actions");
     kind: "history",
     sessions: [
       session({ path: "/s/normal.jsonl" }),
-      session({ path: "/s/idle-recovery-0123456789abcdef.jsonl", recovered: true }),
-      session({ path: "/s/open-recovery-0123456789abcdef.jsonl", recovered: true, open: true }),
-      session({ path: "/s/current-recovery-0123456789abcdef.jsonl", recovered: true, current: true }),
+      session({ path: "/s/continued-recovery-0123456789abcdef.jsonl", title: "continued recovery kept", recovered: true }),
+      session({ path: "/s/idle-recovery-0123456789abcdef.jsonl", recovered: true, recoveryCopy: true }),
+      session({ path: "/s/open-recovery-0123456789abcdef.jsonl", recovered: true, recoveryCopy: true, open: true }),
+      session({ path: "/s/current-recovery-0123456789abcdef.jsonl", recovered: true, recoveryCopy: true, current: true }),
     ],
     onDeleteMany: (paths: string[]) => deleted.push(paths),
     onPurgeAll: (paths: string[]) => purged.push(paths),
@@ -150,6 +151,7 @@ console.log("\nhistory panel recovery-copy bulk actions");
     if (confirm) await click(confirm);
   }
   eq(deleted, [["/s/idle-recovery-0123456789abcdef.jsonl"]], "sweep trashes only idle recovery copies");
+  ok(document.body.textContent?.includes("continued recovery kept"), "continued recovery remains in normal history");
   eq(purged, [], "history sweep never purges");
 
   await act(async () => {
@@ -165,7 +167,7 @@ console.log("\nhistory panel recovery-copy bulk actions");
     kind: "history",
     sessions: [
       session({ path: "/s/normal.jsonl" }),
-      session({ path: "/s/current-recovery-0123456789abcdef.jsonl", recovered: true, current: true }),
+      session({ path: "/s/current-recovery-0123456789abcdef.jsonl", recovered: true, recoveryCopy: true, current: true }),
     ],
     onDeleteMany: () => {},
   });
@@ -184,8 +186,9 @@ console.log("\nhistory panel recovery-copy bulk actions");
     kind: "trash",
     sessions: [
       session({ path: "/t/normal.jsonl", deletedAt: now }),
-      session({ path: "/t/a-recovery-0123456789abcdef.jsonl", deletedAt: now, recovered: true }),
-      session({ path: "/t/b-recovery-0123456789abcdef.jsonl", deletedAt: now, recovered: true }),
+      session({ path: "/t/continued-recovery-0123456789abcdef.jsonl", deletedAt: now, recovered: true }),
+      session({ path: "/t/a-recovery-0123456789abcdef.jsonl", deletedAt: now, recovered: true, recoveryCopy: true }),
+      session({ path: "/t/b-recovery-0123456789abcdef.jsonl", deletedAt: now, recovered: true, recoveryCopy: true }),
     ],
     onRestore: () => {},
     onPurge: () => {},

@@ -146,13 +146,13 @@ export function HistoryPanel({
       return [s.title, s.preview, s.path, s.topicTitle, s.workspaceRoot].some((part) => (part ?? "").toLowerCase().includes(q));
     });
   }, [dateFilter, isTrash, query, scopeFilter, sessions, statusFilter]);
-  // Recovery copies are bulk-actionable in both views: trash purges them for
-  // good, history sweeps them into the trash. The history sweep skips copies
-  // that are current or open in a tab — an adopted copy is someone's live
-  // conversation. Counting from `sessions` (not the filtered list) keeps the
-  // sweep exhaustive even while a search or filter is active.
+  // Only branches proven unchanged since recovery are bulk-actionable. A
+  // continued recovery branch keeps `recovered` provenance for its badge, but
+  // is normal user history and must never enter copy cleanup. Counting from
+  // `sessions` (not the filtered list) keeps the sweep exhaustive even while a
+  // search or filter is active.
   const recoveryCopyPaths = useMemo(
-    () => sessions.filter((s) => s.recovered && (isTrash || (!s.current && !s.open))).map((s) => s.path),
+    () => sessions.filter((s) => s.recoveryCopy && (isTrash || (!s.current && !s.open))).map((s) => s.path),
     [isTrash, sessions],
   );
   const recoveryCopyCount = recoveryCopyPaths.length;
@@ -160,19 +160,19 @@ export function HistoryPanel({
     () =>
       isTrash
         ? filteredSessions
-        : [...filteredSessions.filter((s) => !s.recovered), ...filteredSessions.filter((s) => s.recovered)],
+        : [...filteredSessions.filter((s) => !s.recoveryCopy), ...filteredSessions.filter((s) => s.recoveryCopy)],
     [filteredSessions, isTrash],
   );
 
   // Sessions arrive newest-first; bucket consecutive ones under a day heading
   // (Today / Yesterday / a date) while preserving that order.
-  const groups: { label: string; items: SessionMeta[]; recovered: boolean }[] = [];
+  const groups: { label: string; items: SessionMeta[]; recoveryCopy: boolean }[] = [];
   for (const s of displayedSessions) {
-    const recovered = !isTrash && Boolean(s.recovered);
+    const recoveryCopy = !isTrash && Boolean(s.recoveryCopy);
     const label = dayLabel(sessionTimeForGrouping(s, isTrash));
     const last = groups[groups.length - 1];
-    if (last && last.label === label && last.recovered === recovered) last.items.push(s);
-    else groups.push({ label, items: [s], recovered });
+    if (last && last.label === label && last.recoveryCopy === recoveryCopy) last.items.push(s);
+    else groups.push({ label, items: [s], recoveryCopy });
   }
 
   useEffect(() => {
@@ -493,9 +493,9 @@ export function HistoryPanel({
               <div className="mem-empty">{tr("history.noResults")}</div>
             ) : (
               groups.map((g) => (
-                <section className="mem-section" key={`${g.recovered ? "recovered" : "normal"}-${g.label}`}>
+                <section className="mem-section" key={`${g.recoveryCopy ? "recovery-copy" : "normal"}-${g.label}`}>
                   <div className="mem-section__title hist-group__title">
-                    <span>{g.recovered ? `${tr("history.recoveryCopiesGroup")} · ${g.label}` : g.label}</span>
+                    <span>{g.recoveryCopy ? `${tr("history.recoveryCopiesGroup")} · ${g.label}` : g.label}</span>
                     <span className="hist-group__count">{g.items.length}</span>
                   </div>
                   {g.items.map((s) => {
