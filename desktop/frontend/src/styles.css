@@ -2033,8 +2033,15 @@ a[href] {
   padding: 12px 10px calc(12px + var(--statusbar-height));
   background: var(--sidebar-bg);
   border-right: 1px solid var(--border-soft);
+  --wails-draggable: drag;
   user-select: none;
   overflow: hidden;
+}
+
+/* Windows window movement belongs to the dedicated chrome surfaces. Keep the
+   navigation sidebar and its adjacent resize handle out of the native drag path. */
+.app--windows .sidebar {
+  --wails-draggable: no-drag;
 }
 
 .app--darwin .sidebar {
