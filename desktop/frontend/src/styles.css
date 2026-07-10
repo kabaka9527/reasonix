@@ -2038,6 +2038,12 @@ a[href] {
   overflow: hidden;
 }
 
+/* Windows window movement belongs to the dedicated chrome surfaces. Keep the
+   navigation sidebar and its adjacent resize handle out of the native drag path. */
+.app--windows .sidebar {
+  --wails-draggable: no-drag;
+}
+
 .app--darwin .sidebar {
   transform: translateX(0);
   opacity: 1;

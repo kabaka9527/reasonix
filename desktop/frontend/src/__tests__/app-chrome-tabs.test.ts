@@ -289,6 +289,13 @@ ok(
   "Windows classic chrome keeps a draggable rail while tabs remain clickable",
 );
 
+ok(
+  finalDeclaration(".sidebar", "--wails-draggable") === "drag" &&
+    finalDeclaration(".app--windows .sidebar", "--wails-draggable") === "no-drag" &&
+    finalDeclaration(".sidebar-resizer", "--wails-draggable") === "no-drag",
+  "Windows sidebar avoids native window drag without changing other platforms",
+);
+
 for (const selector of [
   ".layout--workbench-chrome-hidden",
   ":root[data-theme-style] .layout--workbench-chrome-hidden",
