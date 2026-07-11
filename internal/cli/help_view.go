@@ -91,9 +91,23 @@ func builtinHelpItems() []compItem {
 func customHelpItems(commands []command.Command) []compItem {
 	items := make([]compItem, 0, len(commands))
 	for _, c := range commands {
-		items = append(items, compItem{label: "/" + c.Name, hint: c.Description})
+		if c.Hidden {
+			continue
+		}
+		items = append(items, compItem{label: "/" + c.Name, hint: customCommandHint(c)})
 	}
 	return items
+}
+
+func customCommandHint(c command.Command) string {
+	if c.Plugin == "" {
+		return c.Description
+	}
+	source := "plugin " + c.Plugin
+	if c.Description == "" {
+		return source
+	}
+	return source + " · " + c.Description
 }
 
 func skillHelpItems(skills []skill.Skill) []compItem {

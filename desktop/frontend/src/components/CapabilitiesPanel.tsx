@@ -2062,8 +2062,16 @@ function PluginCommandList({ commands }: { commands: PluginCommandView[] }) {
 						<div className="cap-plugin-capability__line">
 							<span className="cap-plugin-capability__name">{command.invocation || `/${command.name}`}</span>
 							{command.argHint && <span className="cap-source-badge">{command.argHint}</span>}
+							{command.shadowed && <span className="cap-source-badge">{t("caps.pluginCommandShadowed")}</span>}
 						</div>
 						<div className="cap-plugin-capability__desc">{command.description || t("caps.pluginNoDescription")}</div>
+						{command.shadowed && (
+							<div className="cap-plugin-capability__hint">
+								{command.shadowedByPlugin
+									? t("caps.pluginCommandQualifiedOccupiedByPlugin", { plugin: command.shadowedByPlugin })
+									: t("caps.pluginCommandQualifiedOccupiedByCustom")}
+							</div>
+						)}
 					</div>
 				))}
 			</div>

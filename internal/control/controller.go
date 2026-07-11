@@ -3648,7 +3648,7 @@ func (c *Controller) ReloadCommands(ctx context.Context) error {
 		return ctx.Err()
 	default:
 	}
-	cmds, loadErr := command.Load(config.CommandDirsForRoot(c.workspaceRoot)...)
+	cmds, loadErr := command.LoadRoots(config.CommandRootsForRoot(c.workspaceRoot)...)
 	cmdSkills := c.Skills()
 
 	entries := make([]command.SlashEntry, 0, len(cmdSkills)+len(cmds))
@@ -3661,6 +3661,9 @@ func (c *Controller) ReloadCommands(ctx context.Context) error {
 		})
 	}
 	for _, cmd := range cmds {
+		if cmd.Hidden {
+			continue
+		}
 		cmd := cmd
 		entries = append(entries, command.SlashEntry{
 			Name:        cmd.Name,

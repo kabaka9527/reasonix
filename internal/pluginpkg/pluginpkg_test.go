@@ -507,9 +507,9 @@ func TestParseClaudePluginAdoptsNestedCommands(t *testing.T) {
 // also claim "no detailed inventory available".
 func TestInventoryTextCommandsOnly(t *testing.T) {
 	var b strings.Builder
-	appendInventoryText(&b, Inventory{Commands: []CommandRef{{Name: "plan", Invocation: "/plan", Description: "plan things"}}})
+	appendInventoryText(&b, "superpowers", Inventory{Commands: []CommandRef{{Name: "plan", Invocation: "/plan", Description: "plan things"}}})
 	out := b.String()
-	if !strings.Contains(out, "commands:") || !strings.Contains(out, "/plan") {
+	if !strings.Contains(out, "commands:") || !strings.Contains(out, "/superpowers:plan") {
 		t.Fatalf("output = %q, want the commands listing", out)
 	}
 	if strings.Contains(out, "no detailed inventory available") {

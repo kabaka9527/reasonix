@@ -101,7 +101,10 @@ func (m *chatTUI) slashItems() []compItem {
 		{label: "/export", insert: "/export", hint: i18n.M.CmdExport},
 	}
 	for _, c := range m.commands {
-		items = append(items, compItem{label: "/" + c.Name, insert: "/" + c.Name + " ", hint: c.Description})
+		if c.Hidden {
+			continue
+		}
+		items = append(items, compItem{label: "/" + c.Name, insert: "/" + c.Name + " ", hint: customCommandHint(c)})
 	}
 	for _, s := range m.skills {
 		hint := s.Description

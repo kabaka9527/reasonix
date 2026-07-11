@@ -367,7 +367,10 @@ export const en = {
   "caps.pluginSkillsTitle": "Skills",
   "caps.pluginSkillsHint": "Browse with /skills, invoke directly, or ask for the workflow by name.",
   "caps.pluginCommandsTitle": "Commands",
-  "caps.pluginCommandsHint": "Slash-command prompt templates; type /<name> to run one.",
+  "caps.pluginCommandsHint": "Slash-command prompt templates; type /<plugin>:<name> to run one.",
+  "caps.pluginCommandShadowed": "overridden",
+  "caps.pluginCommandQualifiedOccupiedByPlugin": "Its qualified name is occupied by plugin {plugin}.",
+  "caps.pluginCommandQualifiedOccupiedByCustom": "Its qualified name is occupied by a user or project command.",
   "caps.pluginHooksTitle": "Hooks",
   "caps.pluginHooksHint": "Hooks trigger automatically on matching lifecycle events.",
   "caps.pluginMCPTitle": "MCP servers",
@@ -1880,6 +1883,7 @@ export const en = {
 
   // slash menu tags
   "slash.project": "project",
+  "slash.plugin": "plugin · {name}",
   "slash.mcp": "mcp",
   "slash.skill": "skill",
 

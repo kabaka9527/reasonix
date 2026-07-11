@@ -5592,6 +5592,7 @@ type CommandInfo struct {
 	Description string `json:"description"`
 	Hint        string `json:"hint,omitempty"` // argument hint, if any
 	Kind        string `json:"kind"`           // "builtin" | "custom" | "mcp"
+	Plugin      string `json:"plugin,omitempty"`
 }
 
 // Commands lists the slash commands available this session — built-in actions,
@@ -5630,7 +5631,10 @@ func (a *App) Commands() []CommandInfo {
 		out = append(out, CommandInfo{Name: s.Name, Description: s.Description, Kind: "skill"})
 	}
 	for _, c := range ctrl.Commands() {
-		out = append(out, CommandInfo{Name: c.Name, Description: c.Description, Hint: c.ArgHint, Kind: "custom"})
+		if c.Hidden {
+			continue
+		}
+		out = append(out, CommandInfo{Name: c.Name, Description: c.Description, Hint: c.ArgHint, Kind: "custom", Plugin: c.Plugin})
 	}
 	if h := ctrl.Host(); h != nil {
 		for _, p := range h.Prompts() {

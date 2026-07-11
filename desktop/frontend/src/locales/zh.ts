@@ -368,7 +368,10 @@ export const zh: Record<DictKey, string> = {
   "caps.pluginSkillsTitle": "Skills",
   "caps.pluginSkillsHint": "用 /skills 浏览，直接调用，或在对话中说出工作流名称。",
   "caps.pluginCommandsTitle": "Commands",
-  "caps.pluginCommandsHint": "斜杠命令模板，输入 /<名称> 即可运行。",
+  "caps.pluginCommandsHint": "斜杠命令模板，输入 /<插件名>:<命令名> 即可运行。",
+  "caps.pluginCommandShadowed": "已覆盖",
+  "caps.pluginCommandQualifiedOccupiedByPlugin": "该限定名称已被插件 {plugin} 占用。",
+  "caps.pluginCommandQualifiedOccupiedByCustom": "该限定名称已被用户或项目命令占用。",
   "caps.pluginHooksTitle": "Hooks",
   "caps.pluginHooksHint": "Hooks 会在匹配的生命周期事件中自动触发。",
   "caps.pluginMCPTitle": "MCP 服务器",
@@ -1882,6 +1885,7 @@ export const zh: Record<DictKey, string> = {
 
   // 斜杠菜单标签
   "slash.project": "项目",
+  "slash.plugin": "插件 · {name}",
   "slash.mcp": "mcp",
   "slash.skill": "skill",
 

@@ -4028,6 +4028,63 @@ func TestReloadCommandsSameNameAcrossDirs(t *testing.T) {
 	}
 }
 
+func TestReloadCommandsUsesCanonicalPluginNameAlongsideProjectShortName(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("AppData", filepath.Join(home, "AppData"))
+	reasonixHome := filepath.Join(home, ".reasonix")
+	t.Setenv("REASONIX_HOME", reasonixHome)
+
+	pluginRoot := filepath.Join(reasonixHome, "plugins", "pwf")
+	if err := os.MkdirAll(filepath.Join(pluginRoot, ".claude-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginRoot, pluginpkg.ClaudeManifest), []byte(`{"name":"pwf"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeCmdFile(t, filepath.Join(pluginRoot, "commands"), "plan", "Plugin plan", "PLUGIN $1")
+	writeCmdFile(t, filepath.Join(pluginRoot, "commands"), "status", "Plugin status", "STATUS $1")
+	if err := pluginpkg.Upsert(reasonixHome, pluginpkg.InstalledPlugin{Name: "pwf", Root: "plugins/pwf", ManifestKind: "claude", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	workspace := t.TempDir()
+	writeCmdFile(t, filepath.Join(workspace, ".reasonix", "commands"), "plan", "Project plan", "PROJECT $1")
+	c := New(Options{Sink: &typedNilControllerSink{}, Registry: tool.NewRegistry(), WorkspaceRoot: workspace})
+	if err := c.ReloadCommands(context.Background()); err != nil {
+		t.Fatalf("ReloadCommands: %v", err)
+	}
+
+	if got, ok := c.CustomCommand("/plan task"); !ok || got != "PROJECT task" {
+		t.Fatalf("short command = %q, %v; want project winner", got, ok)
+	}
+	if got, ok := c.CustomCommand("/pwf:plan task"); !ok || got != "PLUGIN task" {
+		t.Fatalf("qualified plugin command = %q, %v", got, ok)
+	}
+	if got, ok := c.CustomCommand("/status now"); !ok || got != "STATUS now" {
+		t.Fatalf("hidden compatible short command = %q, %v", got, ok)
+	}
+	if got, ok := c.CustomCommand("/pwf:status now"); !ok || got != "STATUS now" {
+		t.Fatalf("canonical plugin status command = %q, %v", got, ok)
+	}
+	cmds := c.Commands()
+	canonicalFound := false
+	hiddenFound := false
+	for _, cmd := range cmds {
+		if cmd.Name == "pwf:plan" && cmd.Plugin == "pwf" && cmd.ShortName == "plan" && !cmd.Hidden {
+			canonicalFound = true
+		}
+		if cmd.Name == "status" && cmd.Plugin == "pwf" && cmd.ShortName == "status" && cmd.Hidden {
+			hiddenFound = true
+		}
+	}
+	if !canonicalFound || !hiddenFound {
+		t.Fatalf("plugin command metadata missing: %+v", cmds)
+	}
+}
+
 // TestReloadCommandsEmptySet verifies that deleting all command files and
 // reloading results in an empty Commands() slice, while the slash_command tool
 // still exists in the Registry (containing only Skills).

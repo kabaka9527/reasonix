@@ -3,8 +3,9 @@ import React from "react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { MCPServersSettingsPage, PluginsSettingsPage } from "../components/CapabilitiesPanel";
+import { slashCommandKindTag } from "../components/SlashMenu";
 import type { AppBindings } from "../lib/bridge";
-import { LocaleProvider } from "../lib/i18n";
+import { LocaleProvider, t } from "../lib/i18n";
 import { mcpServerLifecycleActions, mcpServerRetryableFromAvailableList } from "../lib/mcpServerLifecycle";
 import type { Meta, PluginInstallOptions, PluginView, ServerView, TabMeta } from "../lib/types";
 
@@ -116,6 +117,11 @@ function setInputValue(input: HTMLInputElement, value: string) {
   input.dispatchEvent(new inputEventCtor("input", { bubbles: true, data: value, inputType: "insertText" } as InputEventInit));
   input.dispatchEvent(new eventCtor("change", { bubbles: true }));
 }
+
+ok(
+  slashCommandKindTag({ name: "pwf:plan", description: "Plugin planning prompt.", kind: "custom", plugin: "pwf" }, t) === "plugin · pwf",
+  "slash menu identifies the canonical plugin command source",
+);
 
 console.log("capabilities panel MCP actions");
 
@@ -455,9 +461,20 @@ console.log("capabilities panel plugin actions");
             manifestKind: "reasonix",
             enabled: true,
             skills: 3,
+            commands: 2,
             hooks: 1,
             mcpServers: 1,
             skillDetails: [{ name: "plan", description: "Plan work before implementation.", invocation: "/plan", runAs: "inline" }],
+            commandDetails: [{
+              name: "plan",
+              description: "Plugin planning prompt.",
+              invocation: "/superpowers:plan",
+            }, {
+              name: "blocked",
+              description: "Occupied canonical command.",
+              invocation: "/superpowers:blocked",
+              shadowed: true,
+            }],
             hookDetails: [{ event: "SessionStart", contextFile: "CLAUDE.md", description: "Load startup context." }],
             mcpServerDetails: [{ name: "context", transport: "stdio", command: "node server.js" }],
           };
@@ -552,6 +569,8 @@ console.log("capabilities panel plugin actions");
   await waitFor("plugin update action", () => Boolean(findButton("Update")));
   ok(document.body.textContent?.includes("How to use") ?? false, "expanded plugin details explain how to use the plugin");
   ok(document.body.textContent?.includes("/plan") ?? false, "expanded plugin details list exported skill invocations");
+  ok(document.body.textContent?.includes("/superpowers:plan") ?? false, "plugin details show the canonical qualified invocation");
+  ok(document.body.textContent?.includes("qualified name is occupied by a user or project command") ?? false, "occupied canonical command explains the winning source");
   ok(document.body.textContent?.includes("SessionStart") ?? false, "expanded plugin details list exported hooks");
   ok(document.body.textContent?.includes("context") ?? false, "expanded plugin details list exported MCP servers");
 
