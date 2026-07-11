@@ -206,9 +206,10 @@ func limitRouteCandidates(candidates []RouteCandidate) []RouteCandidate {
 	strong := make([]RouteCandidate, 0, len(candidates))
 	suggested := make([]RouteCandidate, 0, targetCandidates)
 	for _, candidate := range candidates {
-		if candidate.Policy == AutoUseRequire || candidate.Policy == AutoUsePrefer {
+		switch candidate.Policy {
+		case AutoUseRequire, AutoUsePrefer:
 			strong = append(strong, candidate)
-		} else if candidate.Policy == AutoUseSuggest {
+		case AutoUseSuggest:
 			suggested = append(suggested, candidate)
 		}
 	}
