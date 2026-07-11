@@ -1451,7 +1451,7 @@ func (c *Controller) RunSubagentProfile(ctx context.Context, name, task string, 
 	if task == "" {
 		return "", fmt.Errorf("subagent task is required")
 	}
-	sk, ok := c.skills.byName(name)
+	sk, ok := c.skills.bySlashName(name)
 	if !ok {
 		return "", fmt.Errorf("unknown or disabled subagent profile %q", name)
 	}
@@ -3730,13 +3730,13 @@ func (c *Controller) ReloadCommands(ctx context.Context) error {
 	default:
 	}
 	cmds, loadErr := command.LoadRoots(config.CommandRootsForRoot(c.workspaceRoot)...)
-	cmdSkills := c.Skills()
+	cmdSkills := c.SlashSkills()
 
 	entries := make([]command.SlashEntry, 0, len(cmdSkills)+len(cmds))
 	for _, sk := range cmdSkills {
 		sk := sk
 		entries = append(entries, command.SlashEntry{
-			Name:        sk.Name,
+			Name:        sk.SlashName(),
 			Description: sk.Description,
 			Render:      func(args []string) string { return skill.Render(sk, strings.Join(args, " ")) },
 		})
@@ -3764,6 +3764,12 @@ func (c *Controller) ReloadCommands(ctx context.Context) error {
 // this session appear without rewriting the cache-stable system prompt.
 func (c *Controller) Skills() []skill.Skill {
 	return c.skills.list()
+}
+
+// SlashSkills returns the user-visible skill directory. Plugin skills use
+// package-qualified names while Skills keeps bare model/run_skill identifiers.
+func (c *Controller) SlashSkills() []skill.Skill {
+	return c.skills.slashList()
 }
 
 // AllSkills returns every discoverable skill, including disabled ones, for

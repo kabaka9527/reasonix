@@ -349,7 +349,7 @@ func TestSkillsSettingsCarriesSubagentProfileFields(t *testing.T) {
 		t.Fatalf("Skills = %+v, want exactly one entry", views)
 	}
 	got := views[0]
-	if got.Model != "deepseek-pro" || got.Effort != "high" || got.Color != "amber" || got.Invocation != "manual" {
+	if got.Model != "deepseek-pro" || got.Effort != "high" || got.Color != "amber" || got.Invocation != "/my-agent" || got.InvocationMode != "manual" {
 		t.Fatalf("subagent profile fields not carried through: %+v", got)
 	}
 	if len(got.AllowedTools) != 2 || got.AllowedTools[0] != "read_file" || got.AllowedTools[1] != "grep" {

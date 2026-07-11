@@ -481,15 +481,18 @@ func skillCandidateBody(cat workflowCategory, evidence []string) string {
 func skillStoreForWorkspace(workspaceRoot string) *skill.Store {
 	cfg, err := config.LoadForRoot(workspaceRoot)
 	var custom, excluded []string
+	var pluginPaths map[string][]string
 	maxDepth := 3
 	if err == nil && cfg != nil {
 		custom = cfg.SkillCustomPaths()
 		excluded = cfg.SkillExcludedPaths()
+		pluginPaths = cfg.PluginPackageSkillOwners()
 		maxDepth = cfg.SkillMaxDepth()
 	}
 	return skill.New(skill.Options{
 		ProjectRoot:   strings.TrimSpace(workspaceRoot),
 		CustomPaths:   custom,
+		PluginPaths:   pluginPaths,
 		ExcludedPaths: excluded,
 		MaxDepth:      maxDepth,
 	})

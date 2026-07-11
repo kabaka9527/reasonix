@@ -540,7 +540,7 @@ func newChatTUI(ctrl control.SessionAPI, missing string, eventCh chan event.Even
 		history:              ctrl.History(),
 		host:                 ctrl.Host(),
 		commands:             ctrl.Commands(),
-		skills:               ctrl.Skills(),
+		skills:               ctrl.SlashSkills(),
 		viewport:             viewport.New(viewport.WithWidth(termW)),
 		statusLineCount:      2,
 	}

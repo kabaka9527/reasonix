@@ -84,7 +84,7 @@ func InstalledShowText(reasonixHome, name string) (string, error) {
 	fmt.Fprintf(&b, "plugin %s [%s]\n", p.Name, state)
 	fmt.Fprintf(&b, "version: %s\nkind: %s\nroot: %s\nsource: %s\ncapabilities: %d skills, %d commands, %d hooks, %d MCP servers\n", version, p.ManifestKind, filepath.Clean(root), p.Source, skills, commands, hooks, mcp)
 	if p.Enabled {
-		b.WriteString("usage: enabled plugins load into new sessions; use /skills, invoke /<skill> or /<plugin>:<command>, or ask naturally.\n")
+		b.WriteString("usage: enabled plugins load into new sessions; use /skills, invoke /<plugin>:<skill> or /<plugin>:<command>, or ask naturally.\n")
 	} else {
 		b.WriteString("usage: enable this plugin before its skills, commands, hooks, or MCP servers participate in sessions.\n")
 	}
@@ -157,10 +157,7 @@ func appendInventoryText(b *strings.Builder, pluginName string, inv Inventory) {
 			if desc == "" {
 				desc = "(no description)"
 			}
-			invocation := sk.Invocation
-			if invocation == "" {
-				invocation = "/" + sk.Name
-			}
+			invocation := "/" + pluginName + ":" + sk.Name
 			if sk.RunAs != "" {
 				fmt.Fprintf(b, "  %s [%s] - %s\n", invocation, sk.RunAs, desc)
 			} else {

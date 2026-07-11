@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"reasonix/internal/config"
+	"reasonix/internal/control"
 	"reasonix/internal/hook"
 	"reasonix/internal/skill"
 )
@@ -59,7 +60,7 @@ func (m *chatTUI) runSkillSubcommand(input string) {
 func (m *chatTUI) skillList() {
 	skills := m.skills
 	if m.ctrl != nil {
-		skills = m.ctrl.AllSkills()
+		skills = managementSlashSkills(m.ctrl)
 	}
 	if len(skills) == 0 {
 		m.notice("no skills found. Add SKILL.md / <name>.md under .reasonix/skills (project) or ~/.reasonix/skills (global); .agents/.agent/.claude skills dirs also work. Invoke with /<name> or run_skill.")
@@ -71,10 +72,10 @@ func (m *chatTUI) skillList() {
 func (m *chatTUI) skillShow(name string) {
 	skills := m.skills
 	if m.ctrl != nil {
-		skills = m.ctrl.AllSkills()
+		skills = managementSlashSkills(m.ctrl)
 	}
 	for _, s := range skills {
-		if s.Name == name {
+		if s.Name == name || s.SlashName() == strings.TrimPrefix(name, "/") {
 			disabled := false
 			if m.ctrl != nil {
 				disabled = !m.ctrl.SkillEnabled(s.Name)
@@ -84,6 +85,17 @@ func (m *chatTUI) skillShow(name string) {
 		}
 	}
 	m.notice("unknown skill: " + name)
+}
+
+func managementSlashSkills(ctrl control.SessionAPI) []skill.Skill {
+	if ctrl == nil {
+		return nil
+	}
+	// AllSkills preserves disabled entries; SlashSkills adds every enabled
+	// package-qualified alias when multiple plugins export the same bare name.
+	all := append([]skill.Skill(nil), ctrl.AllSkills()...)
+	all = append(all, ctrl.SlashSkills()...)
+	return skill.VisibleSlashSkills(all)
 }
 
 func (m *chatTUI) disabledSkillNames() map[string]bool {
@@ -121,6 +133,9 @@ func (m *chatTUI) skillSaveEnabledChanges(changes map[string]bool) {
 	for _, sk := range m.ctrl.AllSkills() {
 		known[config.SkillNameKey(sk.Name)] = sk.Name
 	}
+	for _, sk := range m.ctrl.SlashSkills() {
+		known[sk.SlashName()] = sk.Name
+	}
 	// Lock only the load-modify-save cycle; the session refresh below runs
 	// off-lock. The closure returns a non-empty notice on failure.
 	if failNotice := func() string {
@@ -128,7 +143,11 @@ func (m *chatTUI) skillSaveEnabledChanges(changes map[string]bool) {
 		defer unlock()
 		cfg := config.LoadForEdit(config.UserConfigPath())
 		for name, enabled := range changes {
-			canonical, ok := known[config.SkillNameKey(name)]
+			key := config.SkillNameKey(name)
+			if key == "" {
+				key = strings.TrimPrefix(strings.TrimSpace(name), "/")
+			}
+			canonical, ok := known[key]
 			if !ok {
 				return "skill " + enableVerb(enabled) + ": unknown skill: " + name
 			}
@@ -208,7 +227,7 @@ func (m *chatTUI) scheduleSkillSessionRefresh(reason, notice string) bool {
 			oldCtrl:  oldCtrl,
 			label:    c.Label(),
 			commands: c.Commands(),
-			skills:   c.Skills(),
+			skills:   c.SlashSkills(),
 			host:     c.Host(),
 		}
 	}
@@ -245,13 +264,15 @@ func (m *chatTUI) skillStore() *skill.Store {
 	cwd, _ := os.Getwd()
 	var custom []string
 	var excluded []string
+	var pluginPaths map[string][]string
 	maxDepth := 3
 	if cfg, err := config.Load(); err == nil {
 		custom = cfg.SkillCustomPaths()
 		excluded = cfg.SkillExcludedPaths()
+		pluginPaths = cfg.PluginPackageSkillOwners()
 		maxDepth = cfg.SkillMaxDepth()
 	}
-	return skill.New(skill.Options{ProjectRoot: cwd, CustomPaths: custom, ExcludedPaths: excluded, MaxDepth: maxDepth})
+	return skill.New(skill.Options{ProjectRoot: cwd, CustomPaths: custom, PluginPaths: pluginPaths, ExcludedPaths: excluded, MaxDepth: maxDepth})
 }
 
 func (m *chatTUI) runHooksSubcommand(input string) {

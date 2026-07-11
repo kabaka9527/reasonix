@@ -632,7 +632,7 @@ func (c *Controller) resolveSkillInvocation(input string) (skill.Skill, string, 
 		return skill.Skill{}, "", false
 	}
 	name := strings.TrimPrefix(fields[0], "/")
-	sk, ok := c.skills.byName(name)
+	sk, ok := c.skills.bySlashName(name)
 	if !ok {
 		return skill.Skill{}, "", false
 	}

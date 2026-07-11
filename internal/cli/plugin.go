@@ -241,17 +241,14 @@ func pluginShowCommand(args []string) int {
 func printPluginInventory(pluginName string, inv pluginpkg.Inventory) {
 	if len(inv.Skills) > 0 {
 		fmt.Println("usage:")
-		fmt.Println("  skills are available in interactive sessions; run /skills to browse them, or invoke a skill directly with /<name>.")
+		fmt.Println("  skills are available in interactive sessions; run /skills to browse them, or invoke a skill directly with /<plugin>:<name>.")
 		fmt.Println("skills:")
 		for _, sk := range inv.Skills {
 			desc := sk.Description
 			if desc == "" {
 				desc = "(no description)"
 			}
-			invocation := sk.Invocation
-			if invocation == "" {
-				invocation = "/" + sk.Name
-			}
+			invocation := "/" + pluginName + ":" + sk.Name
 			if sk.RunAs != "" {
 				fmt.Printf("  %s\t%s\t%s\n", invocation, sk.RunAs, desc)
 			} else {

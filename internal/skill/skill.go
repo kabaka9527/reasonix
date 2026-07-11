@@ -1,6 +1,6 @@
 // Package skill loads invokable playbooks ("skills") from Markdown files. A skill
 // is a named, described prompt body the model can invoke via the run_skill tool
-// (or the user via "/<name>"): an "inline" skill folds its body into the turn as
+// (or the user via a slash name): an "inline" skill folds its body into the turn as
 // a tool result, a "subagent" skill runs in an isolated child loop and returns
 // only its final answer. Project scope wins over global; only names+descriptions
 // enter the cache-stable system-prompt index (see index.go) — bodies load on
@@ -60,6 +60,7 @@ type Skill struct {
 	Body        string // full markdown body (post-frontmatter), loaded eagerly
 	Scope       Scope  // where it came from
 	Path        string // absolute path to the SKILL.md / <name>.md, or "(builtin)"
+	Plugin      string // installed plugin package name; empty for non-plugin skills
 	// AllowedTools, when non-empty, scopes a subagent skill's tool registry to
 	// these literal tool names (from the `allowed-tools` frontmatter).
 	AllowedTools []string
@@ -87,6 +88,15 @@ type Skill struct {
 	Cost             string // low | medium | high (advisory)
 }
 
+// SlashName returns the user-facing slash identifier. Plugin skills use a
+// package-qualified name while the internal Name remains stable for run_skill.
+func (s Skill) SlashName() string {
+	if strings.TrimSpace(s.Plugin) == "" {
+		return s.Name
+	}
+	return strings.TrimSpace(s.Plugin) + ":" + s.Name
+}
+
 // IsValidName reports whether name is a usable skill identifier.
 func IsValidName(name string) bool { return config.IsValidSkillName(name) }
 
@@ -99,6 +109,7 @@ type Options struct {
 	ReasonixHomeDir string
 	ProjectRoot     string
 	CustomPaths     []string
+	PluginPaths     map[string][]string // canonical custom root -> installed plugin package names
 	ExcludedPaths   []string
 	DisabledNames   []string
 	MaxDepth        int
@@ -115,6 +126,7 @@ type Store struct {
 	reasonixHomeDir string
 	projectRoot     string
 	customPaths     []string
+	pluginPaths     map[string][]string
 	excludedPaths   map[string]bool
 	disabled        map[string]bool
 	maxDepth        int
@@ -152,6 +164,7 @@ func New(opts Options) *Store {
 		}
 	}
 	custom := dedupePaths(resolveCustomPaths(opts.CustomPaths, base, home))
+	pluginPaths := normalizePluginPaths(opts.PluginPaths)
 	excluded := map[string]bool{}
 	for _, p := range dedupePaths(resolveCustomPaths(opts.ExcludedPaths, base, home)) {
 		excluded[config.CanonicalSkillPath(p)] = true
@@ -165,6 +178,7 @@ func New(opts Options) *Store {
 		reasonixHomeDir: reasonixHome,
 		projectRoot:     root,
 		customPaths:     custom,
+		pluginPaths:     pluginPaths,
 		excludedPaths:   excluded,
 		disabled:        disabledNameSet(opts.DisabledNames),
 		maxDepth:        normalizeMaxDepth(opts.MaxDepth),
@@ -197,6 +211,7 @@ type Root struct {
 type discoveryRoot struct {
 	Root
 	requireFlatMarker bool
+	plugins           []string
 }
 
 // roots returns the discovery directories, highest priority first: the
@@ -238,9 +253,38 @@ func (s *Store) roots() []discoveryRoot {
 		out = append(out, discoveryRoot{
 			Root:              Root{Dir: d.dir, Scope: d.scope, Priority: len(out), Status: pathStatus(d.dir)},
 			requireFlatMarker: d.requireFlatMarker,
+			plugins:           append([]string(nil), s.pluginPaths[config.CanonicalSkillPath(d.dir)]...),
 		})
 	}
 	return out
+}
+
+func normalizePluginPaths(paths map[string][]string) map[string][]string {
+	out := map[string][]string{}
+	for path, plugins := range paths {
+		key := config.CanonicalSkillPath(path)
+		if key == "" {
+			continue
+		}
+		for _, plugin := range plugins {
+			plugin = strings.TrimSpace(plugin)
+			if plugin == "" || stringSliceContains(out[key], plugin) {
+				continue
+			}
+			out[key] = append(out[key], plugin)
+		}
+		sort.Strings(out[key])
+	}
+	return out
+}
+
+func stringSliceContains(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
 }
 
 // Roots exposes the discovery directories with their status for `/skill paths`.
@@ -305,11 +349,8 @@ func pathStatus(dir string) PathStatus {
 	return StatusOK
 }
 
-// List returns every discoverable skill, deduped by name (first/highest-priority
-// root wins) with built-ins folded in last, sorted by name so the prefix index
-// stays stable and cacheable.
-func (s *Store) List() []Skill {
-	byName := map[string]Skill{}
+func (s *Store) discoveredSkills() []Skill {
+	var out []Skill
 	for _, r := range s.roots() {
 		if r.Status != StatusOK {
 			continue
@@ -318,19 +359,35 @@ func (s *Store) List() []Skill {
 			if s.disabledName(sk.Name) {
 				continue
 			}
-			if _, dup := byName[sk.Name]; !dup {
-				byName[sk.Name] = sk
+			if len(r.plugins) == 0 {
+				out = append(out, sk)
+				continue
+			}
+			for _, plugin := range r.plugins {
+				owned := sk
+				owned.Plugin = plugin
+				out = append(out, owned)
 			}
 		}
 	}
 	if !s.disableBuiltins {
 		for _, sk := range builtinSkills() {
-			if s.disabledName(sk.Name) {
-				continue
+			if !s.disabledName(sk.Name) {
+				out = append(out, sk)
 			}
-			if _, dup := byName[sk.Name]; !dup {
-				byName[sk.Name] = sk
-			}
+		}
+	}
+	return out
+}
+
+// List returns every model-visible skill, deduped by its bare internal name
+// (first/highest-priority root wins) and sorted so the cache-stable index keeps
+// the same identifiers and ordering as before plugin slash qualification.
+func (s *Store) List() []Skill {
+	byName := map[string]Skill{}
+	for _, sk := range s.discoveredSkills() {
+		if _, dup := byName[sk.Name]; !dup {
+			byName[sk.Name] = sk
 		}
 	}
 	out := make([]Skill, 0, len(byName))
@@ -339,6 +396,70 @@ func (s *Store) List() []Skill {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+// SlashList returns the visible user-facing skill directory. Plugin skills are
+// retained per package under /<plugin>:<name>, even when their bare names
+// collide; non-plugin skills keep their existing short names.
+func (s *Store) SlashList() []Skill {
+	return VisibleSlashSkills(s.discoveredSkills())
+}
+
+// VisibleSlashSkills deduplicates skills by their user-facing slash name and
+// returns them in deterministic display order.
+func VisibleSlashSkills(skills []Skill) []Skill {
+	byName := map[string]Skill{}
+	for _, sk := range skills {
+		name := sk.SlashName()
+		if name == "" {
+			continue
+		}
+		if _, dup := byName[name]; !dup {
+			byName[name] = sk
+		}
+	}
+	out := make([]Skill, 0, len(byName))
+	for _, sk := range byName {
+		out = append(out, sk)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].SlashName() < out[j].SlashName() })
+	return out
+}
+
+// ResolveSlashSkill resolves a visible qualified plugin name or a compatible
+// short name. A short plugin name is rejected when multiple plugin packages
+// contribute it; a higher-priority non-plugin winner keeps its short name.
+func ResolveSlashSkill(skills []Skill, name string) (Skill, bool) {
+	name = strings.TrimPrefix(strings.TrimSpace(name), "/")
+	if name == "" {
+		return Skill{}, false
+	}
+	for _, sk := range skills {
+		if sk.SlashName() == name {
+			return sk, true
+		}
+	}
+	if strings.Contains(name, ":") || !IsValidName(name) {
+		return Skill{}, false
+	}
+	var winner Skill
+	var found bool
+	plugins := map[string]bool{}
+	for _, sk := range skills {
+		if sk.Name != name {
+			continue
+		}
+		if !found {
+			winner, found = sk, true
+		}
+		if sk.Plugin != "" {
+			plugins[sk.Plugin] = true
+		}
+	}
+	if !found || winner.Plugin != "" && len(plugins) > 1 {
+		return Skill{}, false
+	}
+	return winner, true
 }
 
 // Read resolves one skill by name, scanning the roots in priority order then the
@@ -356,6 +477,12 @@ func (s *Store) Read(name string) (Skill, bool) {
 		}
 	}
 	return Skill{}, false
+}
+
+// ReadSlash resolves a user-entered slash identifier without changing the
+// bare identifiers accepted by Read/run_skill.
+func (s *Store) ReadSlash(name string) (Skill, bool) {
+	return ResolveSlashSkill(s.discoveredSkills(), name)
 }
 
 func (s *Store) discoverRoot(r discoveryRoot) []Skill {

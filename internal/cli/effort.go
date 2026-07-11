@@ -112,7 +112,7 @@ func (m *chatTUI) runEffortCommand(input string) tea.Cmd {
 			oldCtrl:  oldCtrl,
 			label:    c.Label(),
 			commands: c.Commands(),
-			skills:   c.Skills(),
+			skills:   c.SlashSkills(),
 			host:     c.Host(),
 		}
 	}

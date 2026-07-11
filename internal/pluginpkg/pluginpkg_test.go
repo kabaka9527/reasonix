@@ -225,7 +225,7 @@ func TestInstalledTextDescribesUsageInventory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"plugin superpowers [enabled]", "usage: enabled plugins load into new sessions", "/plan [subagent] - Plan work", "SessionStart"} {
+	for _, want := range []string{"plugin superpowers [enabled]", "usage: enabled plugins load into new sessions", "/superpowers:plan [subagent] - Plan work", "SessionStart"} {
 		if !strings.Contains(details, want) {
 			t.Fatalf("InstalledShowText missing %q:\n%s", want, details)
 		}

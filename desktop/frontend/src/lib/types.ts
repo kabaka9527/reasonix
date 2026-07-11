@@ -694,11 +694,13 @@ export interface SkillView {
   scope: string;
   runAs: string;
   enabled: boolean;
+  plugin?: string;
   model?: string;
   effort?: string;
   allowedTools?: string[];
   color?: string;
   invocation?: string;
+  invocationMode?: string;
   body?: string;
   configuredModel?: string;
   configuredEffort?: string;
@@ -708,6 +710,7 @@ export interface SkillRootSkillView {
   description: string;
   scope: string;
   runAs: string;
+  plugin?: string;
   model?: string;
   effort?: string;
   allowedTools?: string[];

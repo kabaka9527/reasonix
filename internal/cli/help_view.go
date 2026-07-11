@@ -117,9 +117,20 @@ func skillHelpItems(skills []skill.Skill) []compItem {
 		if s.RunAs == skill.RunSubagent {
 			hint = "subagent · " + hint
 		}
-		items = append(items, compItem{label: "/" + s.Name, hint: hint})
+		items = append(items, compItem{label: "/" + s.SlashName(), hint: skillCommandHint(s, hint)})
 	}
 	return items
+}
+
+func skillCommandHint(s skill.Skill, hint string) string {
+	if s.Plugin == "" {
+		return hint
+	}
+	source := "plugin " + s.Plugin
+	if hint == "" {
+		return source
+	}
+	return source + " · " + hint
 }
 
 func promptHelpItems(prompts []plugin.Prompt) []compItem {

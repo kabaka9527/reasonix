@@ -26,6 +26,7 @@ import (
 	"reasonix/internal/memory"
 	"reasonix/internal/netclient"
 	"reasonix/internal/plugin"
+	"reasonix/internal/pluginpkg"
 	"reasonix/internal/provider"
 	"reasonix/internal/sandbox"
 	"reasonix/internal/tool"
@@ -1127,6 +1128,78 @@ api_key_env = "REASONIX_TEST_KEY_UNSET"
 	}
 	if !strings.Contains(sys, "projskill") || !strings.Contains(sys, "explore") {
 		t.Fatalf("skill names missing from index:\n%s", sys)
+	}
+}
+
+func TestBuildKeepsPluginSkillModelNameBareAndSlashNameQualified(t *testing.T) {
+	dir := robustTempDir(t)
+	home := robustTempDir(t)
+	reasonixHome := filepath.Join(home, ".reasonix")
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("REASONIX_HOME", reasonixHome)
+	t.Chdir(dir)
+	writeFile(t, dir, "reasonix.toml", `
+default_model = "test-model"
+
+[agent]
+system_prompt = "BASE"
+
+[[providers]]
+name = "test-model"
+kind = "openai"
+base_url = "https://example.invalid"
+model = "x"
+api_key_env = "REASONIX_TEST_KEY_UNSET"
+`)
+	pluginRoot := filepath.Join(reasonixHome, "plugins", "superpowers")
+	writeFile(t, pluginRoot, pluginpkg.CodexManifest, `{"name":"superpowers","skills":"skills"}`)
+	writeFile(t, pluginRoot, "skills/plan/SKILL.md", "---\ndescription: Plugin plan\n---\nPlugin body")
+	if err := pluginpkg.Upsert(reasonixHome, pluginpkg.InstalledPlugin{
+		Name: "superpowers", Root: "plugins/superpowers", ManifestKind: "codex", Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ctrl, err := Build(context.Background(), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ctrl.Close()
+
+	var modelPlan bool
+	for _, sk := range ctrl.Skills() {
+		if sk.Name == "plan" {
+			modelPlan = true
+		}
+	}
+	if !modelPlan {
+		t.Fatalf("model skill plan missing: %+v", ctrl.Skills())
+	}
+	var qualified bool
+	for _, sk := range ctrl.SlashSkills() {
+		if sk.SlashName() == "superpowers:plan" {
+			qualified = true
+		}
+	}
+	if !qualified {
+		t.Fatalf("qualified slash skill missing: %+v", ctrl.SlashSkills())
+	}
+	if sent, ok := ctrl.RunSkill("/superpowers:plan now"); !ok || !strings.Contains(sent, "Plugin body") {
+		t.Fatalf("qualified RunSkill = %q, %v", sent, ok)
+	}
+	sys := systemMessage(ctrl.History())
+	if !strings.Contains(sys, "- plan") || strings.Contains(sys, "superpowers:plan") {
+		t.Fatalf("model skill index changed identifiers:\n%s", sys)
+	}
+	var slashDescription string
+	for _, entry := range ctrl.ToolContractEntries() {
+		if entry.Name == "slash_command" {
+			slashDescription = entry.Description
+		}
+	}
+	if !strings.Contains(slashDescription, "superpowers:plan") || strings.Contains(slashDescription, "Available: plan") {
+		t.Fatalf("slash command description = %q", slashDescription)
 	}
 }
 

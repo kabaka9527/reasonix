@@ -108,11 +108,11 @@ export function SubagentsSettingsPage({ s }: { s: SettingsView }) {
   // from configured custom paths remain visible, but their external ownership
   // is preserved: they are read-only here and managed from the Skills page.
   const custom = useMemo(
-    () => filtered.filter((sk) => (sk.scope === "project" || sk.scope === "global") && sk.invocation === "manual"),
+    () => filtered.filter((sk) => (sk.scope === "project" || sk.scope === "global") && sk.invocationMode === "manual"),
     [filtered],
   );
   const external = useMemo(
-    () => filtered.filter((sk) => sk.scope === "custom" && sk.invocation === "manual"),
+    () => filtered.filter((sk) => sk.scope === "custom" && sk.invocationMode === "manual"),
     [filtered],
   );
 

@@ -35,6 +35,13 @@ func mergeInstalledPluginPackages(cfg *Config, root string) []string {
 			if !stringSliceContainsPath(cfg.Skills.Paths, skillRoot) {
 				cfg.Skills.Paths = append(cfg.Skills.Paths, skillRoot)
 			}
+			if cfg.pluginPackageSkillOwners == nil {
+				cfg.pluginPackageSkillOwners = map[string][]string{}
+			}
+			key := CanonicalSkillPath(skillRoot)
+			if !containsString(cfg.pluginPackageSkillOwners[key], item.Installed.Name) {
+				cfg.pluginPackageSkillOwners[key] = append(cfg.pluginPackageSkillOwners[key], item.Installed.Name)
+			}
 		}
 		for name, srv := range pkg.Manifest.MCPServers {
 			if pluginNameExists(cfg.Plugins, name) {
@@ -60,6 +67,20 @@ func mergeInstalledPluginPackages(cfg *Config, root string) []string {
 		}
 	}
 	return warnings
+}
+
+// PluginPackageSkillOwners returns installed plugin package names keyed by
+// canonical skill-root path. Multiple linked installs may intentionally point
+// at the same root under different package names.
+func (c *Config) PluginPackageSkillOwners() map[string][]string {
+	if c == nil || len(c.pluginPackageSkillOwners) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(c.pluginPackageSkillOwners))
+	for path, owners := range c.pluginPackageSkillOwners {
+		out[path] = append([]string(nil), owners...)
+	}
+	return out
 }
 
 // pluginPackageCommandRoots returns the command directories contributed by

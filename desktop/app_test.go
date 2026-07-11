@@ -6499,7 +6499,7 @@ func TestCapabilitiesIncludesInstalledPlugins(t *testing.T) {
 	if len(plugins) != 1 || plugins[0].Name != "superpowers" || plugins[0].Skills != 1 {
 		t.Fatalf("Capabilities().Plugins = %+v", plugins)
 	}
-	if len(plugins[0].SkillDetails) != 1 || plugins[0].SkillDetails[0].Invocation != "/plan" {
+	if len(plugins[0].SkillDetails) != 1 || plugins[0].SkillDetails[0].Invocation != "/superpowers:plan" {
 		t.Fatalf("Capabilities().Plugins skill details = %+v", plugins[0].SkillDetails)
 	}
 }

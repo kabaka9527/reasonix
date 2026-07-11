@@ -143,6 +143,7 @@ type Capabilities interface {
 	Commands() []command.Command
 	ReloadCommands(ctx context.Context) error
 	Skills() []skill.Skill
+	SlashSkills() []skill.Skill
 	AllSkills() []skill.Skill
 	DisabledSkills() []skill.Skill
 	SkillEnabled(name string) bool

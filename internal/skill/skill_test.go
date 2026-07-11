@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -78,6 +79,85 @@ func TestListPrecedenceProjectOverGlobal(t *testing.T) {
 	}
 	if _, ok := find(list, "onlyglobal"); !ok {
 		t.Fatal("global-only skill should be discovered")
+	}
+}
+
+func TestPluginSkillsUseQualifiedSlashNamesWithoutChangingModelIndex(t *testing.T) {
+	home := t.TempDir()
+	alpha := t.TempDir()
+	beta := t.TempDir()
+	writeSkill(t, alpha, "plan/SKILL.md", "---\ndescription: alpha plan\n---\nALPHA")
+	writeSkill(t, beta, "plan/SKILL.md", "---\ndescription: beta plan\n---\nBETA")
+	writeSkill(t, beta, "review/SKILL.md", "---\ndescription: beta review\n---\nREVIEW")
+
+	st := New(Options{
+		HomeDir:         home,
+		CustomPaths:     []string{alpha, beta},
+		PluginPaths:     map[string][]string{config.CanonicalSkillPath(alpha): {"alpha"}, config.CanonicalSkillPath(beta): {"beta"}},
+		DisableBuiltins: true,
+	})
+
+	modelSkills := st.List()
+	if len(modelSkills) != 2 || modelSkills[0].Name != "plan" || modelSkills[1].Name != "review" {
+		t.Fatalf("model skills = %+v", modelSkills)
+	}
+	if got := IndexBlock(modelSkills); strings.Contains(got, "alpha:plan") || strings.Contains(got, "beta:plan") {
+		t.Fatalf("model index must keep bare run_skill identifiers:\n%s", got)
+	}
+	withoutPluginMetadata := append([]Skill(nil), modelSkills...)
+	for i := range withoutPluginMetadata {
+		withoutPluginMetadata[i].Plugin = ""
+	}
+	if got, want := IndexBlock(modelSkills), IndexBlock(withoutPluginMetadata); got != want {
+		t.Fatalf("plugin ownership changed cache-stable model index:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+
+	slashSkills := st.SlashList()
+	gotNames := make([]string, 0, len(slashSkills))
+	for _, sk := range slashSkills {
+		gotNames = append(gotNames, sk.SlashName())
+	}
+	wantNames := []string{"alpha:plan", "beta:plan", "beta:review"}
+	if !slices.Equal(gotNames, wantNames) {
+		t.Fatalf("slash skills = %v, want %v", gotNames, wantNames)
+	}
+	if _, ok := st.ReadSlash("plan"); ok {
+		t.Fatal("ambiguous short plugin skill must not resolve")
+	}
+	if sk, ok := st.ReadSlash("/beta:plan"); !ok || sk.Body != "BETA" || sk.Name != "plan" {
+		t.Fatalf("qualified beta skill = %+v, %v", sk, ok)
+	}
+	if sk, ok := st.Read("plan"); !ok || sk.Body != "ALPHA" || sk.Name != "plan" {
+		t.Fatalf("run_skill bare winner changed = %+v, %v", sk, ok)
+	}
+}
+
+func TestPluginSkillShortAliasIsHiddenAndProjectSkillKeepsShortName(t *testing.T) {
+	home := t.TempDir()
+	project := t.TempDir()
+	pluginRoot := t.TempDir()
+	writeSkill(t, pluginRoot, "plan/SKILL.md", "---\ndescription: plugin plan\n---\nPLUGIN")
+
+	st := New(Options{
+		HomeDir:         home,
+		ProjectRoot:     project,
+		CustomPaths:     []string{pluginRoot},
+		PluginPaths:     map[string][]string{config.CanonicalSkillPath(pluginRoot): {"superpowers"}},
+		DisableBuiltins: true,
+	})
+	if sk, ok := st.ReadSlash("plan"); !ok || sk.Body != "PLUGIN" {
+		t.Fatalf("unambiguous short compatibility alias = %+v, %v", sk, ok)
+	}
+	if got := st.SlashList(); len(got) != 1 || got[0].SlashName() != "superpowers:plan" {
+		t.Fatalf("visible plugin skills = %+v", got)
+	}
+
+	writeSkill(t, project, ".reasonix/skills/plan/SKILL.md", "---\ndescription: project plan\n---\nPROJECT")
+	if sk, ok := st.ReadSlash("plan"); !ok || sk.Body != "PROJECT" || sk.Plugin != "" {
+		t.Fatalf("project short skill = %+v, %v", sk, ok)
+	}
+	if sk, ok := st.ReadSlash("superpowers:plan"); !ok || sk.Body != "PLUGIN" {
+		t.Fatalf("qualified plugin skill beside project winner = %+v, %v", sk, ok)
 	}
 }
 

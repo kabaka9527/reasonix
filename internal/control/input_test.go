@@ -331,6 +331,27 @@ func waitForTurnEvents(t *testing.T, events <-chan event.Event) []event.Event {
 	}
 }
 
+func TestRunSkillUsesQualifiedPluginNameAndHiddenShortCompatibility(t *testing.T) {
+	home := t.TempDir()
+	pluginRoot := t.TempDir()
+	writeControlSkill(t, pluginRoot, "plan/SKILL.md", "---\ndescription: Plugin plan\n---\nPlugin body")
+	store := skill.New(skill.Options{
+		HomeDir: home, CustomPaths: []string{pluginRoot},
+		PluginPaths: map[string][]string{pluginRoot: {"superpowers"}}, DisableBuiltins: true,
+	})
+	c := New(Options{SkillStore: store, Skills: store.List()})
+
+	if visible := c.SlashSkills(); len(visible) != 1 || visible[0].SlashName() != "superpowers:plan" {
+		t.Fatalf("SlashSkills() = %+v", visible)
+	}
+	for _, input := range []string{"/superpowers:plan now", "/plan now"} {
+		sent, ok := c.RunSkill(input)
+		if !ok || !strings.Contains(sent, "Plugin body") || !strings.Contains(sent, "Arguments: now") {
+			t.Fatalf("RunSkill(%q) = %q, %v", input, sent, ok)
+		}
+	}
+}
+
 func writeControlSkill(t *testing.T, root, rel, body string) {
 	t.Helper()
 	path := filepath.Join(root, rel)

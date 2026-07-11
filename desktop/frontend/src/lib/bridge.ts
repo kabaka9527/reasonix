@@ -996,15 +996,15 @@ function makeMockApp(): AppBindings {
   const capSkills: SkillView[] = [
     {
       name: "explore", description: "Investigate the codebase in an isolated subagent", scope: "builtin", runAs: "subagent", enabled: true,
-      allowedTools: ["read_file", "ls", "glob", "grep", "code_index"], invocation: "auto",
+      allowedTools: ["read_file", "ls", "glob", "grep", "code_index"], invocation: "/explore", invocationMode: "auto",
       configuredModel: "deepseek/deepseek-v4-pro", configuredEffort: "high",
     },
-    { name: "research", description: "Combine web_fetch + code reading in an isolated subagent", scope: "builtin", runAs: "subagent", enabled: true, allowedTools: ["read_file", "ls", "glob", "grep", "code_index", "web_fetch"], invocation: "auto" },
-    { name: "review", description: "Review the staged diff", scope: "project", runAs: "inline", enabled: false },
-    { name: "init", description: "Scaffold a REASONIX.md for this repo", scope: "builtin", runAs: "inline", enabled: true },
+    { name: "research", description: "Combine web_fetch + code reading in an isolated subagent", scope: "builtin", runAs: "subagent", enabled: true, allowedTools: ["read_file", "ls", "glob", "grep", "code_index", "web_fetch"], invocation: "/research", invocationMode: "auto" },
+    { name: "review", description: "Review the staged diff", scope: "project", runAs: "inline", enabled: false, invocation: "/review" },
+    { name: "init", description: "Scaffold a REASONIX.md for this repo", scope: "builtin", runAs: "inline", enabled: true, invocation: "/init" },
     {
       name: "my-formatter", description: "Formats code the way I like it", scope: "global", runAs: "subagent", enabled: true,
-      model: "deepseek-pro", effort: "high", allowedTools: ["read_file", "edit_file"], color: "amber", invocation: "manual",
+      model: "deepseek-pro", effort: "high", allowedTools: ["read_file", "edit_file"], color: "amber", invocation: "/my-formatter", invocationMode: "manual",
       body: "You are a code formatting assistant. Reformat the given file to match project style without changing behavior.",
     },
   ];
@@ -2895,7 +2895,7 @@ function makeMockApp(): AppBindings {
       capSkills.push({
         name, description: input.description, scope: input.scope === "project" ? "project" : "global",
         runAs: "subagent", enabled: true, model: input.model, effort: input.effort,
-        allowedTools: input.allowedTools, color: input.color, invocation: "manual",
+        allowedTools: input.allowedTools, color: input.color, invocation: `/${name}`, invocationMode: "manual",
       });
       return `~/.reasonix/skills/${name}/SKILL.md`;
     },

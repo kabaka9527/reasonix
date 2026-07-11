@@ -464,7 +464,7 @@ console.log("capabilities panel plugin actions");
             commands: 2,
             hooks: 1,
             mcpServers: 1,
-            skillDetails: [{ name: "plan", description: "Plan work before implementation.", invocation: "/plan", runAs: "inline" }],
+            skillDetails: [{ name: "plan", description: "Plan work before implementation.", invocation: "/superpowers:plan", runAs: "inline" }],
             commandDetails: [{
               name: "plan",
               description: "Plugin planning prompt.",
@@ -568,7 +568,7 @@ console.log("capabilities panel plugin actions");
   });
   await waitFor("plugin update action", () => Boolean(findButton("Update")));
   ok(document.body.textContent?.includes("How to use") ?? false, "expanded plugin details explain how to use the plugin");
-  ok(document.body.textContent?.includes("/plan") ?? false, "expanded plugin details list exported skill invocations");
+  ok(document.body.textContent?.includes("/superpowers:plan") ?? false, "expanded plugin details list qualified skill invocations");
   ok(document.body.textContent?.includes("/superpowers:plan") ?? false, "plugin details show the canonical qualified invocation");
   ok(document.body.textContent?.includes("qualified name is occupied by a user or project command") ?? false, "occupied canonical command explains the winning source");
   ok(document.body.textContent?.includes("SessionStart") ?? false, "expanded plugin details list exported hooks");

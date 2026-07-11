@@ -53,7 +53,7 @@ func TestCreateSubagentProfileWritesManualInvocationSubagentSkill(t *testing.T) 
 	if found == nil {
 		t.Fatalf("created profile missing from SkillsSettings: %+v", views)
 	}
-	if found.RunAs != "subagent" || found.Invocation != "manual" || found.Color != "amber" {
+	if found.RunAs != "subagent" || found.Invocation != "/my-formatter" || found.InvocationMode != "manual" || found.Color != "amber" {
 		t.Fatalf("profile fields wrong: %+v", found)
 	}
 }
@@ -164,7 +164,7 @@ func TestUpdateSubagentProfileOverwritesFields(t *testing.T) {
 	if found == nil {
 		t.Fatal("editable-agent missing after update")
 	}
-	if found.Description != "v2" || found.Color != "blue" || found.Model != "deepseek/deepseek-pro" || found.Invocation != "manual" || found.RunAs != "subagent" {
+	if found.Description != "v2" || found.Color != "blue" || found.Model != "deepseek/deepseek-pro" || found.Invocation != "/editable-agent" || found.InvocationMode != "manual" || found.RunAs != "subagent" {
 		t.Fatalf("update did not apply as expected: %+v", found)
 	}
 	if len(found.AllowedTools) != 1 || found.AllowedTools[0] != "read_file" {

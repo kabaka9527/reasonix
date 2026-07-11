@@ -147,7 +147,7 @@ func applyPluginPackageDetails(view *PluginView, pkg pluginpkg.Package, warnings
 			Name:        sk.Name,
 			Description: sk.Description,
 			Path:        sk.Path,
-			Invocation:  sk.Invocation,
+			Invocation:  "/" + view.Name + ":" + sk.Name,
 			RunAs:       sk.RunAs,
 		})
 	}

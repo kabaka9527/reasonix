@@ -30,6 +30,13 @@ func (s *skillSet) list() []skill.Skill {
 	return s.enabled
 }
 
+func (s *skillSet) slashList() []skill.Skill {
+	if s.store != nil {
+		return s.store.SlashList()
+	}
+	return skill.VisibleSlashSkills(s.enabled)
+}
+
 // listAll returns every discoverable skill (including disabled), preferring the
 // live store, for management surfaces that re-enable a hidden skill.
 func (s *skillSet) listAll() []skill.Skill {
@@ -42,17 +49,11 @@ func (s *skillSet) listAll() []skill.Skill {
 	return s.enabled
 }
 
-// byName resolves an enabled skill by name, preferring the live store.
-func (s *skillSet) byName(name string) (skill.Skill, bool) {
+func (s *skillSet) bySlashName(name string) (skill.Skill, bool) {
 	if s.store != nil {
-		return s.store.Read(name)
+		return s.store.ReadSlash(name)
 	}
-	for _, sk := range s.enabled {
-		if sk.Name == name {
-			return sk, true
-		}
-	}
-	return skill.Skill{}, false
+	return skill.ResolveSlashSkill(s.enabled, name)
 }
 
 // discovered returns the construction-time enabled snapshot (not the live store),

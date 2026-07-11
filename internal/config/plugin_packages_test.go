@@ -37,6 +37,10 @@ func TestLoadMergesInstalledPluginSkillRootsAndMCP(t *testing.T) {
 	if len(cfg.Skills.Paths) == 0 || cfg.Skills.Paths[len(cfg.Skills.Paths)-1] != filepath.Join(root, "skills") {
 		t.Fatalf("skills paths = %#v", cfg.Skills.Paths)
 	}
+	owners := cfg.PluginPackageSkillOwners()[CanonicalSkillPath(filepath.Join(root, "skills"))]
+	if len(owners) != 1 || owners[0] != "superpowers" {
+		t.Fatalf("plugin skill owners = %#v, want superpowers", owners)
+	}
 	var found bool
 	for _, p := range cfg.Plugins {
 		if p.Name == "helper" {

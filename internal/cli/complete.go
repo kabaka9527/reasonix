@@ -111,7 +111,7 @@ func (m *chatTUI) slashItems() []compItem {
 		if s.RunAs == skill.RunSubagent {
 			hint = "🧬 " + hint
 		}
-		items = append(items, compItem{label: "/" + s.Name, insert: "/" + s.Name + " ", hint: hint})
+		items = append(items, compItem{label: "/" + s.SlashName(), insert: "/" + s.SlashName() + " ", hint: skillCommandHint(s, hint)})
 	}
 	for _, p := range m.prompts() {
 		items = append(items, compItem{label: "/" + p.Name, insert: "/" + p.Name + " ", hint: p.Description})

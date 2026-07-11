@@ -94,7 +94,7 @@ export function CapabilitiesPanel({
     const q = skillQuery.trim().toLowerCase();
     if (!q) return view.skills;
     return view.skills.filter((sk) => {
-      const text = [sk.name, `/${sk.name}`, sk.description, sk.scope, sk.runAs].join(" ").toLowerCase();
+      const text = [sk.name, `/${sk.name}`, sk.invocation, sk.plugin, sk.description, sk.scope, sk.runAs].join(" ").toLowerCase();
       return text.includes(q);
     });
   }, [view, skillQuery]);
@@ -583,11 +583,12 @@ function SkillRootSkillsList({
   return (
     <div className="cap-source-skills">
       {visible.map((skill) => (
-        <div className="cap-source-skill" key={`${skill.scope}:${skill.name}`}>
+        <div className="cap-source-skill" key={`${skill.scope}:${skill.invocation || skill.name}`}>
           <div className="cap-source-skill__head">
-            <span className="cap-source-skill__name">/{skill.name}</span>
+            <span className="cap-source-skill__name">{skill.invocation || `/${skill.name}`}</span>
             <span className="cap-source-skill__badges">
               <span className={`cap-skill-badge cap-skill-badge--${skill.scope}`}>{skillScopeLabel(skill.scope, t)}</span>
+              {skill.plugin && <span className="cap-skill-badge">{t("slash.plugin", { name: skill.plugin })}</span>}
               {skill.runAs === "subagent" && <span className="cap-skill-badge cap-skill-badge--run">{t("caps.subagent")}</span>}
             </span>
           </div>
@@ -1474,9 +1475,10 @@ function SkillRow({
           <span className="cap-skill-card__head">
             <span className="cap-skill-card__icon">/</span>
             <span className="cap-skill-card__main">
-              <span className="cap-skill-card__command">{skill.name}</span>
+              <span className="cap-skill-card__command">{(skill.invocation || `/${skill.name}`).replace(/^\//, "")}</span>
               <span className="cap-skill-card__badges">
                 <span className={`cap-skill-badge cap-skill-badge--${skill.scope}`}>{skillScopeLabel(skill.scope, t)}</span>
+                {skill.plugin && <span className="cap-skill-badge">{t("slash.plugin", { name: skill.plugin })}</span>}
                 {skill.runAs === "subagent" && <span className="cap-skill-badge cap-skill-badge--run">{t("caps.subagent")}</span>}
                 {!skill.enabled && <span className="cap-skill-badge cap-skill-badge--off">{t("caps.skillDisabled")}</span>}
               </span>
@@ -2450,7 +2452,7 @@ export function SkillsSettingsPage() {
 		const q = skillQuery.trim().toLowerCase();
 		if (!q) return view.skills;
 		return view.skills.filter((sk) => {
-			const text = [sk.name, "/" + sk.name, sk.description, sk.scope, sk.runAs].join(" ").toLowerCase();
+			const text = [sk.name, "/" + sk.name, sk.invocation, sk.plugin, sk.description, sk.scope, sk.runAs].join(" ").toLowerCase();
 			return text.includes(q);
 		});
 	}, [view, skillQuery]);
