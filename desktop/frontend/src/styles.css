@@ -7261,6 +7261,14 @@ body > .mermaid-diagram--fullscreen {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 18%, var(--bg-elev));
 }
+/* Keyboard cursor only — not a committed multi-select answer. */
+.prompt-action--active:not(.prompt-action--selected) {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.prompt-action--active.prompt-action--selected {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 50%, transparent);
+}
 .prompt-action--danger:not(.prompt-action--selected) {
   border-color: color-mix(in srgb, var(--err) 22%, var(--border-soft));
 }

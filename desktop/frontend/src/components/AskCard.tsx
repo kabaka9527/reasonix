@@ -150,7 +150,12 @@ export function AskCard({
     if (selectedIndex === customRowIndex) {
       return Boolean(custom[q.id]?.trim());
     }
+    // Multi-select: answers come from checked options / typed custom, not the
+    // keyboard cursor alone.
     if (q.multi) return currentAnswered;
+    // Single-select: the keyboard cursor is authoritative for option rows so
+    // initial Enter and ArrowDown+Enter work without a prior click.
+    if (selectedIndex >= 0 && selectedIndex < optionCount) return true;
     return (sel[q.id]?.length ?? 0) > 0;
   };
 
@@ -267,6 +272,7 @@ export function AskCard({
         <>
           {q.options.map((o, index) => {
             const on = (sel[q.id] ?? []).includes(o.label);
+            const cursor = selectedIndex === index;
             return (
               <PromptAction
                 key={o.label}
@@ -274,7 +280,10 @@ export function AskCard({
                 label={o.label}
                 description={o.description}
                 onClick={() => selectRow(index)}
-                selected={selectedIndex === index || on}
+                // Single-select: cursor owns selection. Multi-select: selected
+                // means checked; active is the keyboard cursor only.
+                selected={q.multi ? on : cursor}
+                active={q.multi ? cursor : false}
                 disabled={submitting}
                 title={o.description || undefined}
               />

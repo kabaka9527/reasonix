@@ -199,5 +199,177 @@ console.log("\nask card layout");
   dom.window.close();
 }
 
+// Single-select: keyboard cursor is confirmable without a prior click.
+{
+  const dom = installDom();
+  const rootEl = document.getElementById("root");
+  if (!rootEl) throw new Error("missing root");
+  const root = createRoot(rootEl);
+  const answers: QuestionAnswer[][] = [];
+  const ask: WireAsk = {
+    id: "ask-keyboard-single",
+    questions: [
+      {
+        id: "choice",
+        prompt: "Pick one with the keyboard",
+        options: [
+          { label: "First", description: "Option one" },
+          { label: "Second", description: "Option two" },
+        ],
+      },
+    ],
+  };
+
+  await act(async () => {
+    root.render(
+      React.createElement(LocaleProvider, null,
+        React.createElement(AskCard, {
+          ask,
+          onAnswer: (_id: string, next: QuestionAnswer[]) => answers.push(next),
+          onDismiss: () => undefined,
+          onStop: () => undefined,
+        }),
+      ),
+    );
+    await flushTimers();
+  });
+
+  const optionButtons = [...document.querySelectorAll(".prompt-shelf__actions .prompt-action")] as HTMLElement[];
+  const confirm = document.querySelector(".decision-confirm-bar__confirm") as HTMLButtonElement;
+  eq(optionButtons[0]?.getAttribute("aria-selected"), "true", "initial keyboard cursor marks the first option");
+  eq(confirm.disabled, false, "initial option cursor enables confirm without a click");
+
+  await act(async () => {
+    document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+  eq(optionButtons[0]?.getAttribute("aria-selected"), "false", "ArrowDown moves the single-select cursor off the first row");
+  eq(optionButtons[1]?.getAttribute("aria-selected"), "true", "ArrowDown selects the second option visually");
+  eq(confirm.disabled, false, "ArrowDown keeps confirm enabled for the highlighted option");
+
+  await act(async () => {
+    document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+  eq(answers.length, 1, "ArrowDown+Enter submits the highlighted single-select option");
+  eq(answers[0]?.[0]?.selected?.[0], "Second", "submitted answer matches the keyboard cursor");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+// Single-select: initial Enter confirms the default-highlighted first option.
+{
+  const dom = installDom();
+  const rootEl = document.getElementById("root");
+  if (!rootEl) throw new Error("missing root");
+  const root = createRoot(rootEl);
+  const answers: QuestionAnswer[][] = [];
+  const ask: WireAsk = {
+    id: "ask-keyboard-initial-enter",
+    questions: [
+      {
+        id: "choice",
+        prompt: "Confirm the first option with Enter",
+        options: [
+          { label: "Alpha", description: "A" },
+          { label: "Beta", description: "B" },
+        ],
+      },
+    ],
+  };
+
+  await act(async () => {
+    root.render(
+      React.createElement(LocaleProvider, null,
+        React.createElement(AskCard, {
+          ask,
+          onAnswer: (_id: string, next: QuestionAnswer[]) => answers.push(next),
+          onDismiss: () => undefined,
+          onStop: () => undefined,
+        }),
+      ),
+    );
+    await flushTimers();
+  });
+
+  await act(async () => {
+    document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+  eq(answers.length, 1, "initial Enter submits without a prior click");
+  eq(answers[0]?.[0]?.selected?.[0], "Alpha", "initial Enter uses the first highlighted option");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+// Multi-select: keyboard cursor must not look like a checked answer.
+{
+  const dom = installDom();
+  const rootEl = document.getElementById("root");
+  if (!rootEl) throw new Error("missing root");
+  const root = createRoot(rootEl);
+  const ask: WireAsk = {
+    id: "ask-keyboard-multi",
+    questions: [
+      {
+        id: "picks",
+        prompt: "Cursor is not a check",
+        multi: true,
+        options: [
+          { label: "A", description: "Option A" },
+          { label: "B", description: "Option B" },
+        ],
+      },
+    ],
+  };
+
+  await act(async () => {
+    root.render(
+      React.createElement(LocaleProvider, null,
+        React.createElement(AskCard, {
+          ask,
+          onAnswer: () => undefined,
+          onDismiss: () => undefined,
+          onStop: () => undefined,
+        }),
+      ),
+    );
+    await flushTimers();
+  });
+
+  const optionButtons = [...document.querySelectorAll(".prompt-shelf__actions .prompt-action")] as HTMLElement[];
+  const confirm = document.querySelector(".decision-confirm-bar__confirm") as HTMLButtonElement;
+  eq(optionButtons[0]?.getAttribute("aria-selected"), "false", "multi-select cursor alone is not aria-selected");
+  eq(optionButtons[0]?.getAttribute("data-active"), "true", "multi-select marks the keyboard cursor with data-active");
+  eq(confirm.disabled, true, "multi-select confirm stays disabled until an option is checked");
+
+  await act(async () => {
+    document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+  eq(optionButtons[0]?.getAttribute("data-active"), null, "ArrowDown clears the previous multi-select cursor");
+  eq(optionButtons[1]?.getAttribute("data-active"), "true", "ArrowDown moves the multi-select cursor");
+  eq(optionButtons[1]?.getAttribute("aria-selected"), "false", "ArrowDown does not check the multi-select option");
+  eq(confirm.disabled, true, "ArrowDown alone does not enable multi-select confirm");
+
+  await act(async () => {
+    optionButtons[1].click();
+    await flushTimers();
+  });
+  eq(optionButtons[1]?.getAttribute("aria-selected"), "true", "click checks the multi-select option");
+  eq(confirm.disabled, false, "multi-select confirm enables after a real check");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
 if (failed > 0) process.exit(1);

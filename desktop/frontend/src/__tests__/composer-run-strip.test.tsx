@@ -295,6 +295,52 @@ console.log("\ncomposer run strip");
   dom.window.close();
 }
 
+// Two suspended tabs: tab A's wait must not subtract from tab B's model clock.
+//
+// Setup: B's turn started 5s before the test. While A stays suspended for ~3s,
+// wall time advances so B's turn age is ~8s when we resume B.
+// - Correct (scope reset): waitAccum ≈ B's own short pause only → ticker ~8s
+// - Bug (shared since): waitAccum ≈ full A+B pause (~3s) → ticker collapses to ~5s
+{
+  const dom = installDom();
+  const tabAStart = Date.now() - 60_000;
+  const tabBStart = Date.now() - 5_000;
+  const { root, rerender } = await renderComposer({
+    running: true,
+    turnStartAt: tabAStart,
+    sessionKey: "tab-a",
+    suspendedByDecision: true,
+    disabled: true,
+  });
+
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+  });
+
+  // pauseWorkClock stays true across the draft switch.
+  await rerender({
+    sessionKey: "tab-b",
+    turnStartAt: tabBStart,
+    suspendedByDecision: true,
+    disabled: true,
+  });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  });
+
+  await rerender({ suspendedByDecision: false, disabled: false });
+
+  const ticker = document.querySelector(".composer-run-strip__text")?.textContent ?? "";
+  ok(/ 7s| 8s| 9s/.test(ticker), `tab B includes wall time spent on suspended tab A in turn age only (got "${ticker}")`);
+  ok(!/ 4s| 5s| 6s/.test(ticker), "tab A's pause interval is not subtracted from tab B");
+  ok(!/ 5[5-9]s| 6[0-9]s/.test(ticker), "tab B does not show tab A's ~60s turn age as model time");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
 // Resize consistency: --composer-height always carries the logical height in
 // every writer (React render, live drag, keyboard), with the run strip's
 // reservation isolated in a CSS calc — so dragging a resized composer during a

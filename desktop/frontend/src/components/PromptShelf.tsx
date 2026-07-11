@@ -128,6 +128,8 @@ export function PromptAction({
   onHoverChange,
   primary = false,
   selected = false,
+  // Keyboard cursor without implying a committed answer (multi-select).
+  active = false,
   quiet = false,
   disabled = false,
   tone = "default",
@@ -145,6 +147,7 @@ export function PromptAction({
   onHoverChange?: (hovering: boolean) => void;
   primary?: boolean;
   selected?: boolean;
+  active?: boolean;
   quiet?: boolean;
   disabled?: boolean;
   // Danger options (deny / clear) use semantic color but are never default-selected.
@@ -157,9 +160,11 @@ export function PromptAction({
       type="button"
       role={role}
       aria-selected={role === "option" ? selected : undefined}
+      data-active={active ? "true" : undefined}
       className={[
         "prompt-action",
         primary || selected ? " prompt-action--selected" : "",
+        active ? " prompt-action--active" : "",
         quiet ? " prompt-action--quiet" : "",
         description ? " prompt-action--descriptive" : "",
         !hasCopy ? " prompt-action--key-only" : "",

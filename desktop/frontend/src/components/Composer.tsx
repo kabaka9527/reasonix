@@ -2491,16 +2491,27 @@ export function Composer({
   const approvalBarDisabled = Boolean(disabled) && !(pendingApprovalLabel && !suspendedByDecision);
   // Waiting on the user (approval/ask/decision) is not model work: pause the
   // ticker clock so elapsed time means "model time". Retries keep counting —
-  // they are system time, not user time. Accumulated via effect cleanup so
-  // leaving the waiting state re-renders with the corrected time immediately.
+  // they are system time, not user time. Scoped by draftKey + turnStartAt so
+  // switching between two suspended tabs cannot subtract tab A's wait from B.
   const [waitAccumMs, setWaitAccumMs] = useState(0);
+  const pauseSinceRef = useRef<number | null>(null);
   useEffect(() => {
+    pauseSinceRef.current = null;
     setWaitAccumMs(0);
-  }, [turnStartAt]);
+    if (pauseWorkClock) pauseSinceRef.current = Date.now();
+    // pauseWorkClock is read from the render that changed draft/turn so a
+    // still-suspended tab switch restarts the open interval for the new scope.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional scope-only reset
+  }, [draftKey, turnStartAt]);
   useEffect(() => {
-    if (!pauseWorkClock) return;
-    const since = Date.now();
-    return () => setWaitAccumMs((total) => total + (Date.now() - since));
+    if (pauseWorkClock) {
+      if (pauseSinceRef.current == null) pauseSinceRef.current = Date.now();
+      return;
+    }
+    if (pauseSinceRef.current == null) return;
+    const delta = Date.now() - pauseSinceRef.current;
+    pauseSinceRef.current = null;
+    if (delta > 0) setWaitAccumMs((total) => total + delta);
   }, [pauseWorkClock]);
   // Close menus/popovers while a decision surface owns the footer.
   useEffect(() => {
