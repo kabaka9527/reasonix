@@ -852,7 +852,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	}
 	// Custom slash commands (.reasonix/commands + user dir). Best-effort: a malformed
 	// file is skipped, and a load error never blocks the session.
-	cmds, _ := command.Load(config.CommandDirsForRoot(root)...)
+	cmds, _ := command.LoadRoots(config.CommandRootsForRoot(root)...)
 	addSlashCommandTool := func(includeSkills bool) {
 		// Expose loaded slash commands to the model via slash_command. In economy
 		// mode skills join this list only after the skills source is enabled.
@@ -868,6 +868,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			}
 		}
 		for _, cmd := range cmds {
+			if cmd.Hidden {
+				continue
+			}
 			cmd := cmd
 			slashEntries = append(slashEntries, command.SlashEntry{
 				Name:        cmd.Name,

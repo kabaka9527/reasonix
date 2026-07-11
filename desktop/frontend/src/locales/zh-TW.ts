@@ -283,7 +283,10 @@ export const zhTW: Record<DictKey, string> = {
   "caps.pluginSkillsTitle": "Skills",
   "caps.pluginSkillsHint": "用 /skills 瀏覽，直接呼叫，或在對話中說出工作流名稱。",
   "caps.pluginCommandsTitle": "Commands",
-  "caps.pluginCommandsHint": "斜線命令模板，輸入 /<名稱> 即可執行。",
+  "caps.pluginCommandsHint": "斜線命令模板，輸入 /<外掛名>:<命令名> 即可執行。",
+  "caps.pluginCommandShadowed": "已覆蓋",
+  "caps.pluginCommandQualifiedOccupiedByPlugin": "該限定名稱已被外掛 {plugin} 占用。",
+  "caps.pluginCommandQualifiedOccupiedByCustom": "該限定名稱已被使用者或專案命令占用。",
   "caps.pluginHooksTitle": "Hooks",
   "caps.pluginHooksHint": "Hooks 會在匹配的生命週期事件中自動觸發。",
   "caps.pluginMCPTitle": "MCP 伺服器",
@@ -1216,6 +1219,7 @@ export const zhTW: Record<DictKey, string> = {
 
   // 斜線選單標籤
   "slash.project": "專案",
+  "slash.plugin": "外掛 · {name}",
   "slash.mcp": "mcp",
   "slash.skill": "skill",
 

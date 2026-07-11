@@ -511,12 +511,19 @@ func TestServeLifecycle(t *testing.T) {
 func TestServeAdvertisesAndExpandsCustomCommands(t *testing.T) {
 	factory := &commandFactory{
 		seen: make(chan string, 1),
-		commands: []command.Command{{
-			Name:        "review",
-			Description: "Review the target",
-			ArgHint:     "path",
-			Body:        "Review $1",
-		}},
+		commands: []command.Command{
+			{
+				Name:        "review",
+				Description: "Review the target",
+				ArgHint:     "path",
+				Body:        "Review $1",
+			},
+			{
+				Name:   "plan",
+				Body:   "Plan $ARGUMENTS",
+				Hidden: true,
+			},
+		},
 	}
 	client, stop := startServer(t, factory)
 	defer stop()
@@ -529,6 +536,7 @@ func TestServeAdvertisesAndExpandsCustomCommands(t *testing.T) {
 	}
 
 	var advertised bool
+	var hiddenAdvertised bool
 	select {
 	case n := <-client.notifs:
 		var p struct {
@@ -541,6 +549,9 @@ func TestServeAdvertisesAndExpandsCustomCommands(t *testing.T) {
 			t.Fatalf("available commands update: %v", err)
 		}
 		for _, cmd := range p.Update.AvailableCommands {
+			if cmd.Name == "plan" {
+				hiddenAdvertised = true
+			}
 			if p.Update.SessionUpdate == "available_commands_update" &&
 				cmd.Name == "review" &&
 				cmd.Description == "Review the target" &&
@@ -554,6 +565,9 @@ func TestServeAdvertisesAndExpandsCustomCommands(t *testing.T) {
 	}
 	if !advertised {
 		t.Fatal("review command was not advertised")
+	}
+	if hiddenAdvertised {
+		t.Fatal("hidden compatibility command was advertised")
 	}
 
 	promptCh := client.callAsync("session/prompt", SessionPromptParams{

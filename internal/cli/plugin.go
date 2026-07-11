@@ -231,14 +231,14 @@ func pluginShowCommand(args []string) int {
 	skills, commands, hooks, mcp := pkg.CapabilityCounts()
 	fmt.Printf("name: %s\nversion: %s\nenabled: %t\nkind: %s\nroot: %s\nsource: %s\nskills: %d\ncommands: %d\nhooks: %d\nmcpServers: %d\n",
 		p.Name, p.Version, p.Enabled, p.ManifestKind, root, p.Source, skills, commands, hooks, mcp)
-	printPluginInventory(pkg.Inventory())
+	printPluginInventory(p.Name, pkg.Inventory())
 	for _, warning := range warnings {
 		fmt.Println("warning:", warning)
 	}
 	return 0
 }
 
-func printPluginInventory(inv pluginpkg.Inventory) {
+func printPluginInventory(pluginName string, inv pluginpkg.Inventory) {
 	if len(inv.Skills) > 0 {
 		fmt.Println("usage:")
 		fmt.Println("  skills are available in interactive sessions; run /skills to browse them, or invoke a skill directly with /<name>.")
@@ -266,10 +266,7 @@ func printPluginInventory(inv pluginpkg.Inventory) {
 			if desc == "" {
 				desc = "(no description)"
 			}
-			invocation := cmd.Invocation
-			if invocation == "" {
-				invocation = "/" + cmd.Name
-			}
+			invocation := "/" + pluginName + ":" + cmd.Name
 			if cmd.ArgHint != "" {
 				fmt.Printf("  %s %s\t%s\n", invocation, cmd.ArgHint, desc)
 			} else {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"reasonix/internal/command"
 	"reasonix/internal/config"
 	"reasonix/internal/installsource"
 	"reasonix/internal/pluginpkg"
@@ -48,11 +49,13 @@ type PluginSkillView struct {
 }
 
 type PluginCommandView struct {
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	ArgHint     string `json:"argHint,omitempty"`
-	Path        string `json:"path,omitempty"`
-	Invocation  string `json:"invocation,omitempty"`
+	Name             string `json:"name"`
+	Description      string `json:"description,omitempty"`
+	ArgHint          string `json:"argHint,omitempty"`
+	Path             string `json:"path,omitempty"`
+	Invocation       string `json:"invocation,omitempty"`
+	Shadowed         bool   `json:"shadowed,omitempty"`
+	ShadowedByPlugin string `json:"shadowedByPlugin,omitempty"`
 }
 
 type PluginHookView struct {
@@ -75,6 +78,13 @@ func (a *App) Plugins() []PluginView {
 	if err != nil {
 		return []PluginView{{Error: err.Error()}}
 	}
+	a.mu.RLock()
+	ctrl := a.activeCtrlLocked()
+	a.mu.RUnlock()
+	var activeCommands []command.Command
+	if ctrl != nil {
+		activeCommands = ctrl.Commands()
+	}
 	out := make([]PluginView, 0, len(st.Plugins))
 	for _, p := range st.Plugins {
 		view := PluginView{
@@ -88,12 +98,33 @@ func (a *App) Plugins() []PluginView {
 		}
 		if pkg, warnings, err := pluginpkg.ParseDir(view.Root); err == nil {
 			applyPluginPackageDetails(&view, pkg, warnings)
+			decoratePluginCommandConflicts(&view, activeCommands)
 		} else {
 			view.Error = err.Error()
 		}
 		out = append(out, view)
 	}
 	return out
+}
+
+func decoratePluginCommandConflicts(view *PluginView, commands []command.Command) {
+	if view == nil || !view.Enabled || len(view.CommandDetails) == 0 || len(commands) == 0 {
+		return
+	}
+	byName := make(map[string]command.Command, len(commands))
+	for _, cmd := range commands {
+		byName[cmd.Name] = cmd
+	}
+	for i := range view.CommandDetails {
+		detail := &view.CommandDetails[i]
+		qualified := view.Name + ":" + detail.Name
+		winner, ok := byName[qualified]
+		if !ok || winner.Plugin == view.Name && winner.ShortName == detail.Name && !winner.Hidden {
+			continue
+		}
+		detail.Shadowed = true
+		detail.ShadowedByPlugin = winner.Plugin
+	}
 }
 
 func applyPluginPackageDetails(view *PluginView, pkg pluginpkg.Package, warnings []string) {
@@ -107,7 +138,7 @@ func applyPluginPackageDetails(view *PluginView, pkg pluginpkg.Package, warnings
 			Description: cmd.Description,
 			ArgHint:     cmd.ArgHint,
 			Path:        cmd.Path,
-			Invocation:  cmd.Invocation,
+			Invocation:  "/" + view.Name + ":" + cmd.Name,
 		})
 	}
 	view.SkillDetails = make([]PluginSkillView, 0, len(inv.Skills))

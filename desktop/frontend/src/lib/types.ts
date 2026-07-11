@@ -588,6 +588,7 @@ export interface CommandInfo {
   description: string;
   hint?: string;
   kind: "builtin" | "custom" | "mcp" | "skill";
+  plugin?: string;
 }
 
 export interface DirEntry {
@@ -753,6 +754,8 @@ export interface PluginCommandView {
   argHint?: string;
   path?: string;
   invocation?: string;
+  shadowed?: boolean;
+  shadowedByPlugin?: string;
 }
 export interface PluginHookView {
   event: string;

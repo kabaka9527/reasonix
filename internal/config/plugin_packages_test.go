@@ -69,8 +69,8 @@ func writeConfigTestFile(t *testing.T, path, body string) {
 
 // TestCommandDirsIncludePluginPackageCommands pins the plugin-commands wiring:
 // an enabled plugin package's command roots join command discovery at the
-// lowest priority (first entries, since command.Load lets a later dir win),
-// and a disabled package contributes nothing.
+// before user/project entries, retaining package ownership, while a disabled
+// package contributes nothing.
 func TestCommandDirsIncludePluginPackageCommands(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("REASONIX_HOME", home)
@@ -91,6 +91,10 @@ func TestCommandDirsIncludePluginPackageCommands(t *testing.T) {
 	want := filepath.Join(root, "commands")
 	if len(dirs) == 0 || dirs[0] != want {
 		t.Fatalf("CommandDirsForRoot = %#v, want plugin commands dir first (lowest priority): %s", dirs, want)
+	}
+	roots := CommandRootsForRoot(t.TempDir())
+	if len(roots) == 0 || roots[0].Path != want || roots[0].Plugin != "pwf" {
+		t.Fatalf("CommandRootsForRoot = %#v, want plugin ownership on first root", roots)
 	}
 
 	if err := pluginpkg.SetEnabled(home, "pwf", false); err != nil {

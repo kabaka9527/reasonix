@@ -1,6 +1,16 @@
-import { useT } from "../lib/i18n";
+import { useT, type Translator } from "../lib/i18n";
 import type { CommandInfo } from "../lib/types";
 import { VirtualMenu } from "./VirtualMenu";
+
+export function slashCommandKindTag(command: CommandInfo, t: Translator): string {
+  if (command.plugin) {
+    return t("slash.plugin", { name: command.plugin });
+  }
+  if (command.kind === "custom") return t("slash.project");
+  if (command.kind === "mcp") return t("slash.mcp");
+  if (command.kind === "skill") return t("slash.skill");
+  return "";
+}
 
 // SlashMenu is the "/" autocomplete dropdown above the composer. Presentational:
 // the Composer owns filtering, the active index, and key handling; this renders
@@ -18,15 +28,6 @@ export function SlashMenu({
   onHover: (i: number) => void;
 }) {
   const t = useT();
-  // builtin commands get no tag; custom (project) and mcp commands are labelled.
-  const kindTag = (kind: CommandInfo["kind"]) =>
-    kind === "custom"
-      ? t("slash.project")
-      : kind === "mcp"
-        ? t("slash.mcp")
-        : kind === "skill"
-          ? t("slash.skill")
-          : "";
   return (
     <VirtualMenu
       items={items}
@@ -46,7 +47,7 @@ export function SlashMenu({
           <span className="slashmenu__name">/{c.name}</span>
           {c.hint && <span className="slashmenu__hint">{c.hint}</span>}
           <span className="slashmenu__desc">{c.description}</span>
-          {kindTag(c.kind) && <span className="slashmenu__kind">{kindTag(c.kind)}</span>}
+          {slashCommandKindTag(c, t) && <span className="slashmenu__kind">{slashCommandKindTag(c, t)}</span>}
         </button>
       )}
     />
