@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ClipboardEvent, DragEvent, KeyboardEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
-import { ArrowUp, Check, ChevronDown, ChevronUp, ChevronsUpDown, CornerDownRight, Eye, FileText, Folder, Gauge, List, MessageSquare, Search, Shield, ShieldAlert, ShieldCheck, SlidersHorizontal, Square, Target, Trash2, X } from "lucide-react";
+import { ArrowUp, Check, ChevronDown, ChevronUp, ChevronsUpDown, ClipboardCheck, CornerDownRight, Eye, FileText, Folder, Gauge, List, MessageSquare, Scale, Search, Shield, ShieldAlert, ShieldCheck, SlidersHorizontal, Square, Target, Trash2, X } from "lucide-react";
 import { asArray } from "../lib/array";
 import { filterAtMatches } from "../lib/atMatches";
 import { DedupIndex, sha256 } from "../lib/attachDedup";
@@ -2507,7 +2507,7 @@ export function Composer({
     : tokenMode === "delivery"
       ? "composer.runtimeProfileDeliveryDesc"
       : "composer.runtimeProfileBalancedDesc";
-  const RuntimeProfileIcon = tokenMode === "economy" ? Gauge : tokenMode === "delivery" ? ShieldCheck : SlidersHorizontal;
+  const RuntimeProfileIcon = tokenMode === "economy" ? Gauge : tokenMode === "delivery" ? ClipboardCheck : Scale;
   const runtimeProfileTriggerLabel = t("composer.runtimeProfileTrigger", { mode: t(runtimeProfileShortKey) });
   const effortLevels = asArray(effort?.levels);
   const currentEffort = effort?.current || "auto";
@@ -2716,8 +2716,8 @@ export function Composer({
           <div className="composer-access-menu__label">{t("composer.runtimeProfileTitle")}</div>
           {([
             ["economy", Gauge, "composer.runtimeProfileEconomy", "composer.runtimeProfileEconomyDesc"],
-            ["full", SlidersHorizontal, "composer.runtimeProfileBalanced", "composer.runtimeProfileBalancedDesc"],
-            ["delivery", ShieldCheck, "composer.runtimeProfileDelivery", "composer.runtimeProfileDeliveryDesc"],
+            ["full", Scale, "composer.runtimeProfileBalanced", "composer.runtimeProfileBalancedDesc"],
+            ["delivery", ClipboardCheck, "composer.runtimeProfileDelivery", "composer.runtimeProfileDeliveryDesc"],
           ] as const).map(([profile, Icon, titleKey, descKey]) => (
             <button
               key={profile}

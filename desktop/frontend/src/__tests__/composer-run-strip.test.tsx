@@ -165,6 +165,7 @@ console.log("\ncomposer run strip");
   if (!profileTrigger) throw new Error("work mode trigger did not render");
   ok(profileTrigger.textContent?.includes("Work mode") === true, "balanced work mode stays visible as a standalone control");
   ok(profileTrigger.textContent?.includes("Balanced") === true, "standalone control shows the current profile");
+  ok(profileTrigger.querySelector(".lucide-scale") !== null, "balanced work mode uses a distinct balance icon");
 
   await act(async () => {
     profileTrigger.click();
@@ -177,6 +178,7 @@ console.log("\ncomposer run strip");
   const delivery = Array.from(profileMenu?.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]') ?? [])
     .find((item) => item.textContent?.includes("Delivery"));
   if (!delivery) throw new Error("delivery work mode option did not render");
+  ok(delivery.querySelector(".lucide-clipboard-check") !== null, "delivery work mode uses an acceptance icon instead of a permission shield");
   await act(async () => {
     delivery.click();
     await flushTimers();
