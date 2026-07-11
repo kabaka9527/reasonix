@@ -516,3 +516,25 @@ func TestInventoryTextCommandsOnly(t *testing.T) {
 		t.Fatalf("output = %q, must not claim an empty inventory after listing commands", out)
 	}
 }
+
+// TestParseClaudePluginAdoptsDeeplyNestedCommands pins that adoption gating
+// shares the runtime loader's discovery semantics with no depth ceiling: a
+// plugin whose only command sits six levels deep is still adopted.
+func TestParseClaudePluginAdoptsDeeplyNestedCommands(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, ClaudeManifest), `{"name": "deep-pack"}`)
+	writeTestFile(t, filepath.Join(root, "skills", "s", "SKILL.md"), "---\ndescription: s\n---\nbody")
+	writeTestFile(t, filepath.Join(root, "commands", "a", "b", "c", "d", "e", "commit.md"), "---\ndescription: deep commit\n---\nCommit")
+
+	pkg, _, err := ParseDir(root)
+	if err != nil {
+		t.Fatalf("ParseDir: %v", err)
+	}
+	if got := pkg.CommandRoots(); len(got) != 1 || got[0] != filepath.Join(root, "commands") {
+		t.Fatalf("CommandRoots = %#v, want commands adopted for the deeply nested layout", got)
+	}
+	inv := pkg.Inventory()
+	if len(inv.Commands) != 1 || inv.Commands[0].Name != "a:b:c:d:e:commit" {
+		t.Fatalf("inventory commands = %#v, want the namespaced deep command", inv.Commands)
+	}
+}

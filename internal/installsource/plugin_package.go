@@ -31,7 +31,7 @@ func (t *installSourceTool) planGitHubPluginPackage(ctx context.Context, req req
 	// capability directories (skills/, commands/) or their warnings, so it
 	// under-reports the capability set — and the plan the user approves must
 	// describe exactly what apply installs.
-	root, cleanup, err := t.pluginSource(ctx, req.Source, modeForPlugin(req.Mode))
+	root, commit, cleanup, err := t.pluginSource(ctx, req.Source, modeForPlugin(req.Mode))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -42,13 +42,17 @@ func (t *installSourceTool) planGitHubPluginPackage(ctx context.Context, req req
 	}
 	act := t.pluginPackageAction(req, pkg, req.Source)
 	act.Source = req.Source
+	// The commit joins the action and therefore the plan ID, so the approval
+	// fingerprints the exact snapshot; apply pins to it.
+	act.Commit = commit
 	return []action{act}, warnings, nil
 }
 
 // pluginSource resolves a plugin source to an on-disk tree. Both the plan and
 // apply phases go through this single function so their views can never
-// diverge (the P1 approval-contract guarantee).
-func (t *installSourceTool) pluginSource(ctx context.Context, source, mode string) (string, func(), error) {
+// diverge (the approval-contract guarantee); for git sources it also reports
+// the resolved commit SHA ("" for local directories).
+func (t *installSourceTool) pluginSource(ctx context.Context, source, mode string) (string, string, func(), error) {
 	if t.preparePlugin != nil {
 		return t.preparePlugin(ctx, source, mode)
 	}
@@ -113,11 +117,19 @@ func (t *installSourceTool) applyInstallPluginPackage(ctx context.Context, req r
 		return newErr(ErrInvalidManifest, "invalid plugin name %q", act.Name)
 	}
 	target := pluginpkg.InstallRoot(t.reasonixHome, act.Name)
-	sourceRoot, cleanup, err := t.pluginSource(ctx, act.Source, act.Mode)
+	sourceRoot, commit, cleanup, err := t.pluginSource(ctx, act.Source, act.Mode)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
+	if act.Commit != "" && commit != act.Commit {
+		// The source moved between the approved plan and this resolution; pin
+		// the clone back to the approved snapshot so what installs is exactly
+		// what was reviewed.
+		if err := checkoutPluginCommit(ctx, sourceRoot, act.Commit); err != nil {
+			return newErr(ErrApprovalDenied, "plugin source changed since the approved plan (approved commit %s, found %s) and the approved snapshot could not be restored: %v; re-run without apply to review the new plan", act.Commit, commit, err)
+		}
+	}
 	pkg, warnings, err := pluginpkg.ParseDir(sourceRoot)
 	if err != nil {
 		return newErr(ErrInvalidManifest, "%v", err)
@@ -160,7 +172,7 @@ func (t *installSourceTool) applyInstallPluginPackage(ctx context.Context, req r
 	return nil
 }
 
-func (t *installSourceTool) preparePluginSource(ctx context.Context, source, mode string) (string, func(), error) {
+func (t *installSourceTool) preparePluginSource(ctx context.Context, source, mode string) (string, string, func(), error) {
 	source = strings.TrimSpace(source)
 	if strings.HasPrefix(source, "git:github.com/") {
 		source = "https://github.com/" + strings.TrimPrefix(source, "git:github.com/")
@@ -168,11 +180,11 @@ func (t *installSourceTool) preparePluginSource(ctx context.Context, source, mod
 	if isURL(source) {
 		src, ok := parseGitHubRepoSource(source)
 		if !ok {
-			return "", func() {}, newErr(ErrUnsupportedKind, "plugin URL %q is not a GitHub repository", source)
+			return "", "", func() {}, newErr(ErrUnsupportedKind, "plugin URL %q is not a GitHub repository", source)
 		}
 		tmp, err := os.MkdirTemp("", "reasonix-plugin-*")
 		if err != nil {
-			return "", func() {}, err
+			return "", "", func() {}, err
 		}
 		cloneURL := fmt.Sprintf("https://github.com/%s/%s.git", src.Owner, src.Repo)
 		args := []string{"clone", "--depth=1"}
@@ -184,19 +196,43 @@ func (t *installSourceTool) preparePluginSource(ctx context.Context, source, mod
 		cmd.Env = secrets.ProcessEnv()
 		if out, err := cmd.CombinedOutput(); err != nil {
 			_ = os.RemoveAll(tmp)
-			return "", func() {}, newErr(ErrSourceUnreadable, "git clone failed: %v: %s", err, strings.TrimSpace(string(out)))
+			return "", "", func() {}, newErr(ErrSourceUnreadable, "git clone failed: %v: %s", err, strings.TrimSpace(string(out)))
+		}
+		commit := ""
+		rev := exec.CommandContext(ctx, "git", "-C", tmp, "rev-parse", "HEAD")
+		rev.Env = secrets.ProcessEnv()
+		if out, err := rev.Output(); err == nil {
+			commit = strings.TrimSpace(string(out))
 		}
 		root := tmp
 		if src.Path != "" {
 			root = filepath.Join(tmp, filepath.FromSlash(src.Path))
 		}
-		return root, func() { _ = os.RemoveAll(tmp) }, nil
+		return root, commit, func() { _ = os.RemoveAll(tmp) }, nil
 	}
 	path := t.resolvePath(source)
 	if mode == "link" {
-		return path, func() {}, nil
+		return path, "", func() {}, nil
 	}
-	return path, func() {}, nil
+	return path, "", func() {}, nil
+}
+
+// checkoutPluginCommit pins a fresh clone to the approved commit when its HEAD
+// has moved past it. GitHub serves full-SHA fetches, so the approved snapshot
+// stays reachable after ordinary pushes; a history rewrite that discarded it
+// fails here — exactly the case where the user must re-review the plan.
+func checkoutPluginCommit(ctx context.Context, cloneRoot, commit string) error {
+	fetch := exec.CommandContext(ctx, "git", "-C", cloneRoot, "fetch", "--depth=1", "origin", commit)
+	fetch.Env = secrets.ProcessEnv()
+	if out, err := fetch.CombinedOutput(); err != nil {
+		return fmt.Errorf("fetch approved commit %s: %v: %s", commit, err, strings.TrimSpace(string(out)))
+	}
+	co := exec.CommandContext(ctx, "git", "-C", cloneRoot, "checkout", "--detach", commit)
+	co.Env = secrets.ProcessEnv()
+	if out, err := co.CombinedOutput(); err != nil {
+		return fmt.Errorf("checkout approved commit %s: %v: %s", commit, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 func replaceCopiedPlugin(sourceRoot, target string, replace bool) error {

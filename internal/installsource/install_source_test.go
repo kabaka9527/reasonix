@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"reasonix/internal/config"
+	"reasonix/internal/pluginpkg"
 	"reasonix/internal/skill"
 	"reasonix/internal/tool"
 )
@@ -1672,8 +1673,8 @@ func TestGitHubPluginPlanMatchesApply(t *testing.T) {
 	home := t.TempDir()
 	tl := NewTool(Options{ProjectRoot: project, HomeDir: home})
 	tool := tl.(*installSourceTool)
-	tool.preparePlugin = func(ctx context.Context, source, mode string) (string, func(), error) {
-		return src, func() {}, nil
+	tool.preparePlugin = func(ctx context.Context, source, mode string) (string, string, func(), error) {
+		return src, "cafe0001", func() {}, nil
 	}
 
 	plan := execInstall(t, tl, map[string]any{
@@ -1702,5 +1703,50 @@ func TestGitHubPluginPlanMatchesApply(t *testing.T) {
 		t.Fatalf("apply counts (%d/%d/%d/%d) diverge from approved plan (%d/%d/%d/%d)",
 			got.SkillCount, got.CommandCount, got.HookCount, got.ToolCount,
 			planned.SkillCount, planned.CommandCount, planned.HookCount, planned.ToolCount)
+	}
+}
+
+// TestGitHubPluginApplyRefusesUnpinnableDrift pins the snapshot contract: when
+// the source resolves to a different commit than the plan approved and the
+// approved snapshot cannot be restored, apply must refuse instead of
+// installing content the approval never covered.
+func TestGitHubPluginApplyRefusesUnpinnableDrift(t *testing.T) {
+	tree1 := t.TempDir()
+	writeFile(t, filepath.Join(tree1, ".claude-plugin", "plugin.json"), `{"name": "pwf", "version": "1.0.0"}`)
+	writeFile(t, filepath.Join(tree1, "commands", "plan.md"), "---\ndescription: plan\n---\nPlan")
+	tree2 := t.TempDir()
+	writeFile(t, filepath.Join(tree2, ".claude-plugin", "plugin.json"), `{"name": "pwf", "version": "1.0.1"}`)
+	writeFile(t, filepath.Join(tree2, "commands", "plan.md"), "---\ndescription: plan\n---\nPlan")
+	writeFile(t, filepath.Join(tree2, "commands", "extra.md"), "---\ndescription: extra\n---\nExtra")
+
+	project := t.TempDir()
+	home := t.TempDir()
+	tl := NewTool(Options{ProjectRoot: project, HomeDir: home})
+	tool := tl.(*installSourceTool)
+	calls := 0
+	tool.preparePlugin = func(ctx context.Context, source, mode string) (string, string, func(), error) {
+		calls++
+		if calls == 1 {
+			return tree1, "cafe0001", func() {}, nil // plan recompute inside the apply call
+		}
+		return tree2, "cafe0002", func() {}, nil // apply resolution: source moved
+	}
+
+	resp := execInstall(t, tl, map[string]any{
+		"source": "https://github.com/acme/pwf",
+		"kind":   "plugin",
+		"apply":  true,
+	})
+	if resp.OK || resp.Status != "failed" {
+		t.Fatalf("response = %+v, want a failed apply when the source drifted past the approved commit", resp)
+	}
+	if len(resp.Actions) != 1 || resp.Actions[0].Status != "failed" {
+		t.Fatalf("actions = %+v, want the single install action failed", resp.Actions)
+	}
+	if !strings.Contains(resp.Actions[0].Error, "approved commit cafe0001") {
+		t.Fatalf("action error = %q, want the approved-commit drift refusal", resp.Actions[0].Error)
+	}
+	if _, ok, _ := pluginpkg.FindInstalled(filepath.Join(home, ".reasonix"), "pwf"); ok {
+		t.Fatal("drifted plugin must not be installed")
 	}
 }

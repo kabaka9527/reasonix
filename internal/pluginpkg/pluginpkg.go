@@ -483,35 +483,12 @@ func dirContainsSkill(dir string) bool {
 }
 
 // dirContainsCommandMd reports whether dir holds at least one command
-// definition (a <name>.md with an installable name stem) at any nesting depth
-// — the runtime loader (internal/command) walks namespace subdirectories like
-// commands/git/commit.md, so adoption gating must see them too. Hidden
-// directories are skipped and depth is bounded to keep adoption scans cheap.
-func dirContainsCommandMd(dir string) bool { return dirContainsCommandMdAtDepth(dir, 1) }
-
-func dirContainsCommandMdAtDepth(dir string, depth int) bool {
-	const maxCommandScanDepth = 5
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return false
-	}
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() {
-			if depth < maxCommandScanDepth && !strings.HasPrefix(name, ".") &&
-				dirContainsCommandMdAtDepth(filepath.Join(dir, name), depth+1) {
-				return true
-			}
-			continue
-		}
-		if !e.Type().IsRegular() || !strings.EqualFold(filepath.Ext(name), ".md") {
-			continue
-		}
-		if IsValidName(strings.TrimSuffix(name, filepath.Ext(name))) {
-			return true
-		}
-	}
-	return false
+// definition. It delegates to the runtime loader (internal/command), so the
+// adoption gate and what /<name> actually loads can never diverge — including
+// arbitrarily nested namespace layouts like commands/a/b/c/commit.md.
+func dirContainsCommandMd(dir string) bool {
+	cmds, _ := command.Load(dir) // best-effort: a missing dir or malformed files load nothing
+	return len(cmds) > 0
 }
 
 func ManifestPath(kind string) string {
