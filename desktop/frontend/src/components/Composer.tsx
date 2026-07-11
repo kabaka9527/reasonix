@@ -3202,10 +3202,10 @@ export function Composer({
                   title={intentMenuOpen || intentMenuClosing ? undefined : taskModeTriggerLabel}
                 >
                   <TaskModeIcon size={14} aria-hidden="true" />
-                  <span className="composer-task-mode-trigger__prefix">{t("composer.intentMenuTitle")}</span>
+                  <span className="composer-task-mode-trigger__prefix">{t("composer.taskModePrefix")}</span>
                   <span className="composer-task-mode-trigger__separator" aria-hidden="true">·</span>
                   <span className="composer-task-mode-trigger__value">{t(taskModeShortKey)}</span>
-                  <ChevronsUpDown size={12} aria-hidden="true" />
+                  <ChevronsUpDown size={11} aria-hidden="true" />
                 </button>
               </Tooltip>
             </div>
@@ -3225,8 +3225,9 @@ export function Composer({
                 >
                   <RuntimeProfileIcon size={14} aria-hidden="true" />
                   <span className="composer-profile-trigger__label">
-                    <span className="composer-profile-trigger__prefix">{t("composer.runtimeProfileTitle")} · </span>
-                    <span>{t(runtimeProfileShortKey)}</span>
+                    <span className="composer-profile-trigger__prefix">{t("composer.runtimeProfilePrefix")}</span>
+                    <span className="composer-profile-trigger__separator" aria-hidden="true">·</span>
+                    <span className="composer-profile-trigger__value">{t(runtimeProfileShortKey)}</span>
                   </span>
                   <ChevronsUpDown size={11} aria-hidden="true" />
                 </button>
@@ -3274,6 +3275,7 @@ export function Composer({
                 </button>
               </div>
             </div>
+            <span className="composer-meta__divider" aria-hidden="true" />
             <div className="composer-meta__control composer-meta__control--model">
               {showContextWindowRing && (
                 <ContextWindowRing

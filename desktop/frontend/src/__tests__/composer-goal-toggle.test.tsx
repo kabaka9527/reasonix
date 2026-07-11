@@ -225,8 +225,9 @@ console.log("\ncomposer goal toggle");
 
   const intentButton = document.querySelector(".composer-task-mode-trigger") as HTMLButtonElement | null;
   if (!intentButton) throw new Error("composer intent button did not render");
-  ok(intentButton.textContent?.includes("Task method") === true, "task method trigger stays visible in direct mode");
+  ok(intentButton.textContent?.includes("Task") === true, "task method trigger keeps a compact category prefix");
   ok(intentButton.textContent?.includes("Direct") === true, "task method trigger exposes the current mode");
+  ok(intentButton.textContent?.includes("Task method") === false, "task method trigger avoids repeating the long menu title");
 
   await act(async () => {
     intentButton.click();
