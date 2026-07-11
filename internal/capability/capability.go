@@ -193,8 +193,13 @@ func RenderTransientBlock(d RouteDecision) string {
 		case d.Delivery:
 			// Delivery has no connect_tool_source; the stable proxy both
 			// connects and calls on demand, keeping the concrete capability id.
-			if (e.Kind == KindMCPTool || e.Kind == KindMCPServer) && e.Status != StatusReady {
-				fmt.Fprintf(&b, "; call use_capability(action=\"call\", capability_id=%q, arguments={...}) — it connects the server on demand after approval", e.ID)
+			if e.Status != StatusReady {
+				switch e.Kind {
+				case KindMCPTool:
+					fmt.Fprintf(&b, "; call use_capability(action=\"call\", capability_id=%q, arguments={...}) — it connects the server on demand after approval", e.ID)
+				case KindMCPServer:
+					fmt.Fprintf(&b, "; call use_capability(action=\"call\", capability_id=%q) to connect it (after approval) and list its tools, then call a listed mcp-tool id", e.ID)
+				}
 			}
 		case e.ConnectSource != "":
 			if e.ConnectName != "" {

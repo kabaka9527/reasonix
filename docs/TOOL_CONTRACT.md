@@ -60,7 +60,11 @@ the real target's read-only classification, and the server process starts only
 after the permission gate and PreToolUse hooks approve the call. On-demand
 children share the session lifetime (they outlive the starting call and exit
 with the session); `action=inspect` lists live tools for connected servers and
-cached schemas otherwise, never starting a process.
+cached schemas otherwise, never starting a process. First discovery of a
+server with no schema cache goes through `action=call` on the `mcp-server:`
+id itself: it resolves to a gated connect (permission name = the server's
+`mcp__<server>__` prefix, so server-scoped rules match) that connects after
+approval and returns the live tool directory.
 
 `ask`, `explore`, `forget`, `history`, `install_skill`, `install_source`,
 `list_sessions`, `lsp_definition`, `lsp_diagnostics`, `lsp_hover`,

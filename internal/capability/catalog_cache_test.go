@@ -69,8 +69,10 @@ func TestBuildCatalogSurfacesCachedToolsForAutoStartFalse(t *testing.T) {
 	if server := byID["mcp-server:old"]; server.Status != StatusStale {
 		t.Fatalf("fingerprint-mismatched cache should mark the server stale, got %q", server.Status)
 	}
-	if _, ok := byID["mcp-tool:old/do_thing"]; !ok {
+	if staleTool, ok := byID["mcp-tool:old/do_thing"]; !ok {
 		t.Fatal("stale cached tools should still appear as candidates")
+	} else if staleTool.Status != StatusStale {
+		t.Fatalf("stale server's cached tools must inherit stale, got %q", staleTool.Status)
 	}
 }
 
@@ -105,6 +107,12 @@ func TestDeliveryRouteRenderKeepsCapabilityIDAndProxyInstruction(t *testing.T) {
 	}
 	if strings.Contains(out, "connect_tool_source") {
 		t.Fatalf("connect_tool_source is not registered in Delivery:\n%s", out)
+	}
+	// Server entries direct the model to connect-and-list via the same proxy.
+	server := Entry{ID: "mcp-server:gh", Kind: KindMCPServer, Name: "gh", Status: StatusConfigured, ConnectSource: "mcp", ConnectName: "gh"}
+	out = RenderTransientBlock(RouteDecision{Delivery: true, Candidates: []RouteCandidate{{Entry: server, Policy: AutoUseSuggest, Reason: "r"}}})
+	if !strings.Contains(out, `use_capability(action="call", capability_id="mcp-server:gh")`) || !strings.Contains(out, "list its tools") {
+		t.Fatalf("server candidate must instruct connect-and-list:\n%s", out)
 	}
 	// Non-delivery keeps the historical connect_tool_source instruction.
 	d.Delivery = false

@@ -51,7 +51,9 @@ read/diff 证据。
 `use_capability` 的解析阶段无副作用：对未连接服务器的 `action=call` 只生成惰性目标，plan mode 会
 对真实目标重新执行只读校验，服务器进程只在权限门禁与 PreToolUse Hook 放行之后才启动。按需启动的
 子进程随会话存活（不会随单次调用结束而退出）；`action=inspect` 对已连接服务器列出实时工具，未连接
-时只读取缓存 schema，绝不启动进程。
+时只读取缓存 schema，绝不启动进程。无 schema 缓存的服务器首次发现走 `mcp-server:` id 的
+`action=call`：解析为受门禁保护的连接目标（权限名为该服务器的 `mcp__<server>__` 前缀，服务器级
+规则可直接命中），放行后连接并返回实时工具目录。
 
 `ask`, `explore`, `forget`, `history`, `install_skill`, `install_source`,
 `list_sessions`, `lsp_definition`, `lsp_diagnostics`, `lsp_hover`,

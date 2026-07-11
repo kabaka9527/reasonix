@@ -226,11 +226,14 @@ func (l *Ledger) HasSuccessfulReviewReportOfKind(kind ReviewKind) bool {
 // path: a successful read receipt whose extracted paths equal the claimed
 // path after normalization (or contain it as a slash-suffix of a fuller
 // observed path), or a content-revealing bash command (diff/cmp/cat/head/
-// tail, git diff/show) that names the path. Deliberately rejected: write
-// receipts (writing is not reviewing), arbitrary path-mentioning commands
-// like git status or echo (they never show content), and reverse basename
-// suffix matching (a bare "agent.go" receipt must not satisfy a claim for a
-// specific full path).
+// tail, git diff/show) that names the path in its parsed argv AND produced
+// non-empty host-observed output. Deliberately rejected: write receipts
+// (writing is not reviewing), arbitrary path-mentioning commands like git
+// status or echo, pipelines and redirects (they transform or swallow the
+// content), summary flags (--stat, --name-only, -q), zero-output runs
+// (head -n 0, >/dev/null), substring path hits (path.bak), and reverse
+// basename suffix matching (a bare "agent.go" receipt must not satisfy a
+// claim for a specific full path).
 func (l *Ledger) HasReadEvidenceForPath(path string) bool {
 	p := normalizePath(path)
 	if l == nil || p == "" {
@@ -251,7 +254,7 @@ func (l *Ledger) HasReadEvidenceForPath(path string) bool {
 				}
 			}
 		}
-		if r.ToolName == "bash" && commandShowsContentForPath(r.Command, needle) {
+		if r.ToolName == "bash" && r.OutputBytes > 0 && commandShowsContentForPath(r.Command, needle) {
 			return true
 		}
 	}

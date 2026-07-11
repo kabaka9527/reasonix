@@ -10,6 +10,8 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"mvdan.cc/sh/v3/syntax"
+
 	"reasonix/internal/provider"
 	"reasonix/internal/shellparse"
 	"reasonix/internal/shellsafe"
@@ -48,6 +50,10 @@ type Receipt struct {
 	Write     bool            `json:"write,omitempty"`
 	Mutation  bool            `json:"mutation,omitempty"`
 	Todos     []TodoItem      `json:"todos,omitempty"`
+	// OutputBytes is the host-observed length of the tool's (redacted, trimmed)
+	// output. Content-evidence checks require it to be non-zero so a command
+	// that printed nothing (head -n 0, >/dev/null) can never count as reading.
+	OutputBytes int `json:"output_bytes,omitempty"`
 }
 
 // Ledger stores the receipts available to complete_step for the current turn.
@@ -1089,34 +1095,115 @@ func completeStepVerificationCommands(args json.RawMessage) []string {
 	return out
 }
 
-// commandShowsContentForPath reports whether a bash command reveals the
-// content of the (slash-lowered, normalized) path: diff/cmp/cat/head/tail or
-// git diff/git show naming it. Listing-only commands (git status, ls, echo)
-// never count — mentioning a path is not reading it.
+// commandShowsContentForPath reports whether a bash command demonstrably
+// printed the content of the (normalized, slash-lowered) claimed path: a
+// content-printing program — cat/head/tail/diff/cmp or git diff/git show —
+// whose statically parsed argv names the path exactly or by trailing path
+// components. Statements inside pipelines are rejected (a pipe consumes or
+// transforms the content before the model sees it), as are redirected,
+// negated, background, or dynamically expanded commands, and summary/quiet
+// flags that suppress the patch body (--stat, --name-only, -q, …). Matching
+// is per-argument and exact, so reading path.bak never satisfies path.
 func commandShowsContentForPath(command, needle string) bool {
-	segments, _, ok := shellparse.SplitTopLevel(command)
-	if !ok {
+	file, err := shellparse.ParseBash(command)
+	if err != nil || shellparse.HasHereDoc(file) {
 		return false
 	}
-	for _, segment := range segments {
-		normalized, safe := shellsafe.NormalizeBashSafeRedirectsForMatch(segment)
-		if !safe {
-			continue
+	for _, stmt := range file.Stmts {
+		if contentStatementShowsPath(stmt, needle) {
+			return true
 		}
-		fields, malformed := shellparse.StaticFields(normalized)
-		if malformed != "" || len(fields) == 0 {
-			continue
+	}
+	return false
+}
+
+func contentStatementShowsPath(stmt *syntax.Stmt, needle string) bool {
+	if stmt == nil || stmt.Negated || stmt.Background || stmt.Coprocess {
+		return false
+	}
+	if len(stmt.Redirs) > 0 {
+		// Any redirect can divert the content away from the transcript.
+		return false
+	}
+	switch cmd := stmt.Cmd.(type) {
+	case *syntax.BinaryCmd:
+		switch cmd.Op {
+		case syntax.AndStmt, syntax.OrStmt:
+			return contentStatementShowsPath(cmd.X, needle) || contentStatementShowsPath(cmd.Y, needle)
+		default:
+			// Pipelines transform or swallow the printed content.
+			return false
 		}
-		base := strings.ToLower(filepath.Base(fields[0]))
-		content := base == "diff" || base == "cmp" || base == "cat" || base == "head" || base == "tail"
-		if base == "git" && len(fields) > 1 {
-			sub := strings.ToLower(fields[1])
-			content = sub == "diff" || sub == "show"
+	case *syntax.CallExpr:
+		argv := make([]string, 0, len(cmd.Args))
+		for _, w := range cmd.Args {
+			f, ok := shellparse.StaticWord(w)
+			if !ok {
+				return false
+			}
+			argv = append(argv, f)
 		}
-		if !content {
-			continue
+		return contentArgvShowsPath(argv, needle)
+	default:
+		return false
+	}
+}
+
+// contentSuppressingFlags turn a content command into a summary that never
+// shows the patch body; their presence disqualifies the receipt as evidence.
+var contentSuppressingFlags = map[string]bool{
+	"-q": true, "--quiet": true, "-s": true, "--silent": true,
+	"--brief": true, "--no-patch": true, "--name-only": true,
+	"--name-status": true, "--numstat": true, "--shortstat": true,
+	"--summary": true, "--check": true,
+}
+
+func contentArgvShowsPath(argv []string, needle string) bool {
+	if len(argv) == 0 {
+		return false
+	}
+	rest := argv[1:]
+	switch strings.ToLower(filepath.Base(argv[0])) {
+	case "cat", "head", "tail", "diff", "cmp":
+	case "git":
+		if len(rest) == 0 {
+			return false
 		}
-		if strings.Contains(strings.ToLower(strings.ReplaceAll(segment, `\`, "/")), needle) {
+		sub := strings.ToLower(rest[0])
+		if sub != "diff" && sub != "show" {
+			return false
+		}
+		rest = rest[1:]
+	default:
+		return false
+	}
+	named := false
+	for _, a := range rest {
+		lower := strings.ToLower(a)
+		if contentSuppressingFlags[lower] || strings.HasPrefix(lower, "--stat") || strings.HasPrefix(lower, "--dirstat") {
+			return false
+		}
+		if argNamesPath(a, needle) {
+			named = true
+		}
+	}
+	return named
+}
+
+// argNamesPath reports whether one static argv token names the claimed path:
+// exact after normalization, a trailing-components match of a fuller token,
+// or the path part of a git REV:path spec.
+func argNamesPath(arg, needle string) bool {
+	tok := strings.ToLower(filepath.ToSlash(normalizePath(arg)))
+	if tok == "" || strings.HasPrefix(tok, "-") {
+		return false
+	}
+	if tok == needle || strings.HasSuffix(tok, "/"+needle) {
+		return true
+	}
+	if i := strings.Index(tok, ":"); i >= 0 {
+		rest := tok[i+1:]
+		if rest == needle || strings.HasSuffix(rest, "/"+needle) {
 			return true
 		}
 	}

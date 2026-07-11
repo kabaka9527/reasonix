@@ -180,6 +180,11 @@ func MCPServerEntries(opts CatalogOptions) []Entry {
 			toolStatus = StatusReady
 		case status != StatusReady:
 			toolSrc = opts.CachedTools[name]
+			// A fingerprint-mismatched cache marked the server stale; its
+			// tools carry the same staleness so routing prompts expose it.
+			if status == StatusStale {
+				toolStatus = StatusStale
+			}
 		}
 		for _, ct := range toolSrc {
 			raw := strings.TrimSpace(ct.Name)

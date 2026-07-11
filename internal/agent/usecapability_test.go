@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -105,9 +106,11 @@ func TestReviewReportRequiresHostReadEvidence(t *testing.T) {
 	if _, err := tl.Execute(ctx, json.RawMessage(`{"kind":"review","verdict":"pass","reviewed_paths":["internal/agent/agent.go"]}`)); err != nil {
 		t.Fatalf("host-read path should be accepted: %v", err)
 	}
-	// A git-diff bash receipt also counts as host observation.
+	// A git-diff bash receipt with real printed output also counts.
 	led2 := evidence.NewLedger()
-	led2.Record(evidence.ReceiptFromToolCall("bash", json.RawMessage(`{"command":"git diff -- internal/boot/boot.go"}`), true, true))
+	diffRec := evidence.ReceiptFromToolCall("bash", json.RawMessage(`{"command":"git diff -- internal/boot/boot.go"}`), true, true)
+	diffRec.OutputBytes = 512
+	led2.Record(diffRec)
 	ctx2 := evidence.WithLedger(context.Background(), led2)
 	if _, err := tl.Execute(ctx2, json.RawMessage(`{"kind":"review","verdict":"pass","reviewed_paths":["internal/boot/boot.go"]}`)); err != nil {
 		t.Fatalf("diffed path should be accepted: %v", err)
@@ -141,6 +144,79 @@ func TestReviewReportRejectsNonContentEvidence(t *testing.T) {
 	led.Record(evidence.ReceiptFromToolCall("read_file", json.RawMessage(`{"path":"agent.go"}`), true, true))
 	if _, err := tl.Execute(evidence.WithLedger(context.Background(), led), report); err == nil {
 		t.Fatal("reverse basename matching must not count as review evidence")
+	}
+	// Content-suppressing shell shapes: each produced-or-not output case must fail.
+	bashCases := []struct {
+		name    string
+		command string
+		output  int
+	}{
+		{"null redirect", "cat internal/agent/agent.go >/dev/null", 0},
+		{"null redirect with output claim", "cat internal/agent/agent.go >/dev/null", 64},
+		{"stat only", "git diff --stat -- internal/agent/agent.go", 64},
+		{"name only", "git diff --name-only -- internal/agent/agent.go", 64},
+		{"zero lines", "head -n 0 internal/agent/agent.go", 0},
+		{"pipeline transform", "cat internal/agent/agent.go | wc -l", 8},
+		{"substring superset", "cat internal/agent/agent.go.bak", 512},
+	}
+	for _, tc := range bashCases {
+		led := evidence.NewLedger()
+		rec := evidence.ReceiptFromToolCall("bash", json.RawMessage(`{"command":`+strconv.Quote(tc.command)+`}`), true, true)
+		rec.OutputBytes = tc.output
+		led.Record(rec)
+		if _, err := tl.Execute(evidence.WithLedger(context.Background(), led), report); err == nil {
+			t.Fatalf("%s (%q) must not count as review evidence", tc.name, tc.command)
+		}
+	}
+	// Genuine content commands with real output still pass.
+	for _, cmd := range []string{
+		"cat internal/agent/agent.go",
+		"git show HEAD:internal/agent/agent.go",
+		"git diff HEAD~1 -- internal/agent/agent.go && echo done",
+	} {
+		led := evidence.NewLedger()
+		rec := evidence.ReceiptFromToolCall("bash", json.RawMessage(`{"command":`+strconv.Quote(cmd)+`}`), true, true)
+		rec.OutputBytes = 512
+		led.Record(rec)
+		if _, err := tl.Execute(evidence.WithLedger(context.Background(), led), report); err != nil {
+			t.Fatalf("%q with real output should count as review evidence: %v", cmd, err)
+		}
+	}
+}
+
+func TestUseCapabilityServerConnectGatedAndPlanModeBlocked(t *testing.T) {
+	host := plugin.NewHost()
+	defer host.Close()
+	specs := []plugin.Spec{{Name: "lazy", Type: "stdio", Command: "reasonix-test-definitely-missing-binary"}}
+	reg := tool.NewRegistry()
+	uc := NewUseCapabilityTool(context.Background(), host, specs, reg, capability.NewLedger(), nil, nil)
+	reg.Add(uc)
+
+	resolved, err := uc.ResolveCall(context.Background(), json.RawMessage(`{"action":"call","capability_id":"mcp-server:lazy"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Target == nil || resolved.SkipExecute {
+		t.Fatalf("expected deferred connect target, got %+v", resolved)
+	}
+	if resolved.TargetName != plugin.ToolPrefix("lazy") || resolved.ReadOnly {
+		t.Fatalf("connect gating identity wrong: name=%q readOnly=%v", resolved.TargetName, resolved.ReadOnly)
+	}
+	if host.HasClient("lazy") {
+		t.Fatal("server-level resolution must not start the server")
+	}
+	// Plan mode blocks the connect (subprocess spawn is not read-only work).
+	a := New(&scriptedProvider{name: "p"}, reg, NewSession("sys"), Options{}, event.Discard)
+	a.planMode.Store(true)
+	out := a.executeOne(context.Background(), provider.ToolCall{
+		ID: "1", Name: "use_capability",
+		Arguments: `{"action":"call","capability_id":"mcp-server:lazy"}`,
+	})
+	if !out.blocked || !strings.Contains(out.errMsg, "plan mode") {
+		t.Fatalf("plan mode must block server connect, got %+v", out)
+	}
+	if host.HasClient("lazy") {
+		t.Fatal("blocked connect must not have started the server")
 	}
 }
 

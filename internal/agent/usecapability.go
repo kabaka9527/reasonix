@@ -211,26 +211,13 @@ func (t *UseCapabilityTool) inspect(ctx context.Context, id string) (string, err
 			}
 			if server != "" {
 				if t.host != nil && t.host.HasClient(server) {
-					tools, err := t.host.ToolsFor(ctx, server)
+					// serverTools refreshes the snapshot too: inspecting a
+					// server another tab connected restores tool routing here.
+					tools, err := t.serverTools(ctx, server)
 					if err != nil {
 						return string(b) + "\n\nTool listing failed: " + err.Error(), nil
 					}
-					var list []inspectToolInfo
-					for _, tl := range tools {
-						raw := ""
-						if m, ok := tl.(tool.MCPMetadata); ok {
-							raw = m.MCPRawToolName()
-						}
-						list = append(list, inspectToolInfo{
-							ID:          "mcp-tool:" + server + "/" + raw,
-							Name:        tl.Name(),
-							Description: tl.Description(),
-							ReadOnly:    tl.ReadOnly(),
-							Schema:      tl.Schema(),
-						})
-					}
-					extra, _ := json.MarshalIndent(list, "", "  ")
-					return string(b) + "\n\nTools:\n" + string(extra), nil
+					return string(b) + "\n\nTools:\n" + inspectToolListJSON(server, tools), nil
 				}
 				if spec, ok := t.specFor(server); ok {
 					if cs, ok := plugin.LoadCachedSchema(server, plugin.SpecFingerprint(spec)); ok && len(cs.Tools) > 0 {
@@ -247,7 +234,7 @@ func (t *UseCapabilityTool) inspect(ctx context.Context, id string) (string, err
 						extra, _ := json.MarshalIndent(list, "", "  ")
 						return string(b) + "\n\nTools (from cached schema; server not started):\n" + string(extra), nil
 					}
-					return string(b) + "\n\nServer not connected and no cached tool schema; action=call with mcp-tool:" + server + "/<tool> connects on demand after approval.", nil
+					return string(b) + "\n\nServer not connected and no cached tool schema; call use_capability(action=\"call\", capability_id=\"mcp-server:" + server + "\") to connect (after approval) and list its tools.", nil
 				}
 			}
 		}
@@ -264,7 +251,34 @@ type inspectToolInfo struct {
 	Schema      json.RawMessage `json:"input_schema,omitempty"`
 }
 
+// inspectToolListJSON renders a server's live tools as the capability-id
+// directory shared by inspect and the first-discovery connect result.
+func inspectToolListJSON(server string, tools []tool.Tool) string {
+	var list []inspectToolInfo
+	for _, tl := range tools {
+		raw := ""
+		if m, ok := tl.(tool.MCPMetadata); ok {
+			raw = m.MCPRawToolName()
+		}
+		list = append(list, inspectToolInfo{
+			ID:          "mcp-tool:" + server + "/" + raw,
+			Name:        tl.Name(),
+			Description: tl.Description(),
+			ReadOnly:    tl.ReadOnly(),
+			Schema:      tl.Schema(),
+		})
+	}
+	extra, _ := json.MarshalIndent(list, "", "  ")
+	return string(extra)
+}
+
 func (t *UseCapabilityTool) resolveCall(ctx context.Context, id string, args json.RawMessage, base tool.ResolvedCall) (tool.ResolvedCall, error) {
+	// Server-level call is the first-discovery path for servers with no
+	// schema cache: it resolves to a gated connect-and-list target so the
+	// model can learn tool names without inspect ever starting a process.
+	if server, ok := parseMCPServerCapabilityID(id); ok {
+		return t.resolveServerConnect(ctx, server, base)
+	}
 	server, raw, err := parseMCPCapabilityID(id)
 	if err != nil {
 		// Skills must use run_skill.
@@ -292,10 +306,12 @@ func (t *UseCapabilityTool) resolveCall(ctx context.Context, id string, args jso
 			return base, nil
 		}
 	}
-	// Server already connected (auto-started or a previous proxy call):
-	// resolving against live tools is side-effect-free.
+	// Server already connected (auto-started, a previous proxy call, or a
+	// sibling tab sharing this host): resolving against live tools is
+	// side-effect-free. serverTools also refreshes the catalog snapshot so a
+	// cross-tab connect still yields routable mcp-tool entries here.
 	if t.host != nil && t.host.HasClient(server) {
-		tools, err := t.host.ToolsFor(ctx, server)
+		tools, err := t.serverTools(ctx, server)
 		if err != nil {
 			return t.resolveUnavailable(base, id, modelName, err.Error()), nil
 		}
@@ -532,6 +548,87 @@ func (t *UseCapabilityTool) currentCatalog() capability.Catalog {
 	return capability.Catalog{}
 }
 
+// parseMCPServerCapabilityID extracts the server name from an mcp-server id.
+func parseMCPServerCapabilityID(id string) (string, bool) {
+	if !strings.HasPrefix(id, "mcp-server:") {
+		return "", false
+	}
+	name := strings.TrimSpace(strings.TrimPrefix(id, "mcp-server:"))
+	return name, name != ""
+}
+
+// resolveServerConnect resolves action=call on an mcp-server id. A connected
+// server lists its tools immediately (side-effect free); an unconnected one
+// resolves to a deferred connect target that runs only after the permission
+// gate and PreToolUse hooks approve it.
+func (t *UseCapabilityTool) resolveServerConnect(ctx context.Context, server string, base tool.ResolvedCall) (tool.ResolvedCall, error) {
+	id := "mcp-server:" + server
+	if t.host != nil && t.host.HasClient(server) {
+		out, err := t.listServerTools(ctx, server)
+		if err != nil {
+			return t.resolveUnavailable(base, id, plugin.ToolPrefix(server), err.Error()), nil
+		}
+		base.SkipExecute = true
+		base.Result = out
+		base.ReadOnly = true
+		return base, nil
+	}
+	spec, ok := t.specFor(server)
+	if !ok {
+		return t.resolveUnavailable(base, id, plugin.ToolPrefix(server), fmt.Sprintf("MCP server %q is not configured", server)), nil
+	}
+	connect := &onDemandMCPConnect{proxy: t, spec: spec, server: server}
+	base.Target = connect
+	// The bare server tool prefix names the connect for permission and hook
+	// rules: a server-scoped rule (e.g. deny "mcp__github__*") gates the
+	// connect exactly like the server's tools, and no real tool can collide
+	// because real names always append a non-empty suffix.
+	base.TargetName = connect.Name()
+	// Connecting spawns a subprocess — never a read-only fast path; plan mode
+	// blocks it and Ask-style gates prompt before any process starts.
+	base.ReadOnly = false
+	base.Args = json.RawMessage(`{}`)
+	return base, nil
+}
+
+// onDemandMCPConnect is the deferred first-discovery target: it connects the
+// server post-approval and returns the live tool directory.
+type onDemandMCPConnect struct {
+	proxy  *UseCapabilityTool
+	spec   plugin.Spec
+	server string
+}
+
+func (o *onDemandMCPConnect) Name() string { return plugin.ToolPrefix(o.server) }
+
+func (o *onDemandMCPConnect) Description() string {
+	return "connect MCP server " + o.server + " on demand and list its tools"
+}
+
+func (o *onDemandMCPConnect) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+
+func (o *onDemandMCPConnect) ReadOnly() bool { return false }
+
+func (o *onDemandMCPConnect) Execute(ctx context.Context, _ json.RawMessage) (string, error) {
+	if _, err := o.proxy.ensureServerTools(ctx, o.server); err != nil {
+		if o.proxy.ledger != nil {
+			o.proxy.ledger.MarkUnavailable("mcp-server:"+o.server, err.Error())
+		}
+		return "", err
+	}
+	return o.proxy.listServerTools(ctx, o.server)
+}
+
+// listServerTools renders the live tool directory of a connected server and
+// refreshes the proxy snapshot on the way (via serverTools).
+func (t *UseCapabilityTool) listServerTools(ctx context.Context, server string) (string, error) {
+	tools, err := t.serverTools(ctx, server)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("connected MCP server %q; %d tools:\n%s", server, len(tools), inspectToolListJSON(server, tools)), nil
+}
+
 func parseMCPCapabilityID(id string) (server, raw string, err error) {
 	id = strings.TrimSpace(id)
 	switch {
@@ -543,7 +640,7 @@ func parseMCPCapabilityID(id string) (server, raw string, err error) {
 		}
 		return server, raw, nil
 	case strings.HasPrefix(id, "mcp-server:"):
-		return "", "", fmt.Errorf("action=call requires mcp-tool:<server>/<tool>, not %q", id)
+		return "", "", fmt.Errorf("%q is a server id; call it directly to connect and list tools, or use mcp-tool:<server>/<tool>", id)
 	default:
 		return "", "", fmt.Errorf("action=call requires an mcp-tool capability id, got %q", id)
 	}
