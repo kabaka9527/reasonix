@@ -225,8 +225,8 @@ console.log("\ncomposer goal toggle");
 
   const intentButton = document.querySelector(".composer-task-mode-trigger") as HTMLButtonElement | null;
   if (!intentButton) throw new Error("composer intent button did not render");
-  eq(intentButton.textContent?.trim(), "Direct", "execution method trigger shows only the current method");
-  eq(intentButton.getAttribute("aria-label"), "Execution method · Direct", "execution method trigger keeps its full accessible name");
+  eq(intentButton.textContent?.trim(), "Standard", "execution method trigger shows only the current method");
+  eq(intentButton.getAttribute("aria-label"), "Execution method · Standard", "execution method trigger keeps its full accessible name");
 
   await act(async () => {
     intentButton.click();
