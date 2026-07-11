@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { Check, ChevronDown } from "lucide-react";
 
 import { app } from "../lib/bridge";
 import { useT } from "../lib/i18n";
@@ -6,6 +7,7 @@ import { PROJECT_COLOR_OPTIONS, projectColorValue, type ProjectColorKey } from "
 import type { MCPToolView, SettingsView, SkillView, SubagentProfileInput } from "../lib/types";
 
 import { InlineConfirmButton } from "./InlineConfirmButton";
+import { AnchoredPopover } from "./AnchoredPopover";
 import { allRefs, EFFORT_PRESETS, ModelPicker, toRef } from "./SettingsPanel";
 import { Tooltip } from "./Tooltip";
 
@@ -236,6 +238,91 @@ export function SubagentsSettingsPage({ s }: { s: SettingsView }) {
   );
 }
 
+function EffortPicker({
+  value,
+  inheritedValue,
+  disabled,
+  ariaLabel,
+  onPick,
+}: {
+  value: string;
+  inheritedValue: string;
+  disabled: boolean;
+  ariaLabel: string;
+  onPick: (level: string) => void;
+}) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const selectedLabel = value || t("subagents.inheritDefault");
+  const effectiveValue = value || inheritedValue;
+  const pick = (level: string) => {
+    setOpen(false);
+    if (level !== value) onPick(level);
+  };
+
+  return (
+    <div className="settings-model-picker subagents-effort-picker">
+      <button
+        ref={triggerRef}
+        type="button"
+        className="settings-model-picker__trigger"
+        disabled={disabled}
+        aria-label={ariaLabel}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((next) => !next)}
+      >
+        <span className="settings-model-picker__selected">
+          <span>{selectedLabel}</span>
+          <small>{t("subagents.effectiveValue", { value: effectiveValue })}</small>
+        </span>
+        <ChevronDown size={16} className={`settings-model-picker__chev${open ? " settings-model-picker__chev--open" : ""}`} />
+      </button>
+      <AnchoredPopover
+        open={open && !disabled}
+        anchorRef={triggerRef}
+        onClose={() => setOpen(false)}
+        className="settings-model-picker__menu subagents-effort-picker__menu"
+        placement="bottom"
+        style={{ width: triggerRef.current?.getBoundingClientRect().width }}
+      >
+        <div className="settings-model-picker__list" role="listbox">
+          <button
+            type="button"
+            role="option"
+            aria-selected={value === ""}
+            className={`settings-model-picker__option settings-model-picker__option--pinned${value === "" ? " settings-model-picker__option--selected" : ""}`}
+            onClick={() => pick("")}
+          >
+            <span>
+              <strong>{t("subagents.inheritDefault")}</strong>
+              <small>{t("subagents.effectiveValue", { value: inheritedValue })}</small>
+            </span>
+            {value === "" && <Check size={14} />}
+          </button>
+          {EFFORT_PRESETS.map((level) => (
+            <button
+              key={level}
+              type="button"
+              role="option"
+              aria-selected={level === value}
+              className={`settings-model-picker__option${level === value ? " settings-model-picker__option--selected" : ""}`}
+              onClick={() => pick(level)}
+            >
+              <span>
+                <strong>{level}</strong>
+                <small>{t("subagents.effectiveValue", { value: level })}</small>
+              </span>
+              {level === value && <Check size={14} />}
+            </button>
+          ))}
+        </div>
+      </AnchoredPopover>
+    </div>
+  );
+}
+
 function BuiltinSubagentRow({
   skill,
   s,
@@ -287,23 +374,16 @@ function BuiltinSubagentRow({
             onPick={onSetModel}
           />
         </div>
-        <label className="subagents-builtin-overrides__field">
+        <div className="subagents-builtin-overrides__field">
           <span className="subagents-builtin-overrides__field-label">{t("subagents.effort")}</span>
-          <select
-            className="mem-select"
+          <EffortPicker
             value={skill.configuredEffort ?? ""}
             disabled={busy}
-            aria-label={`${skill.name}: ${t("subagents.effort")}`}
-            onChange={(e) => onSetEffort(e.target.value)}
-          >
-            <option value="">{t("subagents.inheritDefaultWithValue", { value: inheritedEffort })}</option>
-            {EFFORT_PRESETS.map((level) => (
-              <option key={level} value={level}>
-                {level}
-              </option>
-            ))}
-          </select>
-        </label>
+            inheritedValue={inheritedEffort}
+            ariaLabel={`${skill.name}: ${t("subagents.effort")}`}
+            onPick={onSetEffort}
+          />
+        </div>
         <div className="subagents-builtin-overrides__status">
           {overridden ? (
             <button className="btn btn--small subagents-reset-override" type="button" disabled={busy} onClick={onReset}>

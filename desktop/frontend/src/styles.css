@@ -11821,7 +11821,7 @@ body > .mermaid-diagram--fullscreen {
 }
 .subagents-builtin-overrides {
   display: grid;
-  grid-template-columns: minmax(220px, 1.2fr) minmax(180px, 0.8fr) 152px;
+  grid-template-columns: repeat(2, minmax(200px, 1fr)) 152px;
   align-items: end;
   gap: 8px;
   margin: 8px 0 0 33px;
