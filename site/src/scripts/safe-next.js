@@ -12,6 +12,14 @@
 // "//evil.example" — a protocol-relative redirect off-site. Parsing with
 // `new URL()` first and checking the *parsed* origin/host closes that gap
 // because it uses the same normalization the browser itself applies.
+//
+// Both branches return the fully-serialized `u.href`, never a relative
+// fragment. Returning `u.pathname` would reopen the hole: dot-segment inputs
+// such as "/.//evil.example" or "/a/..//evil.example" resolve to a
+// same-origin URL whose *pathname* is "//evil.example", and handing that
+// bare pathname back to `location.href` re-parses it as a protocol-relative
+// URL to evil.example. `u.href` keeps the origin attached, so assigning it
+// can never leave reasonix.io.
 export function safeNext(next, origin) {
   if (!next) return null;
   let u;
@@ -20,7 +28,7 @@ export function safeNext(next, origin) {
   } catch {
     return null;
   }
-  if (u.origin === origin) return u.pathname + u.search + u.hash;
+  if (u.origin === origin) return u.href;
   if (u.protocol === "https:" && (u.host === "reasonix.io" || u.host.endsWith(".reasonix.io"))) return u.href;
   return null;
 }
