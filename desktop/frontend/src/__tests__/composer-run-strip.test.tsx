@@ -91,7 +91,7 @@ async function renderComposer(props: Partial<Parameters<typeof Composer>[0]> = {
   const rootEl = document.getElementById("root");
   if (!rootEl) throw new Error("missing root");
   const root = createRoot(rootEl);
-  const calls = { cancel: 0 };
+  const calls = { cancel: 0, tokenModes: [] as TokenMode[] };
   let currentProps: Parameters<typeof Composer>[0] = {
     running: false,
     collaborationMode: "normal" as CollaborationMode,
@@ -113,7 +113,9 @@ async function renderComposer(props: Partial<Parameters<typeof Composer>[0]> = {
     onClearGoal: () => {},
     onSwitchModel: () => {},
     onSetEffort: () => {},
-    onSetTokenMode: () => {},
+    onSetTokenMode: (mode) => {
+      calls.tokenModes.push(mode);
+    },
     ready: true,
     ...props,
   };
@@ -145,6 +147,49 @@ console.log("\ncomposer run strip");
   eq(document.querySelector(".composer__btn--stop"), null, "idle composer renders no stop button");
   ok(document.querySelector(".composer__btn--send") !== null, "idle composer keeps the send button");
   eq(document.querySelector(".composer-toolbar--status-only"), null, "floating status pill is gone");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+// Work mode is a first-class, always-visible selector. Its three profiles live
+// in their own menu instead of the task-intent menu, and selecting a profile
+// preserves the existing token-mode callback contract.
+{
+  const dom = installDom();
+  const { root, calls } = await renderComposer();
+
+  const profileTrigger = document.querySelector(".composer-profile-trigger") as HTMLButtonElement | null;
+  if (!profileTrigger) throw new Error("work mode trigger did not render");
+  ok(profileTrigger.textContent?.includes("Work mode") === true, "balanced work mode stays visible as a standalone control");
+  ok(profileTrigger.textContent?.includes("Balanced") === true, "standalone control shows the current profile");
+
+  await act(async () => {
+    profileTrigger.click();
+    await flushTimers();
+  });
+  const profileMenu = document.querySelector(".composer-profile-menu");
+  ok(profileMenu !== null, "standalone work mode trigger opens its own menu");
+  eq(profileMenu?.querySelectorAll('[role="menuitemradio"]').length, 3, "work mode menu exposes exactly three profiles");
+
+  const delivery = Array.from(profileMenu?.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]') ?? [])
+    .find((item) => item.textContent?.includes("Delivery"));
+  if (!delivery) throw new Error("delivery work mode option did not render");
+  await act(async () => {
+    delivery.click();
+    await flushTimers();
+  });
+  eq(calls.tokenModes.at(-1), "delivery", "selecting delivery keeps the token-mode callback contract");
+
+  const intentTrigger = document.querySelector(".composer-action-trigger") as HTMLButtonElement | null;
+  if (!intentTrigger) throw new Error("task intent trigger did not render");
+  await act(async () => {
+    intentTrigger.click();
+    await flushTimers();
+  });
+  eq(document.querySelector(".composer-intent-menu")?.textContent?.includes("Work mode"), false, "task-intent menu no longer owns work mode");
 
   await act(async () => {
     root.unmount();

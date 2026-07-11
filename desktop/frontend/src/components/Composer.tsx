@@ -624,6 +624,8 @@ export function Composer({
   const [textareaAutoOverflow, setTextareaAutoOverflow] = useState(false);
   const [intentMenuOpen, setIntentMenuOpen] = useState(false);
   const [intentMenuClosing, setIntentMenuClosing] = useState(false);
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [profileMenuClosing, setProfileMenuClosing] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [moreMenuClosing, setMoreMenuClosing] = useState(false);
   const [showPastChats, setShowPastChats] = useState(false);
@@ -656,8 +658,10 @@ export function Composer({
   const taRef = useRef<HTMLTextAreaElement>(null);
   const composerCardRef = useRef<HTMLDivElement>(null);
   const intentMenuAnchorRef = useRef<HTMLButtonElement>(null);
+  const profileMenuAnchorRef = useRef<HTMLButtonElement>(null);
   const moreMenuAnchorRef = useRef<HTMLButtonElement>(null);
   const intentCloseTimerRef = useRef<number | null>(null);
+  const profileCloseTimerRef = useRef<number | null>(null);
   const moreCloseTimerRef = useRef<number | null>(null);
   const wasRunningByDraftRef = useRef<Record<string, boolean>>({ [draftKey]: running });
   const composingRef = useRef(false);
@@ -1388,6 +1392,32 @@ export function Composer({
 
   useEffect(() => () => clearIntentCloseTimer(), [clearIntentCloseTimer]);
 
+  const clearProfileCloseTimer = useCallback(() => {
+    if (profileCloseTimerRef.current === null) return;
+    window.clearTimeout(profileCloseTimerRef.current);
+    profileCloseTimerRef.current = null;
+  }, []);
+
+  const openProfileMenu = useCallback(() => {
+    clearProfileCloseTimer();
+    setProfileMenuClosing(false);
+    setProfileMenuOpen(true);
+  }, [clearProfileCloseTimer]);
+
+  const closeProfileMenu = useCallback((afterClose?: () => void) => {
+    clearProfileCloseTimer();
+    setProfileMenuClosing(true);
+    window.requestAnimationFrame(() => setProfileMenuOpen(false));
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    profileCloseTimerRef.current = window.setTimeout(() => {
+      profileCloseTimerRef.current = null;
+      setProfileMenuClosing(false);
+      afterClose?.();
+    }, reduceMotion ? 0 : ANCHORED_POPOVER_CLOSE_MS);
+  }, [clearProfileCloseTimer]);
+
+  useEffect(() => () => clearProfileCloseTimer(), [clearProfileCloseTimer]);
+
   const clearMoreCloseTimer = useCallback(() => {
     if (moreCloseTimerRef.current === null) return;
     window.clearTimeout(moreCloseTimerRef.current);
@@ -1422,7 +1452,6 @@ export function Composer({
   const planModeOn = collaborationMode === "plan";
   const activeGoal = (goal ?? "").trim();
   const goalModeOn = collaborationMode === "goal";
-  const runtimeProfileActive = tokenMode !== "full";
   const warnImageInputFallback = useCallback((message = t("composer.imageInputUnsupported")) => {
     showToast(message, "warn");
   }, [showToast, t]);
@@ -2463,11 +2492,23 @@ export function Composer({
     });
   };
   const chooseTokenMode = (mode: TokenMode) => {
-    closeIntentMenu(() => {
+    closeProfileMenu(() => {
       if (mode !== tokenMode) onSetTokenMode(mode);
       requestAnimationFrame(() => taRef.current?.focus());
     });
   };
+  const runtimeProfileShortKey = tokenMode === "economy"
+    ? "composer.runtimeProfileEconomyShort"
+    : tokenMode === "delivery"
+      ? "composer.runtimeProfileDeliveryShort"
+      : "composer.runtimeProfileBalancedShort";
+  const runtimeProfileDescKey = tokenMode === "economy"
+    ? "composer.runtimeProfileEconomyDesc"
+    : tokenMode === "delivery"
+      ? "composer.runtimeProfileDeliveryDesc"
+      : "composer.runtimeProfileBalancedDesc";
+  const RuntimeProfileIcon = tokenMode === "economy" ? Gauge : tokenMode === "delivery" ? ShieldCheck : SlidersHorizontal;
+  const runtimeProfileTriggerLabel = t("composer.runtimeProfileTrigger", { mode: t(runtimeProfileShortKey) });
   const effortLevels = asArray(effort?.levels);
   const currentEffort = effort?.current || "auto";
   const compactEffortTitle = currentEffort === "auto"
@@ -2531,8 +2572,9 @@ export function Composer({
     if (!suspendedByDecision) return;
     setDismissed(true);
     closeIntentMenu();
+    closeProfileMenu();
     closeMoreMenu();
-  }, [suspendedByDecision, closeIntentMenu, closeMoreMenu]);
+  }, [suspendedByDecision, closeIntentMenu, closeProfileMenu, closeMoreMenu]);
   const runStateText = retry
     ? t("status.retrying", { attempt: retry.attempt, max: retry.max })
     : waitingPrompt === "approval"
@@ -2569,7 +2611,7 @@ export function Composer({
   const composerMetaClass = [
     "composer-meta",
     hasEffort ? "composer-meta--has-effort" : "composer-meta--no-effort",
-    planModeOn || goalModeOn || runtimeProfileActive ? "composer-meta--has-intent-chip" : "composer-meta--no-intent-chip",
+    planModeOn || goalModeOn ? "composer-meta--has-intent-chip" : "composer-meta--no-intent-chip",
   ].join(" ");
 
   const inputSelection = getInputSelection();
@@ -2660,6 +2702,17 @@ export function Composer({
               <span />
             </span>
           </button>
+        </div>
+      </AnchoredPopover>
+      <AnchoredPopover
+        open={profileMenuOpen}
+        closing={profileMenuClosing}
+        anchorRef={profileMenuAnchorRef}
+        onClose={() => closeProfileMenu()}
+        className="composer-access-menu composer-profile-menu"
+        align="start"
+      >
+        <div className="composer-access-menu__section" role="menu" aria-label={t("composer.runtimeProfileTitle")}>
           <div className="composer-access-menu__label">{t("composer.runtimeProfileTitle")}</div>
           {([
             ["economy", Gauge, "composer.runtimeProfileEconomy", "composer.runtimeProfileEconomyDesc"],
@@ -2669,11 +2722,12 @@ export function Composer({
             <button
               key={profile}
               type="button"
-              className={`composer-access-menu__item composer-intent-menu__item${tokenMode === profile ? " composer-access-menu__item--active" : ""}`}
+              role="menuitemradio"
+              className={`composer-access-menu__item composer-profile-menu__item${tokenMode === profile ? " composer-access-menu__item--active" : ""}`}
               onClick={() => chooseTokenMode(profile)}
               disabled={disabled || running}
               title={t(descKey)}
-              aria-pressed={tokenMode === profile}
+              aria-checked={tokenMode === profile}
             >
               <Icon size={16} />
               <span className="composer-access-menu__copy">
@@ -3167,26 +3221,29 @@ export function Composer({
                   </button>
                 </Tooltip>
               )}
-              {runtimeProfileActive && (
-                <Tooltip label={t(tokenMode === "delivery" ? "composer.runtimeProfileDeliveryDesc" : "composer.runtimeProfileEconomyDesc")}>
-                  <button
-                    type="button"
-                    className="composer-mode-chip composer-mode-chip--token"
-                    onClick={() => chooseTokenMode("full")}
-                    disabled={disabled || running}
-                    title={t("composer.runtimeProfileResetTitle")}
-                    aria-label={t("composer.runtimeProfileResetTitle")}
-                  >
-                    <span className="composer-mode-chip__icon composer-mode-chip__icon--mode" aria-hidden="true">
-                      <Gauge size={14} />
-                    </span>
-                    <span className="composer-mode-chip__icon composer-mode-chip__icon--dismiss" aria-hidden="true">
-                      <X size={11} />
-                    </span>
-                    <span className="composer-mode-chip__label">{t(tokenMode === "delivery" ? "composer.runtimeProfileDeliveryShort" : "composer.runtimeProfileEconomyShort")}</span>
-                  </button>
-                </Tooltip>
-              )}
+            </div>
+            <div className="composer-meta__control composer-meta__control--profile">
+              <Tooltip label={t(runtimeProfileDescKey)} disabled={profileMenuOpen || profileMenuClosing}>
+                <button
+                  ref={profileMenuAnchorRef}
+                  type="button"
+                  data-profile={tokenMode}
+                  className={`composer-profile-trigger${profileMenuOpen || profileMenuClosing ? " composer-profile-trigger--open" : ""}`}
+                  onClick={() => (profileMenuOpen || profileMenuClosing ? closeProfileMenu() : openProfileMenu())}
+                  disabled={disabled || running}
+                  aria-haspopup="menu"
+                  aria-expanded={profileMenuOpen && !profileMenuClosing}
+                  aria-label={runtimeProfileTriggerLabel}
+                  title={profileMenuOpen || profileMenuClosing ? undefined : runtimeProfileTriggerLabel}
+                >
+                  <RuntimeProfileIcon size={14} aria-hidden="true" />
+                  <span className="composer-profile-trigger__label">
+                    <span className="composer-profile-trigger__prefix">{t("composer.runtimeProfileTitle")} · </span>
+                    <span>{t(runtimeProfileShortKey)}</span>
+                  </span>
+                  <ChevronsUpDown size={11} aria-hidden="true" />
+                </button>
+              </Tooltip>
             </div>
             <div className="composer-meta__control composer-meta__control--approval">
               {/* A pending tool approval disables the composer, but the approval

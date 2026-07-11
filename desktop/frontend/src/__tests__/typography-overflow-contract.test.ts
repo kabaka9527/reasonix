@@ -164,10 +164,10 @@ ok(
 );
 
 eq(finalDeclaration(".composer-modebar", "overflow"), "hidden", "chat mode switcher contains enlarged labels");
-eq(finalDeclaration(".composer-mode-chip--token", "flex"), "0 1 auto", "runtime mode chip sizes to its localized label");
-eq(finalDeclaration(".composer-mode-chip--token", "max-width"), "128px", "runtime mode chip keeps a bounded localized width");
-eq(finalDeclaration(".composer-mode-chip--token .composer-mode-chip__label", "overflow"), "hidden", "runtime mode chip clips only when space is constrained");
-eq(finalDeclaration(".composer-mode-chip--token .composer-mode-chip__label", "text-overflow"), "ellipsis", "runtime mode chip shows an ellipsis when constrained");
+eq(finalDeclaration(".composer-meta__control--profile", "flex"), "0 0 auto", "work mode selector sizes to its localized label");
+eq(finalDeclaration(".composer-meta__control--profile", "max-width"), "68px", "work mode selector keeps a compact narrow-width bound");
+eq(finalDeclaration(".composer-profile-trigger__label", "overflow"), "hidden", "work mode selector clips only when space is constrained");
+eq(finalDeclaration(".composer-profile-trigger__label", "text-overflow"), "ellipsis", "work mode selector shows an ellipsis when constrained");
 eq(
   finalDeclaration(".app--creation .tool:not(.tool--open) > .tool__body", "height"),
   "0 !important",
