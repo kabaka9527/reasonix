@@ -269,6 +269,13 @@ type Agent struct {
 	lastPrefixShape     PrefixShape
 	haveLastPrefixShape bool
 
+	// warnedMissingToolCallReasoning dedupes the missing tool-call reasoning
+	// notice: when an endpoint stops emitting reasoning it tends to do so for
+	// every following round, so the first notice carries the signal and
+	// per-round repeats only flood the transcript. Loop-owned; reset by
+	// SetSession so a swapped-in conversation warns anew.
+	warnedMissingToolCallReasoning bool
+
 	// planMode, when true, refuses any tool call whose ReadOnly() is false.
 	// The system prompt and tool list never change with the toggle so the
 	// prompt-cache prefix stays valid; the gating happens at execute time
@@ -756,6 +763,7 @@ func (a *Agent) SetSession(s *Session) {
 	a.sessMu.Unlock()
 	a.sessCacheHit.Store(0)
 	a.sessCacheMiss.Store(0)
+	a.warnedMissingToolCallReasoning = false
 	if s != nil {
 		a.rebuildTodoState(s.Snapshot())
 	}
@@ -1328,9 +1336,12 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 // warnMissingToolCallReasoning surfaces a thinking-mode tool_calls turn that
 // arrived without reasoning text only when the provider/model is expected to
 // emit it. The turn is still saved and the replay still succeeds (the wire
-// layer can conservatively emit the reasoning_content key), but models that do
+// layer always emits the reasoning_content key on such turns), but models that
 // rely on tool-call reasoning continue without their chain-of-thought context,
-// so that degradation is worth a visible warning.
+// so that degradation is worth one visible warning. Exactly one per session:
+// the shape is endpoint-conditional (observed on the official DeepSeek API as
+// well as behind gateways) and tends to repeat for every round once it starts,
+// so per-round notices bury the transcript without adding signal (#6259).
 func (a *Agent) warnMissingToolCallReasoning(calls []provider.ToolCall, reasoning string) {
 	if len(calls) == 0 || !provider.WarnOnMissingToolCallReasoning(a.prov) {
 		return
@@ -1338,8 +1349,13 @@ func (a *Agent) warnMissingToolCallReasoning(calls []provider.ToolCall, reasonin
 	if strings.TrimSpace(reasoning) != "" {
 		return
 	}
+	if a.warnedMissingToolCallReasoning {
+		return
+	}
+	a.warnedMissingToolCallReasoning = true
 	a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
-		Text: fmt.Sprintf("%s returned %d tool call(s) without reasoning_content; continuing, but thinking context is lost for this turn (is a gateway dropping the reasoning field?)", a.prov.Name(), len(calls))})
+		Text:   fmt.Sprintf("%s returned tool calls without reasoning_content; continuing, but thinking context is lost on such turns (shown once per session)", a.prov.Name()),
+		Detail: fmt.Sprintf("this round carried %d tool call(s) and no reasoning. Whether reasoning accompanies tool calls is endpoint-side behavior; the turn is saved and replayed with an empty reasoning_content key, which the API accepts. Later rounds with the same shape stay silent for the rest of the session.", len(calls))})
 }
 
 // maxStepsPause is the deliberate stop when a positive tool-call budget runs
