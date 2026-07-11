@@ -948,8 +948,9 @@ export function Composer({
 
   const slashQuery = useMemo(() => {
     if (invocations.length > 0) return richSlashQuery?.query ?? null;
-    if (!text.startsWith("/") || /\s/.test(text)) return null;
-    return text.slice(1).toLowerCase();
+    const commandText = text.replace(/[\r\n]+$/u, "");
+    if (!commandText.startsWith("/") || /\s/.test(commandText)) return null;
+    return commandText.slice(1).toLowerCase();
   }, [invocations.length, richSlashQuery, text]);
   const slashMatches = useMemo(
     () => slashQuery === null

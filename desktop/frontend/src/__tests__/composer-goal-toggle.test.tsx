@@ -1054,6 +1054,10 @@ console.log("\ncomposer goal toggle");
   const { root, calls, rerender } = await renderComposer({ workspaceScopeKey: "runtime-0" });
 
   await waitFor("plugin commands loaded", () => commandsCalls > 0);
+  await replaceComposerDraft(rerender, 1999, "/\n");
+  await waitFor("slash menu before trailing newline", () => Boolean(document.querySelector(".slashmenu")));
+  ok(document.querySelector(".slashmenu") !== null, "slash menu ignores an invisible trailing newline");
+
   await replaceComposerDraft(rerender, 2000, "/m");
   await waitFor("initial skill command menu", () => Boolean(document.querySelector(".slashmenu")));
   ok(
