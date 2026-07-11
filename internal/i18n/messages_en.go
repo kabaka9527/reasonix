@@ -435,6 +435,7 @@ Usage:
   reasonix config memory-v5 [off|observe|compact|on|status]  configure Memory v5
   reasonix config reasoning-language [auto|zh|en]        configure visible reasoning language
   reasonix mcp <add|remove|list|import>                 manage MCP servers in reasonix.toml
+  reasonix subagent <list|create|edit|delete|try|run>   manage and run isolated subagent profiles
   reasonix init                                         show how to generate project memory (AGENTS.md)
   reasonix doctor [--json]                              print redacted local diagnostics
   reasonix doctor session <branch-id> [--zip] [--out PATH]  export a session conflict diagnostic zip
@@ -448,6 +449,7 @@ Examples:
   reasonix --continue
   reasonix run "implement the TODOs in main.go"
   reasonix run --model mimo-pro "add unit tests for this function"
+  reasonix subagent run review "review the current changes"
   echo "explain this code" | reasonix run
 
 Configuration:

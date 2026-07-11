@@ -436,6 +436,7 @@ var Chinese = Messages{
   reasonix config memory-v5 [off|observe|compact|on|status]  配置 Memory v5
   reasonix config reasoning-language [auto|zh|en]        配置可见思考语言
   reasonix mcp <add|remove|list|import>                 管理 reasonix.toml 里的 MCP 服务器
+  reasonix subagent <list|create|edit|delete|try|run>   管理和运行隔离子智能体 profile
   reasonix init                                         查看如何生成项目记忆（AGENTS.md）
   reasonix doctor [--json]                              输出脱敏的本地诊断信息
   reasonix doctor session <branch-id> [--zip] [--out PATH]  导出会话冲突诊断 zip
@@ -449,6 +450,7 @@ var Chinese = Messages{
   reasonix --continue
   reasonix run "把 main.go 里的 TODO 实现掉"
   reasonix run --model mimo-pro "给这个函数补单元测试"
+  reasonix subagent run review "审查当前改动"
   echo "解释这段代码" | reasonix run
 
 配置：

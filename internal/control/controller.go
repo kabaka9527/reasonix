@@ -1437,6 +1437,50 @@ func (c *Controller) Run(ctx context.Context, input string) error {
 	return c.runner.Run(ctx, c.withCapabilityRoute(input, rawInput))
 }
 
+// RunSubagentProfile executes one named runAs=subagent skill synchronously and
+// returns only its final answer. It is the headless CLI counterpart to explicit
+// slash invocation: the child keeps an isolated session, while the caller owns
+// stdout rendering and exit status. readOnly selects the preview-safe runner
+// used by `reasonix subagent try`.
+func (c *Controller) RunSubagentProfile(ctx context.Context, name, task string, readOnly bool) (string, error) {
+	name = strings.TrimSpace(name)
+	task = strings.TrimSpace(task)
+	if name == "" {
+		return "", fmt.Errorf("subagent name is required")
+	}
+	if task == "" {
+		return "", fmt.Errorf("subagent task is required")
+	}
+	sk, ok := c.skills.byName(name)
+	if !ok {
+		return "", fmt.Errorf("unknown or disabled subagent profile %q", name)
+	}
+	if sk.RunAs != skill.RunSubagent {
+		return "", fmt.Errorf("skill %q is not runAs=subagent", name)
+	}
+	runner := c.skillRunner
+	if readOnly {
+		runner = c.readOnlySkillRunner
+	}
+	if runner == nil {
+		return "", fmt.Errorf("subagent skill runner is unavailable for %q", name)
+	}
+
+	c.maybeSessionStart(ctx)
+	parentSession := c.parentSessionID()
+	ctx = agent.WithParentSession(ctx, parentSession)
+	ctx = jobs.WithSession(ctx, parentSession)
+	ctx = agent.WithUserImages(ctx, c.inputImages(task))
+	ctx = agent.WithResponseLanguagePreference(ctx, c.responseLanguage)
+	ctx = agent.WithReasoningLanguagePreference(ctx, c.reasoningLanguage)
+	ctx = agent.WithSubagentDepth(ctx, 0)
+	answer, err := runner(ctx, sk, task, skill.SubagentRunOptions{HostInitiated: true})
+	if err != nil {
+		return "", err
+	}
+	return tool.GuardSubagentHostDecisionText(answer), nil
+}
+
 // Cancel aborts the in-flight turn. A goroutine blocked awaiting approval
 // unblocks via the cancelled context.
 func (c *Controller) Cancel() {

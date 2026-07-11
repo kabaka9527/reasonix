@@ -503,6 +503,30 @@ headers = { Authorization = "Bearer ${STRIPE_KEY}" }
 `review.md` 即 `/review`，子目录构成命名空间（`git/commit.md` → `/git:commit`）。文件正文
 是 prompt 模板，调用即作为一轮对话发出。
 
+### 子智能体 Profile
+
+子智能体 profile 是带有 `runAs: subagent` 和 `invocation: manual` 的手动 Skill。
+它与桌面设置页共用项目级/全局 Skill 目录，因此任一端创建的 profile 在会话刷新后都会被
+另一端发现。交互式聊天里使用 `/<name> <任务>` 调用；Reasonix 会启动隔离子智能体，
+父会话只保留任务和最终答案。
+
+Headless CLI 提供显式管理和运行命令，同时不改变普通 `reasonix run` 的任务语义：
+
+```bash
+reasonix subagent list
+reasonix subagent create reviewer --description "审查改动" --prompt-file reviewer.md --tools read_file,grep,bash
+reasonix subagent edit reviewer --effort high --model deepseek-pro
+reasonix subagent try reviewer "审查当前 diff"   # 始终只读
+reasonix subagent run reviewer "审查并修复当前 diff"
+reasonix subagent delete reviewer --yes
+```
+
+`create` 默认写入项目级目录；使用 `--scope global` 可创建用户全局 profile。`edit` 只修改
+显式传入的字段，`--model=`、`--tools=` 这类空值会清除对应配置。Profile 编辑器会拒绝
+custom path 或包含更多手写结构的 Skill，避免丢失 frontmatter、references 或 scripts；
+这些文件仍应通过 Skills 工作流管理。内置 profile 没有可编辑文件，因此 `edit` 对它们只接受
+`--model` 和 `--effort`，并写入与桌面设置页相同的按名称覆盖配置。
+
 `/memory` 会同时列出记忆文档（`REASONIX.md` / `AGENTS.md`）和已保存的 auto-memory 条目。
 在 agent 回合中，只读的 `history` 和 `memory` 工具可以按需检索历史 session 决策、
 compaction archive 和已保存事实；这些动态内容不会被塞进稳定的 system prompt 前缀。

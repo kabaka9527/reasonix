@@ -627,6 +627,36 @@ another branch. **Custom commands** are Markdown files under `.reasonix/commands
 `/review`, a subdirectory namespaces it (`git/commit.md` → `/git:commit`). The
 body is a prompt template; invoking the command sends it as a turn.
 
+### Subagent profiles
+
+Subagent profiles are manual Skills with `runAs: subagent` and
+`invocation: manual`. They are stored in the same project/global Skill roots as
+the desktop settings page, so profiles created on either surface are immediately
+available to the other after the session refreshes. In interactive chat, invoke
+one with `/<name> <task>`; Reasonix runs an isolated child loop and keeps only
+the task and final answer in the parent conversation.
+
+The headless CLI provides explicit management and execution commands without
+changing the ordinary `reasonix run` task semantics:
+
+```bash
+reasonix subagent list
+reasonix subagent create reviewer --description "Review changes" --prompt-file reviewer.md --tools read_file,grep,bash
+reasonix subagent edit reviewer --effort high --model deepseek-pro
+reasonix subagent try reviewer "review the current diff"   # always read-only
+reasonix subagent run reviewer "review and fix the current diff"
+reasonix subagent delete reviewer --yes
+```
+
+`create` defaults to project scope; pass `--scope global` for a user-wide
+profile. `edit` changes only explicitly supplied fields, and an empty value such
+as `--model=` or `--tools=` clears that field. The profile editors deliberately
+refuse custom-path or richer hand-authored Skills so they cannot discard
+frontmatter, references, or scripts; manage those files through the Skills
+workflow instead. Built-in profiles have no editable file, so `edit` accepts
+only `--model` and `--effort` for them and stores the same per-name overrides as
+the desktop settings page.
+
 `/memory` lists both memory documents (`REASONIX.md` / `AGENTS.md`) and saved
 auto-memory facts. During agent turns, the read-only `history` and `memory`
 tools let the model retrieve prior session decisions, compacted-history

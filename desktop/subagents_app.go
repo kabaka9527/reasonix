@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -14,7 +12,6 @@ import (
 	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
-	"reasonix/internal/frontmatter"
 	"reasonix/internal/permission"
 	"reasonix/internal/sandbox"
 	"reasonix/internal/skill"
@@ -126,57 +123,6 @@ func (a *App) CreateSubagentProfile(input SubagentProfileInput) (string, error) 
 	return path, nil
 }
 
-// subagentEditorManagedKeys are the frontmatter keys this page's editor
-// carries through an edit round-trip. A file with any OTHER key (read-only,
-// triggers, auto-use, ...) was not authored by this page and would be
-// silently stripped on save — most dangerously `read-only`, which is a hard
-// tool-registry boundary (boot.go picks the read-only registry from it), so
-// dropping it would turn a read-only agent writable.
-var subagentEditorManagedKeys = map[string]bool{
-	"name": true, "description": true, "color": true, "invocation": true,
-	"runas": true, "model": true, "effort": true, "allowed-tools": true,
-}
-
-// editableSubagentProfile reports whether sk's backing file is fully
-// representable by this page's editor: a manual-invocation SUBAGENT profile
-// whose frontmatter has only editor-managed keys and whose body is the plain
-// file body (no sibling references/ or scripts/ dirs, which Read() expands
-// into Body — saving the expanded Body would bake that content into the main
-// file). Anything else must be edited as a skill file, not through this form.
-func editableSubagentProfile(sk skill.Skill) error {
-	if sk.RunAs != skill.RunSubagent {
-		// A manual-invocation INLINE skill has only managed keys too; without
-		// this check UpdateSubagentProfile would rewrite it with
-		// runAs: subagent, silently changing its execution semantics.
-		return fmt.Errorf("%q is not a subagent profile (runAs is not \"subagent\") — manage it as a skill file instead", sk.Name)
-	}
-	if sk.Invocation != "manual" {
-		return fmt.Errorf("%q was not created by the subagent profiles page (invocation is not \"manual\") — manage it as a skill file instead", sk.Name)
-	}
-	if sk.Path == "" || sk.Path == "(builtin)" {
-		return fmt.Errorf("%q has no editable file", sk.Name)
-	}
-	raw, err := os.ReadFile(sk.Path)
-	if err != nil {
-		return err
-	}
-	fm, _ := frontmatter.Split(string(raw))
-	for key := range fm {
-		if !subagentEditorManagedKeys[key] {
-			return fmt.Errorf("%q carries frontmatter this editor does not manage (%s) and would silently drop — edit it as a skill file instead", sk.Name, key)
-		}
-	}
-	if filepath.Base(sk.Path) == skill.SkillFile {
-		dir := filepath.Dir(sk.Path)
-		for _, sibling := range []string{"references", "scripts"} {
-			if info, err := os.Stat(filepath.Join(dir, sibling)); err == nil && info.IsDir() {
-				return fmt.Errorf("%q has a %s/ directory whose content is folded into the body at load time — editing here would bake it into the main file; edit it as a skill file instead", sk.Name, sibling)
-			}
-		}
-	}
-	return nil
-}
-
 // UpdateSubagentProfile overwrites an existing user-authored subagent
 // profile's content in place. name and scope are the profile's identity and
 // are not editable through this call — the frontend keeps them read-only in
@@ -218,7 +164,7 @@ func (a *App) UpdateSubagentProfile(name, scope string, input SubagentProfileInp
 		if sk.Scope != targetScope {
 			return fmt.Errorf("%q scope mismatch: requested %q, current scope is %q", name, targetScope, sk.Scope)
 		}
-		if err := editableSubagentProfile(sk); err != nil {
+		if err := skill.ValidateEditableSubagentProfile(sk); err != nil {
 			return err
 		}
 		break
@@ -278,7 +224,7 @@ func (a *App) DeleteSubagentProfile(name, scope string) error {
 		if sk.Scope != targetScope {
 			return fmt.Errorf("%q scope mismatch: requested %q, current scope is %q", name, targetScope, sk.Scope)
 		}
-		if err := editableSubagentProfile(sk); err != nil {
+		if err := skill.ValidateEditableSubagentProfile(sk); err != nil {
 			return err
 		}
 		break
