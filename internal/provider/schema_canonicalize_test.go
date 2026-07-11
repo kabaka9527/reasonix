@@ -146,10 +146,12 @@ func TestNormalizeLegacyTupleItemsPreservesExistingPrefixItems(t *testing.T) {
 }
 
 func TestNormalizeLegacyTupleItemsPreservesModernArrayItems(t *testing.T) {
+	// Modern object-form items need no rewrite, so the input bytes come back
+	// exactly — not a reserialized (key-sorted) copy, which would perturb the
+	// canonical bytes the registry produced once.
 	raw := json.RawMessage(`{"type":"array","items":{"anyOf":[{"type":"string"},{"type":"number"}]}}`)
-	want := `{"items":{"anyOf":[{"type":"string"},{"type":"number"}]},"type":"array"}`
-	if got := string(NormalizeLegacyTupleItemsForDraft202012(raw)); got != want {
-		t.Fatalf("NormalizeLegacyTupleItemsForDraft202012() = %s, want unchanged modern items %s", got, want)
+	if got := string(NormalizeLegacyTupleItemsForDraft202012(raw)); got != string(raw) {
+		t.Fatalf("NormalizeLegacyTupleItemsForDraft202012() = %s, want the input bytes unchanged %s", got, raw)
 	}
 }
 
