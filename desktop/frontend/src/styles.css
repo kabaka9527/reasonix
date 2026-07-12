@@ -6698,23 +6698,19 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .composer-content-menu__item {
-  min-height: 50px;
-  height: auto;
-  padding-block: 7px;
+  height: 56px;
+  min-height: 56px;
 }
 
-.composer-content-menu__item > kbd {
-  flex: 0 0 auto;
-  min-width: 20px;
-  padding: 2px 5px;
-  border: 1px solid var(--border-soft);
-  border-radius: 5px;
-  background: var(--surface-2);
-  color: var(--fg-faint);
+.composer-content-menu__trigger-icon {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
   font-family: var(--mono);
-  font-size: 11px;
-  line-height: 15px;
-  text-align: center;
+  font-size: 18px;
+  line-height: 16px;
 }
 
 .composer-access-menu__section {

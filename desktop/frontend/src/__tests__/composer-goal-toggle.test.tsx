@@ -1361,11 +1361,9 @@ console.log("\ncomposer goal toggle");
   ok(contentItemIcons[0]?.includes("lucide-file-plus"), "attachment action uses the file attachment icon");
   ok(contentItemIcons[1]?.includes("lucide-at-sign"), "workspace action uses the mention icon");
   ok(contentItemIcons[2]?.includes("lucide-hash"), "recent-session action uses the history reference icon");
-  ok(contentItemIcons[3]?.includes("lucide-square-terminal"), "command action uses the terminal command icon");
+  eq(initialContentItems[3]?.querySelector(".composer-content-menu__trigger-icon")?.textContent, "/", "command action uses the literal slash trigger icon");
   ok(!document.querySelector(".composer-content-menu__divider"), "add-content actions remain one unified group without a divider");
-  eq(initialContentItems[1]?.querySelector("kbd")?.textContent, "@", "add-content menu exposes the workspace reference shortcut");
-  eq(initialContentItems[2]?.querySelector("kbd")?.textContent, "#", "add-content menu exposes the recent-session shortcut");
-  eq(initialContentItems[3]?.querySelector("kbd")?.textContent, "/", "add-content menu exposes commands and skills");
+  ok(initialContentItems.every((item) => !item.querySelector("kbd")), "add-content actions do not duplicate their trigger icons on the right");
 
   const attachmentButton = initialContentItems[0];
   const fileInput = document.querySelector(".composer-content-file-input") as HTMLInputElement | null;

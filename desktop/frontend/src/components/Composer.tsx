@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ClipboardEvent, DragEvent, KeyboardEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
-import { ArrowRight, ArrowUp, AtSign, Check, ChevronDown, ChevronUp, ChevronsUpDown, CornerDownRight, Equal, Eye, FilePlus2, FileText, Flag, Folder, Gauge, Hash, List, MessageSquare, Plus, Search, Shield, ShieldAlert, ShieldCheck, Square, SquareTerminal, Target, Trash2, X } from "lucide-react";
+import { ArrowRight, ArrowUp, AtSign, Check, ChevronDown, ChevronUp, ChevronsUpDown, CornerDownRight, Equal, Eye, FilePlus2, FileText, Flag, Folder, Gauge, Hash, List, MessageSquare, Plus, Search, Shield, ShieldAlert, ShieldCheck, Square, Target, Trash2, X } from "lucide-react";
 import { asArray } from "../lib/array";
 import { filterAtMatches } from "../lib/atMatches";
 import { DedupIndex, sha256 } from "../lib/attachDedup";
@@ -2904,7 +2904,6 @@ export function Composer({
               <span className="composer-access-menu__title">{t("composer.contentReferenceFiles")}</span>
               <span className="composer-access-menu__desc">{t("composer.contentReferenceFilesDesc")}</span>
             </span>
-            <kbd>@</kbd>
           </button>
           <button type="button" role="menuitem" className="composer-access-menu__item composer-content-menu__item" onClick={() => insertContentTrigger("#")}>
             <Hash size={16} aria-hidden="true" />
@@ -2912,7 +2911,6 @@ export function Composer({
               <span className="composer-access-menu__title">{t("composer.contentReferenceSessions")}</span>
               <span className="composer-access-menu__desc">{t("composer.contentReferenceSessionsDesc")}</span>
             </span>
-            <kbd>#</kbd>
           </button>
           <button
             type="button"
@@ -2922,12 +2920,11 @@ export function Composer({
             disabled={text.trim().length > 0}
             title={text.trim().length > 0 ? t("composer.contentUseCommandsEmptyOnly") : undefined}
           >
-            <SquareTerminal size={16} aria-hidden="true" />
+            <span className="composer-content-menu__trigger-icon" aria-hidden="true">/</span>
             <span className="composer-access-menu__copy">
               <span className="composer-access-menu__title">{t("composer.contentUseCommands")}</span>
               <span className="composer-access-menu__desc">{text.trim().length > 0 ? t("composer.contentUseCommandsEmptyOnly") : t("composer.contentUseCommandsDesc")}</span>
             </span>
-            <kbd>/</kbd>
           </button>
         </div>
       </AnchoredPopover>
