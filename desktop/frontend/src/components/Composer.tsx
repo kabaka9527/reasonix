@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ClipboardEvent, DragEvent, KeyboardEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
-import { ArrowRight, ArrowUp, AtSign, Check, ChevronDown, ChevronUp, ChevronsUpDown, CornerDownRight, Equal, Eye, FilePlus2, FileText, Flag, Folder, Gauge, Hash, List, MessageSquare, Plus, Search, Shield, ShieldAlert, ShieldCheck, Slash, Square, Target, Trash2, X } from "lucide-react";
+import { ArrowRight, ArrowUp, AtSign, Check, ChevronDown, ChevronUp, ChevronsUpDown, CornerDownRight, Equal, Eye, FilePlus2, FileText, Flag, Folder, Gauge, Hash, List, MessageSquare, Plus, Search, Shield, ShieldAlert, ShieldCheck, Square, SquareTerminal, Target, Trash2, X } from "lucide-react";
 import { asArray } from "../lib/array";
 import { filterAtMatches } from "../lib/atMatches";
 import { DedupIndex, sha256 } from "../lib/attachDedup";
@@ -2914,7 +2914,6 @@ export function Composer({
             </span>
             <kbd>#</kbd>
           </button>
-          <div className="composer-content-menu__divider" aria-hidden="true" />
           <button
             type="button"
             role="menuitem"
@@ -2923,7 +2922,7 @@ export function Composer({
             disabled={text.trim().length > 0}
             title={text.trim().length > 0 ? t("composer.contentUseCommandsEmptyOnly") : undefined}
           >
-            <Slash size={16} aria-hidden="true" />
+            <SquareTerminal size={16} aria-hidden="true" />
             <span className="composer-access-menu__copy">
               <span className="composer-access-menu__title">{t("composer.contentUseCommands")}</span>
               <span className="composer-access-menu__desc">{text.trim().length > 0 ? t("composer.contentUseCommandsEmptyOnly") : t("composer.contentUseCommandsDesc")}</span>
