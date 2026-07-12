@@ -1198,6 +1198,42 @@ console.log("\ncomposer goal toggle");
   eq(textarea.value, "/", "command action inserts / at the caret");
   await waitFor("slash menu from add-content action", () => Boolean(document.querySelector(".slashmenu")));
 
+  await replaceComposerDraft(rerender, 3003, "existing text");
+  await act(async () => {
+    contentTrigger.click();
+    await flushTimers();
+  });
+  const disabledCommandButton = document.querySelectorAll<HTMLButtonElement>(".composer-content-menu__item")[3];
+  if (!disabledCommandButton) throw new Error("command action did not render for non-empty input");
+  ok(disabledCommandButton.disabled, "command action is disabled while the composer has text");
+  await act(async () => {
+    disabledCommandButton.click();
+    await flushTimers();
+  });
+  eq(textarea.value, "existing text", "disabled command action does not insert / into existing text");
+
+  await rerender({ running: true });
+  await waitFor("content menu closes when a run starts", () => !document.querySelector(".composer-content-menu"));
+  await rerender({ running: false });
+  ok(!document.querySelector(".composer-content-menu"), "content menu stays closed after the run ends");
+
+  await replaceComposerDraft(rerender, 3004, "");
+  await act(async () => {
+    contentTrigger.click();
+    await flushTimers();
+  });
+  const runningSessionButton = document.querySelectorAll<HTMLButtonElement>(".composer-content-menu__item")[2];
+  if (!runningSessionButton) throw new Error("recent-session action did not render before running");
+  await act(async () => {
+    runningSessionButton.click();
+    await flushTimers();
+  });
+  await waitFor("recent-session picker before running", () => Boolean(document.querySelector(".slashmenu__search")));
+  await rerender({ running: true });
+  await waitFor("recent-session picker closes when a run starts", () => !document.querySelector(".slashmenu__search"));
+  await rerender({ running: false });
+  ok(!document.querySelector(".slashmenu__search"), "recent-session picker stays closed after the run ends");
+
   await act(async () => {
     root.unmount();
   });
