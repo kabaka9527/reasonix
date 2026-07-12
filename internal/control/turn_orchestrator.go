@@ -69,14 +69,10 @@ func (o *turnOrchestrator) runSubagentSkillTurnsGoalLoop(ctx context.Context, sk
 	return o.continueGoal(ctx)
 }
 
-// runSubagentSkillTurn records the composed user task and distilled child
-// answer only. Child reasoning and tool chatter stay out of the
-// provider-visible parent context while their UI events nest under a synthetic
-// top-level run_skill card.
-func (o *turnOrchestrator) runSubagentSkillTurn(ctx context.Context, sk skill.Skill, task, raw, display string, runner skill.SubagentRunner, planMode bool) error {
-	return o.runSubagentSkillTurns(ctx, []skill.Skill{sk}, task, raw, display, runner, planMode)
-}
-
+// runSubagentSkillTurns records the composed user task and distilled child
+// answers only. Child reasoning and tool chatter stay out of the
+// provider-visible parent context while their UI events nest under synthetic
+// top-level run_skill cards.
 func (o *turnOrchestrator) runSubagentSkillTurns(ctx context.Context, skills []skill.Skill, task, raw, display string, runner skill.SubagentRunner, planMode bool) error {
 	c := o.c
 	c.maybeSessionStart(ctx)
