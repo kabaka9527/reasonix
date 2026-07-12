@@ -1348,6 +1348,39 @@ console.log("\ncomposer goal toggle");
   const textarea = document.querySelector("textarea") as HTMLTextAreaElement | null;
   if (!textarea) throw new Error("composer textarea did not render");
 
+  await replaceComposerDraft(rerender, 3000, "Follow up #recent\n");
+  await waitFor("typed hash recent-session picker", () => Boolean(document.querySelector(".slashmenu__search")));
+  const typedSessionSearch = document.querySelector(".slashmenu__search") as HTMLInputElement | null;
+  eq(typedSessionSearch?.value, "recent", "typing # opens recent sessions and carries the query across an invisible trailing newline");
+  await act(async () => {
+    typedSessionSearch?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+  eq(textarea.value, "Follow up", "Escape closes the typed recent-session picker and removes its # query");
+
+  await replaceComposerDraft(rerender, 3005, "issue#6310");
+  await act(async () => {
+    await flushTimers();
+  });
+  ok(!document.querySelector(".slashmenu__search"), "an embedded hash remains ordinary composer text");
+
+  await replaceComposerDraft(rerender, 3006, "#\n");
+  await waitFor("typed hash picker before session selection", () => Boolean(document.querySelector(".slashmenu__search")));
+  const typedSessionButton = Array.from(document.querySelectorAll<HTMLButtonElement>(".slashmenu button"))
+    .find((button) => button.textContent?.includes("Recent session"));
+  if (!typedSessionButton) throw new Error("typed recent-session option did not render");
+  await act(async () => {
+    typedSessionButton.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+  eq(textarea.value, "", "selecting a typed recent-session reference removes the # token");
+  ok(document.querySelector(".composer-context__item--session")?.textContent?.includes("Recent session") === true, "selecting a typed recent-session reference adds its context card");
+  const removeTypedSession = document.querySelector<HTMLButtonElement>(".composer-context__item--session button");
+  await act(async () => {
+    removeTypedSession?.click();
+    await flushTimers();
+  });
+
   const contentTrigger = document.querySelector(".composer-content-trigger") as HTMLButtonElement | null;
   if (!contentTrigger) throw new Error("content menu trigger did not render");
   await act(async () => {

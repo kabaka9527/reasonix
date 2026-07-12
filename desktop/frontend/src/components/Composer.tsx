@@ -172,6 +172,18 @@ function workspaceReferenceKey(ref: WorkspaceReference): string {
   return `${ref.isDir ? "dir" : "file"}:${ref.path}`;
 }
 
+type PastChatToken = {
+  from: number;
+  query: string;
+};
+
+function activePastChatToken(text: string): PastChatToken | null {
+  const queryText = text.replace(/[\r\n]+$/u, "");
+  const match = /(?:^|\s)#([^\s#]*)$/u.exec(queryText);
+  if (!match) return null;
+  return { from: match.index, query: match[1] };
+}
+
 export function composerPickFileEntry(
   text: string,
   atRaw: string | null,
@@ -1021,6 +1033,8 @@ export function Composer({
   const atRaw = activeAtToken?.raw ?? null;
   const atDir = activeAtToken?.dir ?? "";
   const atFrag = activeAtToken?.frag ?? "";
+  const pastChatToken = useMemo(() => activePastChatToken(text), [text]);
+  const pastChatTokenQuery = pastChatToken?.query ?? null;
 
   const [entries, setEntries] = useState<DirEntry[]>([]);
   const [searchEntries, setSearchEntries] = useState<DirEntry[]>([]);
@@ -1160,7 +1174,7 @@ export function Composer({
   useEffect(() => {
     setActive(0);
     setDismissed(false);
-  }, [slashQuery, atRaw]);
+  }, [slashQuery, atRaw, pastChatTokenQuery]);
 
   useEffect(() => {
     if (transientDismissSignal === undefined || transientDismissSignal === lastTransientDismissSignal.current) return;
@@ -1217,7 +1231,8 @@ export function Composer({
     setDirectPastChats(false);
     setShowPastChats(false);
     setPastChatQuery("");
-  }, [running]);
+    if (pastChatToken) setDismissed(true);
+  }, [pastChatToken, running]);
 
   const resetPromptHistoryNavigation = () => {
     if (historyIndexRef.current === -1) return;
@@ -2284,12 +2299,12 @@ export function Composer({
   };
 
   // --- past:chats session reference ---
-  const openPastChats = async () => {
+  const openPastChats = useCallback(async (initialQuery = "") => {
     const snapshotCwd = cwdRef.current;
     const sourceDraftKey = activeDraftKeyRef.current;
     setShowPastChats(true);
     setActive(0);
-    setPastChatQuery("");
+    setPastChatQuery(initialQuery);
     setLoadingPastChats(true);
     try {
       const sessions = await app.ListSessions();
@@ -2310,15 +2325,33 @@ export function Composer({
     } finally {
       if (cwdRef.current === snapshotCwd && activeDraftKeyRef.current === sourceDraftKey) setLoadingPastChats(false);
     }
+  }, []);
+
+  useEffect(() => {
+    if (!pastChatToken || directPastChats || dismissed || running || disabled || readOnly) return;
+    setDirectPastChats(true);
+    void openPastChats(pastChatToken.query);
+  }, [directPastChats, disabled, dismissed, openPastChats, pastChatToken, readOnly, running]);
+
+  const clearDirectPastChatToken = () => {
+    const current = textRef.current;
+    const token = activePastChatToken(current);
+    if (!token) return current.length;
+    const next = replaceInvocationTextRange(current, invocationsRef.current, token.from, current.length, "");
+    textRef.current = next.text;
+    invocationsRef.current = next.invocations;
+    setText(next.text);
+    setInvocations(next.invocations);
+    return token.from;
   };
 
   const closeDirectPastChats = () => {
-    setText((current) => current.replace(/(?:^|\s)#[^\s]*$/, "").trimEnd());
+    const caret = clearDirectPastChatToken();
     setDirectPastChats(false);
     setShowPastChats(false);
     setPastChatQuery("");
     setActive(0);
-    requestAnimationFrame(() => taRef.current?.focus());
+    setComposerSelection(caret);
   };
 
   const insertContentTrigger = (trigger: "@" | "#" | "/") => {
@@ -2407,14 +2440,13 @@ export function Composer({
         },
       ];
     });
-    setText((prev) => directPastChats
-      ? prev.replace(/(?:^|\s)#[^\s]*$/, "").trimEnd()
-      : removeAtToken(prev));
+    const caret = directPastChats ? clearDirectPastChatToken() : null;
+    if (!directPastChats) setText((prev) => removeAtToken(prev));
     setDirectPastChats(false);
     setPastChatQuery("");
     setShowPastChats(false);
     setActive(0);
-    setComposerSelection(textRef.current.length);
+    setComposerSelection(caret ?? textRef.current.length);
   };
 
   const removeSessionRef = (path: string) => {
