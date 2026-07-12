@@ -1,6 +1,6 @@
 // Run: tsx src/__tests__/use-controller-meta.test.ts
 
-import { currentTurnWaitMs, effortSwitchNoticeText, foregroundRunningFromRuntimeMeta, historyMessagesToItems, initialState, localizedBackendNoticeText, metaFromTab, modelSwitchNoticeText, reducer, sameMeta, shouldReconcileStaleTurn, tokenModeSwitchNoticeText } from "../lib/useController";
+import { currentTurnWaitMs, effortSwitchNoticeText, foregroundRunningFromRuntimeMeta, historyMessagesToItems, initialState, localizedBackendNoticeText, localizedNoticeText, metaFromTab, modelSwitchNoticeText, reducer, sameMeta, shouldReconcileStaleTurn, tokenModeSwitchNoticeText } from "../lib/useController";
 import type { HistoryMessage, Meta, TabMeta, WireUsage } from "../lib/types";
 
 type LooseTabMeta = Omit<TabMeta, "toolApprovalMode"> & { toolApprovalMode?: TabMeta["toolApprovalMode"] | "" };
@@ -225,6 +225,24 @@ console.log("\nuse controller meta");
 }
 
 {
+  eq(
+    localizedNoticeText("Task status needs one more check (reworded backend copy).", "final_readiness"),
+    "Task status needs one more check; asking the assistant to finish or explain what is blocking it.",
+    "a stable notice code localizes the main copy even after backend copy edits",
+  );
+  eq(
+    localizedNoticeText("Tool round limit reached; asking the assistant to summarize progress.", "unknown_future_code"),
+    "Tool round limit reached; asking the assistant to summarize progress.",
+    "an unknown notice code falls back to exact-text matching",
+  );
+  eq(
+    localizedNoticeText("some free-form backend message"),
+    "some free-form backend message",
+    "a codeless unmatched notice keeps its raw text",
+  );
+}
+
+{
   let s = reducer(initialState, {
     type: "event",
     e: { kind: "notice", level: "warn", text: "session conflicts kept recurring; kept the transcript on the current recovery branch" },
@@ -287,6 +305,16 @@ console.log("\nuse controller meta");
   const hydrated = historyMessagesToItems([{ role: "notice", level: "warn", content: "short notice", detail: "historical diagnostic" }], "h");
   const notice = hydrated.items.find((item) => item.kind === "notice" && item.text === "short notice");
   eq(notice?.kind === "notice" && notice.detail, "historical diagnostic", "history notices preserve expandable detail text");
+}
+
+{
+  const hydrated = historyMessagesToItems([{ role: "notice", level: "info", content: "Tool round limit reached (reworded backend copy).", code: "tool_budget" }], "h");
+  const notice = hydrated.items.find((item) => item.kind === "notice");
+  eq(
+    notice?.kind === "notice" && notice.text,
+    "Tool round limit reached; asking the assistant to summarize progress.",
+    "history notices localize by stable code when the replayed record carries one",
+  );
 }
 
 {

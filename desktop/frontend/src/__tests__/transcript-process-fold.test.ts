@@ -154,6 +154,27 @@ try {
   );
   ok(followsAnswer, "warnings outside the fold preserve their order relative to the final answer");
 
+  // A delivery pause is a decision point addressed to the user: the status
+  // card and its continue action must stay visible when the turn's process
+  // fold closes, unlike plain info notices.
+  const deliveryDoc = render([
+    { kind: "user", id: "u-delivery", text: "ship it" },
+    { kind: "assistant", id: "a-delivery", text: "", reasoning: "attempted delivery", streaming: false },
+    {
+      kind: "notice",
+      id: "n-delivery",
+      level: "info",
+      variant: "delivery",
+      title: "Delivery checks are not complete",
+      text: "The response was generated, but verification and review still need to be completed.",
+      detail: "final-answer readiness failed 3 times: missing verification",
+      action: "continue_delivery",
+    },
+  ]);
+  const deliveryCard = deliveryDoc.querySelector(".notice-line--delivery");
+  ok(deliveryCard && !deliveryCard.closest(".turn-collapse"), "delivery status card renders outside the work fold");
+  ok(Boolean(deliveryCard?.querySelector("button")), "delivery status card keeps its continue action reachable");
+
   const originalNow = Date.now;
   Date.now = () => 25_000;
   try {

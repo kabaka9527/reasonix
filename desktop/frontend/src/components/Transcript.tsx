@@ -6,7 +6,7 @@ import { useT } from "../lib/i18n";
 import { AssistantMessage, InvocationMetadataContext, TurnActions, UserMessage } from "./Message";
 import { ProcessBrainIcon, ProcessCompactIcon, ProcessPhaseIcon } from "./ProcessCard";
 import { ToolCard } from "./ToolCard";
-import { ArrowDown, ChevronRight } from "lucide-react";
+import { ArrowDown, ChevronRight, CirclePlay, Info, TriangleAlert } from "lucide-react";
 import { Welcome } from "./Welcome";
 import { ReadOnlyBatch } from "./ReadOnlyBatch";
 import { ToolGroup, isCreationGroupableTool, toolGroupKind, type ToolGroupKind } from "./ToolGroup";
@@ -204,9 +204,10 @@ type TurnDisplayParts = {
 //
 // The turn is returned as ordered segments so the conversation keeps its real
 // timeline: process that ran after an answer or steer opens a new segment
-// (and thus a new fold) instead of being pulled ahead of it. Warn notices
-// stay visible but do not split the fold — a mid-turn warning is not a
-// conversational boundary.
+// (and thus a new fold) instead of being pulled ahead of it. Warn notices and
+// delivery status cards stay visible but do not split the fold — a mid-turn
+// warning is not a conversational boundary, and a delivery pause must keep its
+// continue action reachable instead of collapsing with the process items.
 function partitionTurnItems(
   items: readonly Item[],
   liveId?: string,
@@ -232,7 +233,7 @@ function partitionTurnItems(
       if (isSteerNoticeText(item.text)) {
         current.outsideItems.push(item);
         currentHasConversation = true;
-      } else if (item.level === "warn") {
+      } else if (item.level === "warn" || item.variant === "delivery") {
         current.outsideItems.push(item);
       } else {
         pushProcess(item);
@@ -640,7 +641,14 @@ export function Transcript({
               out.push(<SteerCard key={item.id} text={item.text} />);
               continue;
             }
-            out.push(<NoticeCard key={item.id} level={item.level} text={item.text} detail={item.detail} />);
+            out.push(
+              <NoticeCard
+                key={item.id}
+                item={item}
+                actionDisabled={running}
+                onAction={item.action === "continue_delivery" ? () => onPrompt(t("notice.deliveryIncompleteContinuePrompt")) : undefined}
+              />,
+            );
           } else {
             out.push(
               <LiveAssistantMessage
@@ -690,7 +698,7 @@ export function Transcript({
       if (!turnIsActive) pushTurnActions(turn, turnItems);
     }
     return out;
-  }, [hotStartIdx, items, openAction, actionPending, rewindDisabled, running, onEditPrompt, onRewind, subcallsByParent, userTurn, checkpointsByTurn, displayMode, turnGroups, tabId, actionHoverMenus, creationMode, lastTurn, turnStartAt, liveId, liveHasAnswerText, liveHasReasoning]);
+  }, [hotStartIdx, items, openAction, actionPending, rewindDisabled, running, onEditPrompt, onPrompt, onRewind, subcallsByParent, userTurn, checkpointsByTurn, displayMode, turnGroups, tabId, actionHoverMenus, creationMode, lastTurn, turnStartAt, liveId, liveHasAnswerText, liveHasReasoning, t]);
 
   // ── Assemble rendered output ──────────────────────────────────────────────
   // Warm/cold zone is a separate memo'd WarmZone component so streaming tokens
@@ -742,6 +750,8 @@ export function Transcript({
               warmOnRewind={onRewind}
               warmSetOpenAction={setOpenAction}
               warmOnEdit={onEditPrompt}
+              warmOnPrompt={onPrompt}
+              warmRunning={running}
               tabId={tabId}
               creationMode={creationMode}
               onToggleColdPage={() => setWarmLayerState((prev) => warmLayerWithNextColdPage(prev, warmLayerSessionKey))}
@@ -800,6 +810,8 @@ const WarmZone = memo(function WarmZone({
   warmOnRewind,
   warmSetOpenAction,
   warmOnEdit,
+  warmOnPrompt,
+  warmRunning,
   tabId,
   creationMode,
   onToggleColdPage,
@@ -824,6 +836,8 @@ const WarmZone = memo(function WarmZone({
   warmOnRewind: ((turn: number, scope: string) => void) | undefined;
   warmSetOpenAction: (action: OpenTurnAction | null) => void;
   warmOnEdit?: (turn: number, displayText: string, submitText?: string) => boolean | void | Promise<boolean | void>;
+  warmOnPrompt: (text: string) => void;
+  warmRunning: boolean;
   tabId?: string;
   creationMode?: boolean;
   onToggleColdPage: () => void;
@@ -880,6 +894,8 @@ const WarmZone = memo(function WarmZone({
               onRewind={warmOnRewind}
               setOpenAction={warmSetOpenAction}
               onEdit={warmOnEdit}
+              onPrompt={warmOnPrompt}
+              running={warmRunning}
               tabId={tabId}
               creationMode={creationMode}
               lastTurn={warmLastTurn}
@@ -929,6 +945,8 @@ function WarmTurnItems({
   onRewind,
   setOpenAction,
   onEdit,
+  onPrompt,
+  running,
   tabId,
   creationMode = false,
   lastTurn,
@@ -947,11 +965,14 @@ function WarmTurnItems({
   onRewind: ((turn: number, scope: string) => void) | undefined;
   setOpenAction: (action: OpenTurnAction | null) => void;
   onEdit?: (turn: number, displayText: string, submitText?: string) => boolean | void | Promise<boolean | void>;
+  onPrompt: (text: string) => void;
+  running: boolean;
   tabId?: string;
   creationMode?: boolean;
   lastTurn?: number;
   mode: DisplayMode;
 }) {
+  const t = useT();
   const nodes: React.ReactNode[] = [];
   const user = items[startIdx];
   if (!user || user.kind !== "user") return nodes;
@@ -999,7 +1020,14 @@ function WarmTurnItems({
           nodes.push(<SteerCard key={item.id} text={item.text} />);
           continue;
         }
-        nodes.push(<NoticeCard key={item.id} level={item.level} text={item.text} detail={item.detail} />);
+        nodes.push(
+          <NoticeCard
+            key={item.id}
+            item={item}
+            actionDisabled={running}
+            onAction={item.action === "continue_delivery" ? () => onPrompt(t("notice.deliveryIncompleteContinuePrompt")) : undefined}
+          />,
+        );
       } else {
         nodes.push(
           <AssistantMessage
@@ -1272,7 +1300,7 @@ function TurnCollapse({ items, durationMs, mode, subcalls, tabId, creationMode =
         body.push(<ToolCard key={it.id} item={it as ToolItem} subcalls={subcalls.get(it.id)} tabId={tabId} />);
         break;
       case "phase": body.push(<PhaseCard key={it.id} text={it.text} />); break;
-      case "notice": body.push(<NoticeCard key={it.id} level={it.level} text={it.text} detail={it.detail} />); break;
+      case "notice": body.push(<NoticeCard key={it.id} item={it} />); break;
       case "compaction": body.push(<CompactionCard key={it.id} item={it} />); break;
       case "assistant":
         // Answer text renders outside the fold (partitionTurnItems strips it),
@@ -1454,17 +1482,27 @@ function SteerCard({ text }: { text: string }) {
   );
 }
 
-function NoticeCard({ level, text, detail }: { level: NoticeItem["level"]; text: string; detail?: string }) {
+export function NoticeCard({ item, onAction, actionDisabled = false }: { item: NoticeItem; onAction?: () => void; actionDisabled?: boolean }) {
   const t = useT();
+  const StatusIcon = item.level === "warn" ? TriangleAlert : Info;
   return (
-    <div className={`notice-line notice-line--${level}`} data-entrance="true">
-      <span className="notice-line__icon">{level === "warn" ? "⚠ " : "ℹ "}</span>
+    <div className={`notice-line notice-line--${item.level}${item.variant ? ` notice-line--${item.variant}` : ""}`} data-entrance="true">
+      <StatusIcon className="notice-line__icon" size={14} aria-hidden="true" />
       <div className="notice-line__text">
-        {text}
-        {detail ? (
+        {item.title ? <div className="notice-line__title">{item.title}</div> : null}
+        <div className="notice-line__body">{item.text}</div>
+        {item.action && onAction ? (
+          <div className="notice-line__actions">
+            <button className="btn btn--small" type="button" onClick={onAction} disabled={actionDisabled}>
+              <CirclePlay size={13} aria-hidden="true" />
+              <span>{t("notice.deliveryIncompleteContinue")}</span>
+            </button>
+          </div>
+        ) : null}
+        {item.detail ? (
           <details className="notice-line__details">
             <summary>{t("notice.details")}</summary>
-            <div>{detail}</div>
+            <div>{item.detail}</div>
           </details>
         ) : null}
       </div>
