@@ -3285,15 +3285,40 @@ a[href] {
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
+.notice-line--delivery {
+  gap: 9px;
+  padding: 10px 12px;
+  color: var(--fg-dim);
+  background: color-mix(in srgb, var(--bg-soft) 76%, var(--bg-elev));
+  border: 1px solid var(--border-soft);
+}
+.notice-line--delivery .notice-line__icon {
+  color: var(--fg-faint);
+  margin-top: 2px;
+}
 .notice-line__icon {
   flex: 0 0 auto;
-  font-size: 14px;
-  line-height: 1.5;
 }
 .notice-line__text {
   flex: 1;
   min-width: 0;
   word-break: break-word;
+}
+.notice-line__title {
+  color: var(--fg);
+  font-weight: 600;
+}
+.notice-line__body {
+  min-width: 0;
+}
+.notice-line__title + .notice-line__body {
+  margin-top: 2px;
+}
+.notice-line__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
 }
 .notice-line__details {
   margin-top: 4px;

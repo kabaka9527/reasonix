@@ -756,7 +756,15 @@ func (c *Controller) finishGuardedTurn(err error) {
 		c.mu.Unlock()
 		c.spawnGuardedTurn(ctx, cancel, next)
 	}()
-	c.sink.Emit(event.Event{Kind: event.TurnDone, Err: err})
+	c.sink.Emit(event.Event{Kind: event.TurnDone, Err: err, Outcome: turnOutcome(err)})
+}
+
+func turnOutcome(err error) string {
+	var readinessErr *agent.FinalReadinessError
+	if errors.As(err, &readinessErr) {
+		return event.TurnOutcomeFinalReadiness
+	}
+	return ""
 }
 
 // Send starts a turn with an uncomposed message. The controller applies

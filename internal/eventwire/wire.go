@@ -23,6 +23,7 @@ type Event struct {
 	Compaction      *Compaction      `json:"compaction,omitempty"`
 	Guardian        *Guardian        `json:"guardian,omitempty"`
 	Err             string           `json:"err,omitempty"`
+	Outcome         string           `json:"outcome,omitempty"`
 	RetryAttempt    int              `json:"retryAttempt,omitempty"`
 	RetryMax        int              `json:"retryMax,omitempty"`
 }
@@ -104,6 +105,7 @@ func ToWire(e event.Event) Event {
 	case event.GuardianAssessment:
 		w.Guardian = ToWireGuardian(e.Guardian)
 	case event.TurnDone:
+		w.Outcome = e.Outcome
 		if e.Err != nil {
 			w.Err = e.Err.Error()
 		}

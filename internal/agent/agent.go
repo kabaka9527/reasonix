@@ -1322,7 +1322,7 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 				if finalReadinessBlocks >= maxFinalReadinessBlocks {
 					result = evidence.ReadinessErrored
 					event.RecordReadinessAudit(a.sink, readiness.audit(result, false))
-					return fmt.Errorf("final-answer readiness failed %d times: %s", finalReadinessBlocks, readiness.reason)
+					return &FinalReadinessError{Attempts: finalReadinessBlocks, Reason: readiness.reason}
 				}
 				event.RecordReadinessAudit(a.sink, readiness.audit(result, false))
 				a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Code: event.NoticeCodeFinalReadiness, Text: finalReadinessNoticeText(), Detail: readiness.reason})

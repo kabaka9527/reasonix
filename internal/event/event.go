@@ -99,6 +99,8 @@ const (
 	KindCount
 )
 
+const TurnOutcomeFinalReadiness = "final_readiness"
+
 // Level classifies a Notice so sinks can style or filter it.
 type Level int
 
@@ -276,6 +278,7 @@ type Event struct {
 	Approval     Approval   // ApprovalRequest
 	Ask          Ask        // AskRequest
 	Err          error      // TurnDone: non-nil on failure
+	Outcome      string     // TurnDone: optional machine-readable recoverable outcome
 	Compaction   Compaction // Compaction
 	Guardian     GuardianResult
 	RetryAttempt int // Retrying: 1-based attempt about to be made

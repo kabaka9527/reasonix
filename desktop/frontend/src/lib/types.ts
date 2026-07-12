@@ -169,6 +169,7 @@ export interface WireEvent {
   compaction?: WireCompaction;
   guardian?: WireGuardian;
   err?: string;
+  outcome?: "final_readiness";
   retryAttempt?: number;
   retryMax?: number;
   // Tab routing: set by the Go-side tabEventSink so multi-tab frontends

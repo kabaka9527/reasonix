@@ -60,7 +60,7 @@ export type Item =
   | { kind: "user"; id: string; text: string; submitText?: string; failed?: boolean; createdAt?: number; checkpointTurn?: number }
   | { kind: "assistant"; id: string; text: string; reasoning: string; streaming: boolean; reasoningComplete?: boolean; reasoningDurationMs?: number; workDurationMs?: number; memoryCitations?: MemoryCitation[] }
   | { kind: "phase"; id: string; text: string }
-  | { kind: "notice"; id: string; level: "info" | "warn"; text: string; detail?: string }
+  | { kind: "notice"; id: string; level: "info" | "warn"; text: string; detail?: string; title?: string; variant?: "delivery"; action?: "continue_delivery" }
   | {
       kind: "compaction";
       id: string;
@@ -936,7 +936,21 @@ function applyEvent(s: State, e: WireEvent): State {
         if (it.kind === "tool" && it.status === "running") return { ...it, status: "stopped" as const };
         return it;
       });
-      let items: Item[] = e.err ? [...finalized, { kind: "notice", id: `e${s.seq}`, level: "warn", text: e.err }] : finalized;
+      let items: Item[] = finalized;
+      if (e.outcome === "final_readiness") {
+        items = [...finalized, {
+          kind: "notice",
+          id: `e${s.seq}`,
+          level: "info",
+          variant: "delivery",
+          title: t("notice.deliveryIncompleteTitle"),
+          text: t("notice.deliveryIncompleteBody"),
+          detail: e.err,
+          action: "continue_delivery",
+        }];
+      } else if (e.err) {
+        items = [...finalized, { kind: "notice", id: `e${s.seq}`, level: "warn", text: e.err }];
+      }
       // Plan approval can arrive before turn_done on some Wails event paths.
       // Keep that gate visible instead of clearing the only UI that can answer it.
       const keepPlanApproval = s.approval?.tool === "exit_plan_mode";
