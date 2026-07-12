@@ -1699,8 +1699,9 @@ export default function App() {
   // successful top-level todo_write result; failed or still-running attempts do
   // not advance the canonical panel state. Incomplete lists are always shown so
   // a stale local dismissal cannot hide work that still blocks final readiness;
-  // completed lists collapse automatically and can then be dismissed. The
-  // dismissal key is still based on stable todo content/state so history reloads
+  // every new list starts collapsed while its header keeps showing live progress
+  // and the current task; completed lists can then be dismissed. The dismissal
+  // key is still based on stable todo content/state so history reloads
   // do not resurrect the same finished list under a different event id. The
   // batch key ignores status changes so progress within the same task list does
   // not look like a brand-new task batch. Dismissal and open state are scoped to
