@@ -192,6 +192,66 @@ func TestSubmitSlashSubagentRunsIsolatedAndPersistsDistilledAnswer(t *testing.T)
 	}
 }
 
+func TestSubmitInvocationDisplayExecutesStructuredEntitiesInVisualOrder(t *testing.T) {
+	sess := agent.NewSession("parent system")
+	exec := agent.New(nil, tool.NewRegistry(), sess, agent.Options{}, event.Discard)
+	events := make(chan event.Event, 24)
+	mainRunner := &fakeTurnRunner{}
+	var names, tasks []string
+	c := New(Options{
+		Runner:   mainRunner,
+		Executor: exec,
+		Sink:     event.FuncSink(func(e event.Event) { events <- e }),
+		Skills: []skill.Skill{
+			{Name: "format", Body: "FORMAT_RULE", RunAs: skill.RunInline, Scope: skill.ScopeGlobal},
+			{Name: "first", Body: "FIRST_SYSTEM", RunAs: skill.RunSubagent, Scope: skill.ScopeGlobal},
+			{Name: "second", Body: "SECOND_SYSTEM", RunAs: skill.RunSubagent, Scope: skill.ScopeGlobal},
+		},
+		SkillRunner: func(_ context.Context, sk skill.Skill, task string, _ skill.SubagentRunOptions) (string, error) {
+			names = append(names, sk.Name)
+			tasks = append(tasks, task)
+			return sk.Name + " answer", nil
+		},
+	})
+	defer c.Close()
+
+	input := "历史会话：prior\n\n当前用户问题：\ninspect auth"
+	c.SubmitInvocationDisplay("inspect auth", input, []InvocationRequest{
+		{Name: "second", Kind: "subagent", Offset: 20},
+		{Name: "format", Kind: "skill", Offset: 0},
+		{Name: "first", Kind: "subagent", Offset: 10},
+	})
+	waitForTurnEvents(t, events)
+	waitIdle(t, c)
+
+	if strings.Join(names, ",") != "first,second" {
+		t.Fatalf("subagent execution order = %v, want visual order first,second", names)
+	}
+	if len(tasks) != 2 || !strings.Contains(tasks[0], "FORMAT_RULE") || !strings.Contains(tasks[0], "历史会话：prior") || tasks[0] != tasks[1] {
+		t.Fatalf("structured tasks = %#v", tasks)
+	}
+	if len(mainRunner.inputs) != 0 {
+		t.Fatalf("main runner received structured subagent turn: %q", mainRunner.inputs)
+	}
+	msgs := c.History()
+	if len(msgs) != 4 || msgs[1].Role != provider.RoleUser || msgs[2].Content != "first answer" || msgs[3].Content != "second answer" {
+		t.Fatalf("parent history = %+v", msgs)
+	}
+}
+
+func TestSubmitInvocationDisplayRunsInlineSkillWithoutArguments(t *testing.T) {
+	runner := &fakeTurnRunner{}
+	c := New(Options{
+		Runner: runner,
+		Skills: []skill.Skill{{Name: "init", Body: "INITIALIZE_PROJECT", RunAs: skill.RunInline, Scope: skill.ScopeGlobal}},
+	})
+	c.SubmitInvocationDisplay("", "", []InvocationRequest{{Name: "init", Kind: "skill", Offset: 0}})
+	waitIdle(t, c)
+	if len(runner.inputs) != 1 || !strings.Contains(runner.inputs[0], "INITIALIZE_PROJECT") {
+		t.Fatalf("inline-only structured input = %q", runner.inputs)
+	}
+}
+
 func TestSubmitSlashSubagentUsesReadOnlyRunnerInPlanMode(t *testing.T) {
 	sess := agent.NewSession("parent system")
 	exec := agent.New(nil, tool.NewRegistry(), sess, agent.Options{}, event.Discard)

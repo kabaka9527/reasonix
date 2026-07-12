@@ -9,6 +9,7 @@ import { InvocationMetadataContext, UserMessage } from "../components/Message";
 import { LocaleProvider } from "../lib/i18n";
 import { ToastProvider } from "../lib/toast";
 import type { AppBindings } from "../lib/bridge";
+import type { StructuredInvocationSubmit } from "../lib/invocationDisplay";
 import type { CollaborationMode, CommandInfo, DirEntry, ToolApprovalMode, TokenMode } from "../lib/types";
 
 let passed = 0;
@@ -90,12 +91,14 @@ async function renderComposer(props: Partial<Parameters<typeof Composer>[0]> = {
   const calls: {
     send: string[];
     submit: (string | undefined)[];
+    structured: (StructuredInvocationSubmit | undefined)[];
     cancel: number;
     clearGoal: number;
     setCollaborationMode: CollaborationMode[];
   } = {
     send: [],
     submit: [],
+    structured: [],
     cancel: 0,
     clearGoal: 0,
     setCollaborationMode: [],
@@ -109,9 +112,10 @@ async function renderComposer(props: Partial<Parameters<typeof Composer>[0]> = {
     cwd: "/repo",
     tabId: "tab-a",
     modelLabel: "DeepSeek-R1",
-    onSend: (displayText, submitText) => {
+    onSend: (displayText, submitText, _tabId, structured) => {
       calls.send.push(displayText);
       calls.submit.push(submitText);
+      calls.structured.push(structured);
     },
     onCancel: () => {
       calls.cancel += 1;
@@ -1194,15 +1198,37 @@ console.log("\ncomposer goal toggle");
     await flushTimers();
   });
 
+  let sendButton = document.querySelector(".composer__btn--send") as HTMLButtonElement | null;
+  if (!sendButton) throw new Error("composer send button did not render for skill-only invocation");
+  ok(sendButton.disabled === false, "inline skill-only invocation enables submit");
+  await act(async () => {
+    sendButton?.click();
+    await flushTimers();
+  });
+  eq(calls.submit[0], "/superpowers:writing-plans", "inline skill-only submission retains display metadata");
+  eq(calls.structured[0]?.input, "", "inline skill-only submission sends an empty explicit task");
+  eq(calls.structured[0]?.display, "/superpowers:writing-plans", "inline skill-only submission preserves reloadable invocation display metadata");
+  eq(calls.structured[0]?.invocations[0]?.name, "superpowers:writing-plans", "inline skill-only submission sends a structured skill entity");
+
+  await replaceComposerDraft(rerender, 20021, "/writing-plans");
+  await waitFor("skill menu for task submission", () => Boolean(document.querySelector(".slashmenu")));
+  textarea = document.querySelector("textarea") as HTMLTextAreaElement | null;
+  if (!textarea) throw new Error("composer textarea did not return after skill-only send");
+  await act(async () => {
+    textarea.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+
   await replaceComposerDraft(rerender, 2003, "Draft the release plan");
-  const sendButton = document.querySelector(".composer__btn--send") as HTMLButtonElement | null;
+  sendButton = document.querySelector(".composer__btn--send") as HTMLButtonElement | null;
   if (!sendButton) throw new Error("composer send button did not render");
   await act(async () => {
     sendButton.click();
     await flushTimers();
   });
-  eq(calls.send[0], "Draft the release plan", "selected skill keeps the visible transcript text clean");
-  eq(calls.submit[0], "/superpowers:writing-plans Draft the release plan", "selected skill preserves the provider-visible slash invocation");
+  eq(calls.send[1], "Draft the release plan", "selected skill keeps the visible transcript text clean");
+  eq(calls.submit[1], "/superpowers:writing-plans Draft the release plan", "selected skill preserves invocation display metadata");
+  eq(calls.structured[1]?.input, "Draft the release plan", "selected skill sends task text separately from invocation metadata");
   ok(document.querySelector(".invocation-display--composer") === null, "selected skill clears after send");
 
   await replaceComposerDraft(rerender, 2004, "/mcp");
@@ -1225,6 +1251,8 @@ console.log("\ncomposer goal toggle");
     await flushTimers();
   });
   ok(document.querySelector<HTMLElement>(".invocation-display--composer")?.style.getPropertyValue("--invocation-color") === "#d59a2f", "selected custom subagent uses its configured color");
+  sendButton = document.querySelector(".composer__btn--send") as HTMLButtonElement | null;
+  ok(sendButton?.disabled === true, "subagent-only invocation remains blocked until a task is entered");
 
   await act(async () => {
     root.unmount();

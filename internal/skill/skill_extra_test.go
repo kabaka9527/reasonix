@@ -313,6 +313,108 @@ func TestUpdateContentRefusesScopeMismatch(t *testing.T) {
 	}
 }
 
+func TestUpdateContentRefusesSymlinkedFlatSkill(t *testing.T) {
+	home := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.md")
+	original := "---\ndescription: outside\nrunAs: subagent\ninvocation: manual\n---\noriginal"
+	if err := os.WriteFile(outside, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(home, ".reasonix", SkillsDirname)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "linked.md")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	st := New(Options{HomeDir: home, DisableBuiltins: true})
+	if _, ok := st.Read("linked"); !ok {
+		t.Fatal("symlinked flat skill should remain readable")
+	}
+	if err := st.UpdateContent("linked", ScopeGlobal, "changed"); err == nil {
+		t.Fatal("updating a symlinked flat skill should fail")
+	}
+	got, err := os.ReadFile(outside)
+	if err != nil || string(got) != original {
+		t.Fatalf("outside target changed: content=%q err=%v", got, err)
+	}
+}
+
+func TestUpdateContentRefusesSymlinkedDirectorySkill(t *testing.T) {
+	home := t.TempDir()
+	outsideDir := t.TempDir()
+	outside := filepath.Join(outsideDir, SkillFile)
+	original := "---\ndescription: outside\nrunAs: subagent\ninvocation: manual\n---\noriginal"
+	if err := os.WriteFile(outside, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(home, ".reasonix", SkillsDirname)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideDir, filepath.Join(root, "linked-dir")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	st := New(Options{HomeDir: home, DisableBuiltins: true})
+	if _, ok := st.Read("linked-dir"); !ok {
+		t.Fatal("symlinked directory skill should remain readable")
+	}
+	if err := st.UpdateContent("linked-dir", ScopeGlobal, "changed"); err == nil {
+		t.Fatal("updating a symlinked directory skill should fail")
+	}
+	got, err := os.ReadFile(outside)
+	if err != nil || string(got) != original {
+		t.Fatalf("outside target changed: content=%q err=%v", got, err)
+	}
+}
+
+func TestDeleteSymlinkedSkillsRemovesLinksNotTargets(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, ".reasonix", SkillsDirname)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outsideDir := t.TempDir()
+	flatTarget := filepath.Join(outsideDir, "flat-target.md")
+	dirTarget := filepath.Join(outsideDir, "directory-target")
+	if err := os.MkdirAll(dirTarget, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("---\ndescription: linked\nrunAs: subagent\ninvocation: manual\n---\nbody")
+	if err := os.WriteFile(flatTarget, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dirTarget, SkillFile), content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	flatLink := filepath.Join(root, "flat-link.md")
+	dirLink := filepath.Join(root, "dir-link")
+	if err := os.Symlink(flatTarget, flatLink); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := os.Symlink(dirTarget, dirLink); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	st := New(Options{HomeDir: home, DisableBuiltins: true})
+	for _, name := range []string{"flat-link", "dir-link"} {
+		if err := st.Delete(name, ScopeGlobal); err != nil {
+			t.Fatalf("Delete(%q): %v", name, err)
+		}
+	}
+	if _, err := os.Lstat(flatLink); !os.IsNotExist(err) {
+		t.Fatalf("flat link still exists: %v", err)
+	}
+	if _, err := os.Lstat(dirLink); !os.IsNotExist(err) {
+		t.Fatalf("directory link still exists: %v", err)
+	}
+	if got, err := os.ReadFile(flatTarget); err != nil || string(got) != string(content) {
+		t.Fatalf("flat target changed: content=%q err=%v", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dirTarget, SkillFile)); err != nil || string(got) != string(content) {
+		t.Fatalf("directory target changed: content=%q err=%v", got, err)
+	}
+}
+
 func TestDeleteRemovesDirectoryLayoutSkill(t *testing.T) {
 	home := t.TempDir()
 	st := New(Options{HomeDir: home, DisableBuiltins: true})

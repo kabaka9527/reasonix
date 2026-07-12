@@ -120,6 +120,33 @@ func TestSubagentProfileCLIRejectsBuiltinCollisionAndRichSkillEdit(t *testing.T)
 	}
 }
 
+func TestSubagentProfileCLIRejectsReservedAndCustomCommandNames(t *testing.T) {
+	isolateCLIConfigHome(t)
+	project := t.TempDir()
+	original, _ := os.Getwd()
+	if err := os.Chdir(project); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(original) })
+	commandPath := filepath.Join(project, ".reasonix", "commands", "formatter.md")
+	if err := os.MkdirAll(filepath.Dir(commandPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(commandPath, []byte("---\ndescription: format\n---\nformat"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"clear", "mcp__server__prompt", "formatter"} {
+		errOut := captureStderr(t, func() {
+			if rc := subagentCommand([]string{"create", name, "--description", "d", "--prompt", "p"}); rc != 1 {
+				t.Fatalf("create %q rc = %d", name, rc)
+			}
+		})
+		if !strings.Contains(errOut, "slash command namespace") {
+			t.Fatalf("create %q output = %q", name, errOut)
+		}
+	}
+}
+
 func TestSubagentProfileCLIEditBuiltinModelOverride(t *testing.T) {
 	isolateCLIConfigHome(t)
 	cfg := config.Default()

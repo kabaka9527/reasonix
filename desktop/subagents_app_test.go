@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"reasonix/internal/command"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/skill"
@@ -67,6 +68,36 @@ func TestCreateSubagentProfileRejectsBuiltinNameCollision(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected an error naming a built-in subagent")
+	}
+}
+
+func TestCreateSubagentProfileRejectsReservedSlashNames(t *testing.T) {
+	for _, name := range []string{"clear", "mcp__server__prompt"} {
+		t.Run(name, func(t *testing.T) {
+			a := newTestSubagentApp(t)
+			_, err := a.CreateSubagentProfile(SubagentProfileInput{Name: name, Description: "d", SystemPrompt: "body"})
+			if err == nil || !strings.Contains(err.Error(), "slash command namespace") {
+				t.Fatalf("CreateSubagentProfile(%q) error = %v", name, err)
+			}
+		})
+	}
+}
+
+func TestCreateSubagentProfileRejectsCustomCommandCollision(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	st := skill.New(skill.Options{HomeDir: home})
+	a := NewApp()
+	a.setTestCtrl(control.New(control.Options{
+		AllSkillStore: st,
+		SkillStore:    st,
+		Commands:      []command.Command{{Name: "formatter"}},
+	}), "")
+	t.Cleanup(func() { a.activeCtrl().Close() })
+	_, err := a.CreateSubagentProfile(SubagentProfileInput{Name: "formatter", Description: "d", SystemPrompt: "body"})
+	if err == nil || !strings.Contains(err.Error(), "slash command namespace") {
+		t.Fatalf("custom command collision error = %v", err)
 	}
 }
 

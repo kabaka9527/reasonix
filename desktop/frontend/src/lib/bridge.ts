@@ -8,6 +8,7 @@
 // @ts-ignore `wails generate module` creates this locally; fresh checkouts keep
 // typecheck green by falling back to a disabled drift check below.
 import type * as GeneratedApp from "../../wailsjs/go/main/App";
+import type { InvocationRequest } from "./invocationDisplay";
 
 import { addBreadcrumb } from "./breadcrumbs";
 import { t } from "./i18n";
@@ -140,6 +141,7 @@ export interface AppBindings {
   SubmitToTab(tabID: string, input: string): Promise<void>;
   SubmitDisplay(display: string, input: string): Promise<void>;
   SubmitDisplayToTab(tabID: string, display: string, input: string): Promise<void>;
+  SubmitInvocationsToTab(tabID: string, display: string, input: string, invocations: InvocationRequest[]): Promise<void>;
   SubmitEditedDisplayToTab(tabID: string, display: string, input: string, original: string): Promise<void>;
   RunShell(command: string): Promise<void>;
   RunShellForTab(tabID: string, command: string): Promise<void>;
@@ -2100,6 +2102,9 @@ function makeMockApp(): AppBindings {
           await this.Submit(input);
         },
         async SubmitDisplayToTab(_tabID, display, input) {
+          await withMockTabScope(_tabID, () => this.SubmitDisplay(display, input));
+        },
+        async SubmitInvocationsToTab(_tabID, display, input, _invocations) {
           await withMockTabScope(_tabID, () => this.SubmitDisplay(display, input));
         },
         async SubmitEditedDisplayToTab(_tabID, display, input, _original) {

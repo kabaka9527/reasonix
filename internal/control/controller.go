@@ -915,6 +915,74 @@ func (c *Controller) SubmitDisplay(display, input string) {
 	c.submit(input, display, "")
 }
 
+// SubmitInvocationDisplay executes composer-selected invocation entities
+// independently of slash-command parsing. Plain string submit entry points keep
+// their existing behavior for CLI, HTTP, and backward-compatible clients.
+func (c *Controller) SubmitInvocationDisplay(display, input string, invocations []InvocationRequest) {
+	c.submitInvocations(input, display, invocations)
+}
+
+func (c *Controller) submitInvocations(input, display string, requests []InvocationRequest) {
+	if len(requests) == 0 {
+		c.SubmitDisplay(display, input)
+		return
+	}
+	ordered := append([]InvocationRequest(nil), requests...)
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Offset < ordered[j].Offset })
+	inline := make([]skill.Skill, 0, len(ordered))
+	subagents := make([]skill.Skill, 0, len(ordered))
+	for _, request := range ordered {
+		sk, _, ok := c.resolveSkillInvocation("/" + strings.TrimSpace(request.Name))
+		if !ok {
+			c.notice("unknown invocation: /" + strings.TrimSpace(request.Name))
+			return
+		}
+		kind := "skill"
+		if sk.RunAs == skill.RunSubagent {
+			kind = "subagent"
+		}
+		if request.Kind != kind {
+			c.notice(fmt.Sprintf("invocation /%s is %s, not %s", sk.SlashName(), kind, request.Kind))
+			return
+		}
+		if sk.RunAs == skill.RunSubagent {
+			subagents = append(subagents, sk)
+		} else {
+			inline = append(inline, sk)
+		}
+	}
+
+	parts := make([]string, 0, len(inline)+1)
+	for _, sk := range inline {
+		parts = append(parts, skill.Render(sk, ""))
+	}
+	if strings.TrimSpace(input) != "" {
+		parts = append(parts, input)
+	}
+	composed := strings.Join(parts, "\n\n")
+	if len(subagents) == 0 {
+		c.runGuarded(func(ctx context.Context) error {
+			return c.runGoalLoopWithRawDisplay(ctx, composed, input, display)
+		})
+		return
+	}
+	if strings.TrimSpace(input) == "" {
+		c.notice("subagent invocation requires a task")
+		return
+	}
+	c.runGuarded(func(ctx context.Context) error {
+		planMode := c.PlanMode()
+		runner := c.skillRunner
+		if planMode {
+			runner = c.readOnlySkillRunner
+		}
+		if runner == nil {
+			return fmt.Errorf("subagent skill runner is unavailable")
+		}
+		return newTurnOrchestrator(c).runSubagentSkillTurnsGoalLoop(ctx, subagents, composed, input, display, runner, planMode)
+	})
+}
+
 // SubmitEditedDisplay is SubmitDisplay for an inline-edited prompt. The model
 // sees input; the saved user message also keeps the pre-edit prompt as local UI
 // metadata so the edit survives session rewrites.

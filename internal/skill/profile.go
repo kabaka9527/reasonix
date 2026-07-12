@@ -4,9 +4,42 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"reasonix/internal/config"
 	"reasonix/internal/frontmatter"
 )
+
+var reservedSubagentSlashNames = map[string]bool{
+	"new": true, "clear": true, "compact": true, "model": true, "provider": true,
+	"effort": true, "memory": true, "memory-v5": true, "migrate": true, "migration": true,
+	"goal": true, "remember": true, "mcp": true, "hooks": true, "plugin": true, "plugins": true,
+	"theme": true, "skill": true, "skills": true, "reload-cmd": true, "tree": true,
+	"branch": true, "switch": true, "rewind": true, "plan-exec": true, "prometheus": true,
+	"resume": true, "rename": true, "todo": true, "verbose": true, "mouse": true,
+	"sandbox": true, "work-mode": true, "profile": true, "auto-plan": true,
+	"reasoning-language": true, "paste-image": true, "output-style": true,
+	"output-styles": true, "diff-fold": true, "language": true, "help": true,
+	"quit": true, "exit": true, "copy": true, "export": true, "forget": true,
+}
+
+// ValidateSubagentProfileName protects the shared slash namespace used by
+// built-in verbs, custom commands, MCP prompts, Skills, and Subagents.
+func ValidateSubagentProfileName(name string, occupied []string) error {
+	if !IsValidName(name) {
+		return fmt.Errorf("invalid name %q — use letters, digits, '_', '-', '.'", name)
+	}
+	key := config.SkillNameKey(name)
+	if reservedSubagentSlashNames[key] || strings.HasPrefix(key, "mcp__") {
+		return fmt.Errorf("%q is reserved by the slash command namespace", name)
+	}
+	for _, existing := range occupied {
+		if config.SkillNameKey(existing) == key {
+			return fmt.Errorf("%q already exists in the slash command namespace", name)
+		}
+	}
+	return nil
+}
 
 // subagentProfileManagedKeys are the frontmatter keys the desktop and CLI
 // profile editors can round-trip without changing execution semantics.

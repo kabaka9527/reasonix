@@ -92,7 +92,7 @@ import {
   type TokenMode,
   type ToolApprovalMode,
 } from "./lib/types";
-import type { InvocationMetadataMap } from "./lib/invocationDisplay";
+import type { InvocationMetadataMap, StructuredInvocationSubmit } from "./lib/invocationDisplay";
 import {
   composerProfileFromMeta,
   composerProfileFromTab,
@@ -1365,7 +1365,7 @@ export default function App() {
   const footerHeightRef = useRef(0);
   const footerRef = useRef<HTMLElement>(null);
   const activeTabIdRef = useRef(activeTabId);
-  const commitThenSendRef = useRef<(tabId: string, displayText: string, submitText?: string) => Promise<void>>(async () => {});
+  const commitThenSendRef = useRef<(tabId: string, displayText: string, submitText?: string, structured?: StructuredInvocationSubmit) => Promise<void>>(async () => {});
   const handleInvocationMetadataChange = useCallback((metadata: InvocationMetadataMap) => {
     const sourceTabId = activeTabIdRef.current;
     if (!sourceTabId) return;
@@ -1848,7 +1848,7 @@ export default function App() {
   // (/skill, /hooks, /mcp) — goes straight to Submit, which the controller
   // resolves (a turn, or a listing Notice).
   const handleSend = useCallback(
-    async (displayText: string, submitText = displayText, requestedTabId = activeTabId) => {
+    async (displayText: string, submitText = displayText, requestedTabId = activeTabId, structured?: StructuredInvocationSubmit) => {
       const sourceTabId = requestedTabId || activeTabId;
       if (!sourceTabId) throw new Error(t("composer.workspaceStarting"));
       const trimmed = displayText.trim();
@@ -1944,7 +1944,7 @@ export default function App() {
       await setControllerCollaborationModeForTab(sourceTabId, controllerComposerProfileCollaborationMode(composerProfile));
       await setControllerToolApprovalModeForTab(sourceTabId, toolApprovalMode);
       if (goal.trim()) await setControllerGoalForTab(sourceTabId, goal);
-      await commitThenSendRef.current(sourceTabId, trimmed, submitText.trim());
+      await commitThenSendRef.current(sourceTabId, trimmed, submitText.trim(), structured);
     },
     [activeTabId, applyGoal, closeTransientOverlays, collaborationMode, composerProfile, controllerReady, goal, notice, runShellForTab,
       setControllerCollaborationModeForTab, setControllerGoalForTab, setControllerToolApprovalModeForTab, switchModel, t, toolApprovalMode, showToast],
@@ -2514,7 +2514,7 @@ export default function App() {
   }, [state.items]);
 
   // send wrapper: commits any pending optimistic rewind before sending.
-  const commitThenSend = useCallback(async (sourceTabId: string, displayText: string, submitText?: string) => {
+  const commitThenSend = useCallback(async (sourceTabId: string, displayText: string, submitText?: string, structured?: StructuredInvocationSubmit) => {
     const sourceTab = tabMetas.find((tab) => tab.id === sourceTabId);
     if (!sourceTab) throw new Error(t("composer.workspaceStarting"));
     if (sourceTab.readOnly) throw new Error(t("composer.readOnlyChannel"));
@@ -2542,7 +2542,7 @@ export default function App() {
         setProjectRevision((v) => v + 1);
       }
     }
-    await sendToTab(sourceTabId, displayText, submitText);
+    await sendToTab(sourceTabId, displayText, submitText, undefined, structured);
   }, [rewindForTab, sendToTab, setRewindCommittingForTab, setRewindStateForTab, t, tabMetas]);
 
   const handleTranscriptPrompt = useCallback((text: string) => {

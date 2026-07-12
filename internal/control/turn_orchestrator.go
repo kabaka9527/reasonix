@@ -56,7 +56,11 @@ func (o *turnOrchestrator) runComposedSyntheticTurn(ctx context.Context, text st
 // real isolated child turn, then lets an active goal continue just as an inline
 // skill turn did before.
 func (o *turnOrchestrator) runSubagentSkillGoalLoop(ctx context.Context, sk skill.Skill, task, raw, display string, runner skill.SubagentRunner, planMode bool) error {
-	if err := o.runSubagentSkillTurn(ctx, sk, task, raw, display, runner, planMode); err != nil {
+	return o.runSubagentSkillTurnsGoalLoop(ctx, []skill.Skill{sk}, task, raw, display, runner, planMode)
+}
+
+func (o *turnOrchestrator) runSubagentSkillTurnsGoalLoop(ctx context.Context, skills []skill.Skill, task, raw, display string, runner skill.SubagentRunner, planMode bool) error {
+	if err := o.runSubagentSkillTurns(ctx, skills, task, raw, display, runner, planMode); err != nil {
 		if ctx.Err() != nil {
 			o.c.stopGoal(GoalStatusStopped)
 		}
@@ -70,6 +74,10 @@ func (o *turnOrchestrator) runSubagentSkillGoalLoop(ctx context.Context, sk skil
 // provider-visible parent context while their UI events nest under a synthetic
 // top-level run_skill card.
 func (o *turnOrchestrator) runSubagentSkillTurn(ctx context.Context, sk skill.Skill, task, raw, display string, runner skill.SubagentRunner, planMode bool) error {
+	return o.runSubagentSkillTurns(ctx, []skill.Skill{sk}, task, raw, display, runner, planMode)
+}
+
+func (o *turnOrchestrator) runSubagentSkillTurns(ctx context.Context, skills []skill.Skill, task, raw, display string, runner skill.SubagentRunner, planMode bool) error {
 	c := o.c
 	c.maybeSessionStart(ctx)
 	parentSession := c.parentSessionID()
@@ -112,32 +120,34 @@ func (o *turnOrchestrator) runSubagentSkillTurn(ctx context.Context, sk skill.Sk
 	}
 	c.executor.Session().Add(provider.Message{Role: provider.RoleUser, Content: input, Images: images})
 
-	callID := fmt.Sprintf("slash-skill-%d", c.slashSkillSeq.Add(1))
-	args, _ := json.Marshal(map[string]string{"name": sk.Name, "arguments": task})
-	toolEvent := event.Tool{
-		ID:       callID,
-		Name:     "run_skill",
-		Args:     string(args),
-		ReadOnly: planMode || sk.ReadOnly,
-	}
-	if c.skillProfile != nil {
-		toolEvent.Profile = c.skillProfile(sk)
-	}
-	c.sink.Emit(event.Event{Kind: event.ToolDispatch, Tool: toolEvent})
-	ctx = agent.WithToolCallContext(ctx, callID, c.sink, c, planMode)
-	ctx = agent.WithSubagentDepth(ctx, 0)
-	answer, err := runner(ctx, sk, input, skill.SubagentRunOptions{HostInitiated: true})
-	if err != nil {
-		toolEvent.Err = err.Error()
+	for _, sk := range skills {
+		callID := fmt.Sprintf("slash-skill-%d", c.slashSkillSeq.Add(1))
+		args, _ := json.Marshal(map[string]string{"name": sk.Name, "arguments": task})
+		toolEvent := event.Tool{
+			ID:       callID,
+			Name:     "run_skill",
+			Args:     string(args),
+			ReadOnly: planMode || sk.ReadOnly,
+		}
+		if c.skillProfile != nil {
+			toolEvent.Profile = c.skillProfile(sk)
+		}
+		c.sink.Emit(event.Event{Kind: event.ToolDispatch, Tool: toolEvent})
+		runCtx := agent.WithToolCallContext(ctx, callID, c.sink, c, planMode)
+		runCtx = agent.WithSubagentDepth(runCtx, 0)
+		answer, err := runner(runCtx, sk, input, skill.SubagentRunOptions{HostInitiated: true})
+		if err != nil {
+			toolEvent.Err = err.Error()
+			c.sink.Emit(event.Event{Kind: event.ToolResult, Tool: toolEvent})
+			return err
+		}
+		answer = tool.GuardSubagentHostDecisionText(answer)
+		toolEvent.Output = answer
 		c.sink.Emit(event.Event{Kind: event.ToolResult, Tool: toolEvent})
-		return err
+		c.executor.Session().Add(provider.Message{Role: provider.RoleAssistant, Content: answer})
+		c.sink.Emit(event.Event{Kind: event.Text, Text: answer})
+		c.sink.Emit(event.Event{Kind: event.Message, Text: answer})
 	}
-	answer = tool.GuardSubagentHostDecisionText(answer)
-	toolEvent.Output = answer
-	c.sink.Emit(event.Event{Kind: event.ToolResult, Tool: toolEvent})
-	c.executor.Session().Add(provider.Message{Role: provider.RoleAssistant, Content: answer})
-	c.sink.Emit(event.Event{Kind: event.Text, Text: answer})
-	c.sink.Emit(event.Event{Kind: event.Message, Text: answer})
 
 	c.clearInFlightTurn()
 	inFlight = false

@@ -12,6 +12,14 @@ import (
 	"reasonix/internal/skill"
 )
 
+// InvocationRequest is an explicit user-selected Skill or Subagent entity.
+// Offset is used only to preserve the visual order chosen in the composer.
+type InvocationRequest struct {
+	Name   string `json:"name"`
+	Kind   string `json:"kind"`
+	Offset int    `json:"offset"`
+}
+
 // PlanModeMarker is prepended to every user turn while plan mode is on. It rides
 // in the user message (not the system prompt or tools), so the cache-stable
 // prompt prefix is left untouched and the toggle costs nothing in cache hits.

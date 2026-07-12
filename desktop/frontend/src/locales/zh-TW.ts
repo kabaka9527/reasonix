@@ -1659,6 +1659,7 @@ export const zhTW: Record<DictKey, string> = {
   "composer.runtimeProfileDeliveryTooltipSummary": "強制驗收，複查驗證",
   "composer.goalInputPlaceholder": "請輸入目標…",
   "composer.goalInputRequired": "請輸入目標",
+  "composer.subagentTaskRequired": "請輸入子智能體任務",
   "composer.modeAsk": "詢問",
   "composer.modeChat": "對話",
   "composer.modeGoal": "目標",

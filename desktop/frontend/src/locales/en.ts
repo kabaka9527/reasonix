@@ -508,6 +508,7 @@ export const en = {
   "composer.runtimeProfileDeliveryTooltipSummary": "Required acceptance, review, and verification",
   "composer.goalInputPlaceholder": "Enter a goal…",
   "composer.goalInputRequired": "Enter a goal",
+  "composer.subagentTaskRequired": "Enter a task for the subagent",
   "composer.planHint": "shift+tab",
   "composer.planHintExit": "shift+tab to exit",
   "composer.modeAsk": "ask",

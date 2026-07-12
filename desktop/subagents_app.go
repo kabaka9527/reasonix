@@ -69,14 +69,6 @@ func editableSubagentProfileScope(raw string) (skill.Scope, error) {
 // same-scope-only overwrite check.
 func (a *App) CreateSubagentProfile(input SubagentProfileInput) (string, error) {
 	name := strings.TrimSpace(input.Name)
-	if !config.IsValidSkillName(name) {
-		return "", fmt.Errorf("invalid name %q — use letters, digits, '_', '-', '.'", name)
-	}
-	for _, builtin := range skill.BuiltinNames() {
-		if config.SkillNameKey(builtin) == config.SkillNameKey(name) {
-			return "", fmt.Errorf("%q is a built-in subagent name and cannot be reused", name)
-		}
-	}
 	desc := strings.TrimSpace(input.Description)
 	if desc == "" {
 		return "", fmt.Errorf("description is required")
@@ -94,10 +86,20 @@ func (a *App) CreateSubagentProfile(input SubagentProfileInput) (string, error) 
 	if ctrl == nil {
 		return "", fmt.Errorf("no active session")
 	}
+	occupied := make([]string, 0)
 	for _, existing := range ctrl.AllSkills() {
-		if config.SkillNameKey(existing.Name) == config.SkillNameKey(name) {
-			return "", fmt.Errorf("%q already exists", name)
+		occupied = append(occupied, existing.Name, existing.SlashName())
+	}
+	for _, command := range ctrl.Commands() {
+		occupied = append(occupied, command.Name)
+	}
+	if host := ctrl.Host(); host != nil {
+		for _, prompt := range host.Prompts() {
+			occupied = append(occupied, prompt.Name)
 		}
+	}
+	if err := skill.ValidateSubagentProfileName(name, occupied); err != nil {
+		return "", err
 	}
 
 	content := skill.RenderSkillFile(skill.SkillFileOptions{

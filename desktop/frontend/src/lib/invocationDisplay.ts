@@ -18,6 +18,26 @@ export type ComposerInvocation = {
   command: CommandInfo;
 };
 
+export type InvocationRequest = {
+  name: string;
+  kind: InvocationKind;
+  offset: number;
+};
+
+export type StructuredInvocationSubmit = {
+  display: string;
+  input: string;
+  invocations: InvocationRequest[];
+};
+
+export function invocationRequests(invocations: ComposerInvocation[]): InvocationRequest[] {
+  return sortComposerInvocations(invocations).map((invocation) => ({
+    name: invocation.command.name,
+    kind: invocation.command.kind === "subagent" ? "subagent" : "skill",
+    offset: invocation.offset,
+  }));
+}
+
 export type InvocationTextSegment =
   | { type: "text"; content: string; start: number }
   | { type: "invocation"; invocation: InvocationDisplay; offset: number };

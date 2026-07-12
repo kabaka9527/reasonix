@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"reasonix/internal/boot"
+	"reasonix/internal/command"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
@@ -404,16 +405,16 @@ func profileCreateScope(raw string, hasProject bool) (skill.Scope, error) {
 }
 
 func refuseSubagentNameCollision(skills []skill.Skill, name string) error {
-	if !skill.IsValidName(name) {
-		return fmt.Errorf("invalid name %q — use letters, digits, '_', '-', '.'", name)
-	}
-	key := config.SkillNameKey(name)
+	occupied := make([]string, 0, len(skills))
 	for _, sk := range skills {
-		if config.SkillNameKey(sk.Name) == key {
-			return fmt.Errorf("%q already exists at scope %q", name, sk.Scope)
-		}
+		occupied = append(occupied, sk.Name, sk.SlashName())
 	}
-	return nil
+	cwd, _ := os.Getwd()
+	commands, _ := command.LoadRoots(config.CommandRootsForRoot(cwd)...)
+	for _, custom := range commands {
+		occupied = append(occupied, custom.Name)
+	}
+	return skill.ValidateSubagentProfileName(name, occupied)
 }
 
 func editBuiltinSubagentProfile(sk skill.Skill, values subagentProfileFlags) error {

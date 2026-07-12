@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"reasonix/internal/config"
+	"reasonix/internal/fileutil"
 	fileencoding "reasonix/internal/fileutil/encoding"
 	"reasonix/internal/frontmatter"
 )
@@ -891,7 +892,68 @@ func (s *Store) UpdateContent(name string, scope Scope, content string) error {
 	if sk.Path == "" || sk.Path == "(builtin)" {
 		return fmt.Errorf("skill %q has no file to update", name)
 	}
-	return os.WriteFile(sk.Path, []byte(content), 0o644)
+	if err := s.validateMutablePath(sk.Path, scope); err != nil {
+		return fmt.Errorf("skill %q cannot be edited: %w", name, err)
+	}
+	info, err := os.Stat(sk.Path)
+	if err != nil {
+		return err
+	}
+	return fileutil.AtomicWriteFile(sk.Path, []byte(content), info.Mode().Perm())
+}
+
+// validateMutablePath rejects writes through linked files or directories. Skill
+// discovery intentionally follows symlinks for read compatibility, but editing
+// one must never replace content outside the configured scope root.
+func (s *Store) validateMutablePath(path string, scope Scope) error {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	for _, root := range s.roots() {
+		if root.Scope != scope {
+			continue
+		}
+		absRoot, err := filepath.Abs(root.Dir)
+		if err != nil {
+			continue
+		}
+		rel, err := filepath.Rel(absRoot, absPath)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		current := absRoot
+		parts := []string{"."}
+		if rel != "." {
+			parts = strings.Split(rel, string(filepath.Separator))
+		}
+		for _, part := range parts {
+			if part != "." {
+				current = filepath.Join(current, part)
+			}
+			info, err := os.Lstat(current)
+			if err != nil {
+				return err
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("path uses symbolic link %s", current)
+			}
+		}
+		realRoot, err := filepath.EvalSymlinks(absRoot)
+		if err != nil {
+			return err
+		}
+		realPath, err := filepath.EvalSymlinks(absPath)
+		if err != nil {
+			return err
+		}
+		realRel, err := filepath.Rel(realRoot, realPath)
+		if err != nil || realRel == ".." || strings.HasPrefix(realRel, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("resolved path is outside scope root %s", absRoot)
+		}
+		return nil
+	}
+	return fmt.Errorf("path is outside configured %s skill roots", scope)
 }
 
 // Delete removes a user-authored skill. Refuses built-ins (no file backs

@@ -11,10 +11,12 @@ import { SPINNER_WORDS, useI18n } from "../lib/i18n";
 import { detectShortcutPlatform, formatShortcutCombo, matchesShortcut } from "../lib/keyboardShortcuts";
 import {
   commandUsesStructuredInvocation,
+  invocationRequests,
   replaceInvocationTextRange,
   serializeInvocationSubmit,
   trimInvocationDraft,
   type ComposerInvocation,
+  type StructuredInvocationSubmit,
 } from "../lib/invocationDisplay";
 import { clearLayoutSize, loadOptionalLayoutSize, saveLayoutSize } from "../lib/layoutPreferences";
 import { createRafResizeUpdater } from "../lib/resizeDrag";
@@ -86,6 +88,7 @@ type PendingGuidance = {
   id: number;
   text: string;
   submitText: string;
+  structured?: StructuredInvocationSubmit;
 };
 
 type FileRefSearchCacheEntry = {
@@ -557,7 +560,7 @@ export function Composer({
   imageInputEnabled?: boolean;
   tabId?: string;
   effort?: EffortInfo;
-  onSend: (displayText: string, submitText?: string, tabId?: string) => void | Promise<void>;
+  onSend: (displayText: string, submitText?: string, tabId?: string, structured?: StructuredInvocationSubmit) => void | Promise<void>;
   onInvocationMetadataChange?: (metadata: Record<string, { kind: "skill" | "subagent"; color?: string }>) => void;
   onSteer?: (submitText: string, tabId?: string) => void | Promise<void>;
   // Returns the un-sent text when cancelling before the server replied (so it can
@@ -1580,9 +1583,14 @@ export function Composer({
     }
     const currentAttachments = attachmentsRef.current;
     const currentWorkspaceRefs = workspaceRefsRef.current;
-    if (!trimmedText && currentAttachments.length === 0 && currentWorkspaceRefs.length === 0) {
+    const inlineInvocationCount = trimmedDraft.invocations.filter((invocation) => invocation.command.kind === "skill").length;
+    const subagentInvocationCount = trimmedDraft.invocations.filter((invocation) => invocation.command.kind === "subagent").length;
+    if (!trimmedText && currentAttachments.length === 0 && currentWorkspaceRefs.length === 0 && inlineInvocationCount === 0) {
       if (goalModeOn && !activeGoal) {
         setComposerPrompt(t("composer.goalInputRequired"));
+        requestAnimationFrame(focusComposerInput);
+      } else if (subagentInvocationCount > 0) {
+        setComposerPrompt(t("composer.subagentTaskRequired"));
         requestAnimationFrame(focusComposerInput);
       }
       return;
@@ -1610,6 +1618,12 @@ export function Composer({
       const invocationText = serializeInvocationSubmit(trimmedText, trimmedDraft.invocations);
       const baseSubmitText = [expandPastedBlocks(invocationText, currentPastedBlocks), refs].filter(Boolean).join(" ");
       const submitText = sessionContext ? `${sessionContext}${baseSubmitText}` : baseSubmitText;
+      const structuredInput = [expandPastedBlocks(trimmedText, currentPastedBlocks), refs].filter(Boolean).join(" ");
+      const structured = trimmedDraft.invocations.length > 0 ? {
+        display: [invocationText, displayRefs].filter(Boolean).join(invocationText && displayRefs ? " " : ""),
+        input: sessionContext ? `${sessionContext}${structuredInput}` : structuredInput,
+        invocations: invocationRequests(trimmedDraft.invocations),
+      } satisfies StructuredInvocationSubmit : undefined;
       if (running) {
         const guidanceText = displayText.trim();
         const guidanceSubmitText = submitText.trim();
@@ -1617,13 +1631,13 @@ export function Composer({
           const id = nextGuidanceId.current++;
           updatePendingGuidanceForDraft(submitDraftKey, (items) => [
             ...items,
-            { id, text: guidanceText, submitText: guidanceSubmitText || guidanceText },
+            { id, text: guidanceText, submitText: guidanceSubmitText || guidanceText, structured },
           ]);
         }
         clearSubmittedDraft(submitDraftKey);
         return;
       }
-      await onSend(displayText, submitText, submitTabId);
+      await onSend(displayText, submitText, submitTabId, structured);
       clearSubmittedDraft(submitDraftKey);
     } catch (error) {
       showToast(error instanceof Error ? error.message : String(error), "warn");
@@ -1638,6 +1652,7 @@ export function Composer({
     targetTabId = tabId,
   ) => {
     if (targetDraftKey !== activeDraftKeyRef.current || disabled || readOnly || guidanceSendingIdRef.current !== null) return;
+    if (running && item.structured) return;
     const displayText = item.text.trim();
     const submitText = item.submitText.trim() || displayText;
     if (!displayText || !submitText) return;
@@ -1647,7 +1662,7 @@ export function Composer({
     updateGuidanceSendingIdForDraft(targetDraftKey, item.id);
     try {
       if (running && onSteer) await onSteer(submitText, targetTabId);
-      else await onSend(displayText, submitText, targetTabId);
+      else await onSend(displayText, submitText, targetTabId, item.structured);
       updatePendingGuidanceForDraft(targetDraftKey, (items) => items.filter((queued) => queued.id !== item.id));
       window.setTimeout(() => {
         takeSelfDispatchedGuidance(submitText, targetDraftKey);
@@ -2787,7 +2802,8 @@ export function Composer({
         return `${word}… ${fmtElapsed(elapsedMs)}${tok}`;
       })()
     : null;
-  const submitEmpty = !text.trim() && attachments.length === 0 && workspaceRefs.length === 0;
+  const submitEmpty = !text.trim() && attachments.length === 0 && workspaceRefs.length === 0 &&
+    !invocations.some((invocation) => invocation.command.kind === "skill");
   const submitBlocked = submitting || pendingPaste > 0 || (submitEmpty && !(goalModeOn && !activeGoal)) || disabled || (!running && submitDisabled) || readOnly;
   const submitTooltip = running ? t("composer.queueGuidance") : t("composer.send");
   const composerPlaceholder = readOnly
@@ -3212,7 +3228,7 @@ export function Composer({
                     className="composer-guidance-item__guide"
                     type="button"
                     aria-label={t("composer.guidanceSend")}
-                    disabled={!running || disabled || readOnly || guidanceSendingId !== null}
+                    disabled={!running || disabled || readOnly || guidanceSendingId !== null || Boolean(item.structured)}
                     onClick={() => void sendQueuedGuidance(item)}
                   >
                     <CornerDownRight size={13} />
