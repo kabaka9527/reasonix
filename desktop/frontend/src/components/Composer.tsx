@@ -9,6 +9,7 @@ import { canUsePromptHistory, isFnKeyEvent, promptHistoryDirectionFromEvent } fr
 import { cacheGeneration, loadOlder } from "../lib/composerHistory";
 import { SPINNER_WORDS, useI18n } from "../lib/i18n";
 import { detectShortcutPlatform, formatShortcutCombo, matchesShortcut } from "../lib/keyboardShortcuts";
+import { fallbackCopyText } from "../lib/clipboard";
 import {
   commandUsesStructuredInvocation,
   invocationRequests,
@@ -302,39 +303,6 @@ async function dataURLHash(dataUrl: string): Promise<string> {
   } catch {
     return "";
   }
-}
-
-function fallbackCopyText(value: string): boolean {
-  const activeElement = document.activeElement;
-  const selection = document.getSelection();
-  const ranges: Range[] = [];
-  if (selection) {
-    for (let index = 0; index < selection.rangeCount; index += 1) {
-      ranges.push(selection.getRangeAt(index));
-    }
-  }
-  const textarea = document.createElement("textarea");
-  textarea.value = value;
-  textarea.setAttribute("readonly", "");
-  textarea.style.position = "fixed";
-  textarea.style.inset = "0 auto auto 0";
-  textarea.style.width = "1px";
-  textarea.style.height = "1px";
-  textarea.style.opacity = "0";
-  document.body.appendChild(textarea);
-  textarea.select();
-  let ok = false;
-  try {
-    ok = document.execCommand("copy");
-  } finally {
-    textarea.remove();
-    if (selection) {
-      selection.removeAllRanges();
-      for (const range of ranges) selection.addRange(range);
-    }
-    if (activeElement instanceof HTMLElement) activeElement.focus();
-  }
-  return ok;
 }
 
 function composerMaxHeight(): number {
