@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 	"testing"
 
 	"reasonix/internal/agent/testutil"
@@ -71,12 +70,12 @@ func TestRunFlushesUnconsumedSteersOnCancel(t *testing.T) {
 		if m.Role != provider.RoleUser {
 			continue
 		}
-		if strings.Contains(m.Content, MidTurnSteerPrefix) {
-			persisted = append(persisted, m.Content)
+		if text, ok := SteerText(m.Content); ok {
+			persisted = append(persisted, text)
 		}
 	}
-	if len(persisted) != 1 || !strings.Contains(persisted[0], "use plan B") {
-		t.Fatalf("unconsumed steer should be persisted to the session exactly once, got %v", persisted)
+	if len(persisted) != 1 || persisted[0] != "use plan B" {
+		t.Fatalf("unconsumed steer should be persisted once and round-trip through SteerText, got %v", persisted)
 	}
 	if len(steerEvents) != 1 || steerEvents[0] != "use plan B" {
 		t.Fatalf("flushed steer should emit its Steer event, got %v", steerEvents)
@@ -86,6 +85,44 @@ func TestRunFlushesUnconsumedSteersOnCancel(t *testing.T) {
 	}
 	if a.Steer("after the turn") {
 		t.Fatalf("Steer must be rejected once the turn has exited")
+	}
+}
+
+// TestSteerTextSurvivesTurnPreferenceWrapping pins replay: steers are
+// persisted through withTurnPreferences, which prepends transient language
+// blocks (for Chinese text even in auto mode, and for any text under an
+// explicit language) ahead of the steer prefix. SteerText must skip the
+// wrapping and return the user's exact original text, or replay degrades the
+// steer into a plain user message.
+func TestSteerTextSurvivesTurnPreferenceWrapping(t *testing.T) {
+	plain := New(nil, nil, NewSession(""), Options{}, event.Discard)
+	explicit := New(nil, nil, NewSession(""), Options{}, event.Discard)
+	explicit.SetReasoningLanguage("zh")
+	explicit.SetResponseLanguage("zh")
+
+	cases := []struct {
+		name  string
+		agent *Agent
+		text  string
+	}{
+		{"english auto (no blocks)", plain, "use plan B"},
+		{"chinese auto (reasoning block)", plain, "请改用方案B"},
+		{"explicit zh (both blocks)", explicit, "switch to plan B"},
+		{"exact text preserved", plain, "  spaced\ttext  "},
+	}
+	for _, tc := range cases {
+		persisted := tc.agent.withTurnPreferences(midTurnSteerMessage(tc.text))
+		got, ok := SteerText(persisted)
+		if !ok {
+			t.Fatalf("%s: SteerText failed to recognize the persisted steer (head %.80q)", tc.name, persisted)
+		}
+		if got != tc.text {
+			t.Fatalf("%s: SteerText = %q, want %q", tc.name, got, tc.text)
+		}
+	}
+
+	if _, ok := SteerText(plain.withTurnPreferences("请总结一下这个文件")); ok {
+		t.Fatalf("a wrapped ordinary user message must not be detected as a steer")
 	}
 }
 

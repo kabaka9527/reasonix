@@ -815,14 +815,46 @@ func midTurnSteerMessage(text string) string {
 // "\n" separator that midTurnSteerMessage inserts between the prefix and the
 // user text; it does not trim spaces so the history replay matches the live
 // Steer event rendering character-for-character.
+//
+// Steers are persisted through withTurnPreferences, which can prepend
+// transient language blocks (for Chinese text even in auto mode) and append
+// the delivery-runtime marker. Both are transport framing, not steer text:
+// leading blocks are skipped before matching the prefix and a trailing
+// marker is cut from the returned text, so replay recognizes steers
+// regardless of the session's language and profile settings.
 func SteerText(content string) (string, bool) {
-	after, found := strings.CutPrefix(content, MidTurnSteerPrefix)
-	if !found {
-		return "", false
+	s := content
+	for {
+		if after, found := strings.CutPrefix(s, MidTurnSteerPrefix); found {
+			// Strip only the "\n" separator, preserving the user's original text.
+			after = strings.TrimPrefix(after, "\n")
+			if trimmed, cut := strings.CutSuffix(after, "\n\n"+deliveryRuntimeMarker); cut {
+				after = trimmed
+			}
+			return after, true
+		}
+		next, ok := trimLeadingSteerWrapper(s)
+		if !ok {
+			return "", false
+		}
+		s = next
 	}
-	// Strip only the "\n" separator, preserving the user's original text.
-	after = strings.TrimPrefix(after, "\n")
-	return after, true
+}
+
+// trimLeadingSteerWrapper removes one leading transient preference block that
+// withTurnPreferences may have placed ahead of the steer prefix. It reports
+// false when content does not start with such a block.
+func trimLeadingSteerWrapper(content string) (string, bool) {
+	s := strings.TrimLeft(content, " \t\r\n")
+	for _, tag := range []string{"response-language", "reasoning-language"} {
+		if !strings.HasPrefix(s, "<"+tag+">") {
+			continue
+		}
+		if rest, ok := trimLeadingTransientBlock(s, tag); ok {
+			return rest, true
+		}
+	}
+	return content, false
 }
 
 // Steer queues a message for mid-turn injection. It reports whether an active
