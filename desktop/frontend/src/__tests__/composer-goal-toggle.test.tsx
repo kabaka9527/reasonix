@@ -180,6 +180,20 @@ function dispatchPasteFile(textarea: HTMLTextAreaElement, file: File) {
   textarea.dispatchEvent(event);
 }
 
+function dispatchPasteText(input: HTMLElement, text: string) {
+  const event = new Event("paste", { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "clipboardData", {
+    configurable: true,
+    value: {
+      files: [],
+      items: [],
+      types: ["text/plain"],
+      getData: (kind: string) => (kind === "text" || kind === "text/plain" ? text : ""),
+    },
+  });
+  input.dispatchEvent(event);
+}
+
 function nativeFileDropEvent(): Event {
   const drop = new window.Event("drop", { bubbles: true, cancelable: true });
   Object.defineProperty(drop, "dataTransfer", {
@@ -212,6 +226,36 @@ type RenderedComposer = Awaited<ReturnType<typeof renderComposer>>;
 
 function fileEntry(name: string): DirEntry {
   return { name, isDir: false };
+}
+
+function richComposerTaskText(input: HTMLElement): string {
+  const clone = input.cloneNode(true) as HTMLElement;
+  clone.querySelectorAll("[data-invocation-id], [data-composer-caret-anchor]").forEach((node) => node.remove());
+  return clone.textContent ?? "";
+}
+
+function richTextBeforeInvocation(input: HTMLElement, invocation: Element): string {
+  const range = document.createRange();
+  range.setStart(input, 0);
+  range.setEndBefore(invocation);
+  const shell = document.createElement("div");
+  shell.appendChild(range.cloneContents());
+  return richComposerTaskText(shell);
+}
+
+async function appendRichComposerInput(input: HTMLElement, text: string, composing = false) {
+  await act(async () => {
+    if (composing) input.dispatchEvent(new Event("compositionstart", { bubbles: true }));
+    input.appendChild(document.createTextNode(text));
+    input.dispatchEvent(new window.InputEvent("input", {
+      bubbles: true,
+      data: text,
+      inputType: composing ? "insertCompositionText" : "insertText",
+      isComposing: composing,
+    }));
+    if (composing) input.dispatchEvent(new Event("compositionend", { bubbles: true }));
+    await flushTimers();
+  });
 }
 
 async function replaceComposerDraft(rerender: RenderedComposer["rerender"], id: number, text: string) {
@@ -276,6 +320,109 @@ console.log("\ncomposer goal toggle");
   eq(calls.send.length, 0, "enabling goal mode with a draft does not send");
   eq(calls.setCollaborationMode.join(","), "goal", "enabling goal mode switches only the collaboration axis");
   eq(textarea.value, "/reviewer ship the release notes", "enabling goal mode preserves the prefixed draft text");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
+  mockApp({
+    Commands: async () => [
+      { name: "writing-plans", description: "Write a plan", kind: "skill" },
+      { name: "review", description: "Review the result", kind: "skill" },
+    ],
+    ListDirForTab: async () => [],
+    SearchFileRefsForTab: async () => [],
+  });
+  const { root, calls, rerender } = await renderComposer();
+  await replaceComposerDraft(rerender, 4200, "/writing-plans");
+  await waitFor("skill menu for pasted-block offsets", () => Boolean(document.querySelector(".slashmenu")));
+  let textarea = document.querySelector("textarea") as HTMLTextAreaElement | null;
+  if (!textarea) throw new Error("composer textarea did not render for pasted-block offsets");
+  await act(async () => {
+    textarea.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+
+  let richInput = document.querySelector(".composer__rich-input") as HTMLDivElement | null;
+  let firstToken = richInput?.querySelector(".composer-invocation-token");
+  if (!richInput || !firstToken) throw new Error("initial rich invocation did not render for pasted-block offsets");
+  const afterFirst = document.createRange();
+  afterFirst.setStartAfter(firstToken);
+  afterFirst.collapse(true);
+  document.getSelection()?.removeAllRanges();
+  document.getSelection()?.addRange(afterFirst);
+  const expandedText = Array.from({ length: 20 }, (_, index) => `expanded line ${index + 1}`).join("\n");
+  await act(async () => {
+    dispatchPasteText(richInput!, expandedText);
+    await flushTimers();
+  });
+  const firstLabel = document.querySelector(".composer__pasted-label")?.textContent ?? "";
+  ok(firstLabel !== "", "long rich-composer paste folds into a pasted block");
+
+  richInput = document.querySelector(".composer__rich-input") as HTMLDivElement | null;
+  if (!richInput) throw new Error("rich input disappeared after folded paste");
+  await appendRichComposerInput(richInput, " /review");
+  const afterReviewQuery = document.createRange();
+  afterReviewQuery.selectNodeContents(richInput);
+  afterReviewQuery.collapse(false);
+  document.getSelection()?.removeAllRanges();
+  document.getSelection()?.addRange(afterReviewQuery);
+  await act(async () => {
+    richInput!.dispatchEvent(new window.KeyboardEvent("keyup", { key: "w", bubbles: true }));
+    await flushTimers();
+  });
+  await waitFor("second skill menu after folded paste", () => Boolean(document.querySelector(".slashmenu")));
+  await act(async () => {
+    richInput!.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+
+  const expandButton = document.querySelectorAll<HTMLButtonElement>(".composer__pasted-actions button")[1];
+  if (!expandButton) throw new Error("pasted-block expand button did not render");
+  await act(async () => {
+    expandButton.click();
+    await flushTimers();
+  });
+  ok(document.querySelector(".composer__pasted-block") === null, "expanding a pasted block removes its folded control");
+
+  richInput = document.querySelector(".composer__rich-input") as HTMLDivElement | null;
+  const tokensAfterExpand = richInput?.querySelectorAll(".composer-invocation-token");
+  const secondToken = tokensAfterExpand?.[1];
+  if (!richInput || !secondToken) throw new Error("second rich invocation disappeared after pasted-block expansion");
+  eq(richTextBeforeInvocation(richInput, secondToken), `${expandedText} `, "expanding folded text shifts the following invocation to the end of the expanded content");
+  const beforeSecond = document.createRange();
+  beforeSecond.setStartBefore(secondToken);
+  beforeSecond.collapse(true);
+  document.getSelection()?.removeAllRanges();
+  document.getSelection()?.addRange(beforeSecond);
+  const removedText = Array.from({ length: 20 }, (_, index) => `removed line ${index + 1}`).join("\n");
+  await act(async () => {
+    dispatchPasteText(richInput!, removedText);
+    await flushTimers();
+  });
+  const removeButton = document.querySelectorAll<HTMLButtonElement>(".composer__pasted-actions button")[2];
+  if (!removeButton) throw new Error("pasted-block remove button did not render");
+  await act(async () => {
+    removeButton.click();
+    await flushTimers();
+  });
+
+  richInput = document.querySelector(".composer__rich-input") as HTMLDivElement | null;
+  const secondTokenAfterRemove = richInput?.querySelectorAll(".composer-invocation-token")[1];
+  if (!richInput || !secondTokenAfterRemove) throw new Error("second rich invocation disappeared after pasted-block removal");
+  eq(richTextBeforeInvocation(richInput, secondTokenAfterRemove), `${expandedText} `, "removing folded text restores the following invocation offset");
+
+  const sendButton = document.querySelector(".composer__btn--send") as HTMLButtonElement | null;
+  if (!sendButton) throw new Error("send button did not render after pasted-block replacement");
+  await act(async () => {
+    sendButton.click();
+    await flushTimers();
+  });
+  eq(calls.structured[0]?.invocations[1]?.offset, expandedText.length, "trimmed structured submission keeps the normalized following invocation offset");
 
   await act(async () => {
     root.unmount();
@@ -1275,6 +1422,29 @@ console.log("\ncomposer goal toggle");
   ok(document.querySelector<HTMLElement>(".invocation-display--composer")?.style.getPropertyValue("--invocation-color") === "#d59a2f", "selected custom subagent uses its configured color");
   sendButton = document.querySelector(".composer__btn--send") as HTMLButtonElement | null;
   ok(sendButton?.disabled === true, "subagent-only invocation remains blocked until a task is entered");
+
+  const subagentInput = document.querySelector(".composer__rich-input") as HTMLDivElement | null;
+  if (!subagentInput) throw new Error("rich composer did not render for colored subagent");
+  await appendRichComposerInput(subagentInput, "Inspect ");
+  eq(richComposerTaskText(subagentInput), "Inspect ", "rich composer does not duplicate ordinary browser input");
+  await appendRichComposerInput(subagentInput, "仓库做了什么？", true);
+  eq(richComposerTaskText(subagentInput), "Inspect 仓库做了什么？", "rich composer does not duplicate committed IME input");
+
+  await replaceComposerDraft(rerender, 2006, "");
+  const resetSubagentInput = document.querySelector(".composer__rich-input") as HTMLDivElement | null;
+  if (!resetSubagentInput) throw new Error("rich composer disappeared after external text replacement");
+  eq(richComposerTaskText(resetSubagentInput), "", "external replacement can restore the initially rendered rich-composer text");
+  await appendRichComposerInput(resetSubagentInput, "Inspect ");
+  await appendRichComposerInput(resetSubagentInput, "仓库做了什么？", true);
+
+  sendButton = document.querySelector(".composer__btn--send") as HTMLButtonElement | null;
+  if (!sendButton) throw new Error("composer send button did not render after subagent task input");
+  await act(async () => {
+    sendButton.click();
+    await flushTimers();
+  });
+  eq(calls.send[2], "Inspect 仓库做了什么？", "subagent task is sent exactly once after rich input");
+  eq(calls.structured[2]?.input, "Inspect 仓库做了什么？", "structured subagent input contains one task copy");
 
   await act(async () => {
     root.unmount();

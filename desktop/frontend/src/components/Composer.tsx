@@ -2179,20 +2179,36 @@ export function Composer({
     setOpenPastedLabels((prev) => (prev.includes(label) ? prev.filter((x) => x !== label) : [...prev, label]));
   };
 
+  const replacePastedBlockLabel = (block: PastedBlock, replacement: string) => {
+    const current = textRef.current;
+    const start = current.indexOf(block.label);
+    if (start < 0) return;
+    const next = replaceInvocationTextRange(
+      current,
+      invocationsRef.current,
+      start,
+      start + block.label.length,
+      replacement,
+    );
+    textRef.current = next.text;
+    invocationsRef.current = next.invocations;
+    setText(next.text);
+    setInvocations(next.invocations);
+    setComposerSelection(next.text.length);
+  };
+
   const removePastedBlock = (block: PastedBlock) => {
-    const next = text.split(block.label).join("");
     pastedBlocksRef.current = pastedBlocksRef.current.filter((x) => x.label !== block.label);
     setPastedBlocks((prev) => prev.filter((x) => x.label !== block.label));
     setOpenPastedLabels((prev) => prev.filter((x) => x !== block.label));
-    setTextCaretEnd(next);
+    replacePastedBlockLabel(block, "");
   };
 
   const expandPastedBlock = (block: PastedBlock) => {
-    const next = text.split(block.label).join(block.text);
     pastedBlocksRef.current = pastedBlocksRef.current.filter((x) => x.label !== block.label);
     setPastedBlocks((prev) => prev.filter((x) => x.label !== block.label));
     setOpenPastedLabels((prev) => prev.filter((x) => x !== block.label));
-    setTextCaretEnd(next);
+    replacePastedBlockLabel(block, block.text);
   };
 
   useEffect(() => {
