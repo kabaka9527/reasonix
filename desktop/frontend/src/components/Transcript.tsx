@@ -197,36 +197,62 @@ type TurnDisplayParts = {
 // Splits a turn by channel, not by position: reasoning, tools, phases, info
 // notices, and compaction cards are process material and fold; every assistant
 // message with answer text is model output addressed to the user and stays
-// outside the fold, in order. Warnings must survive the fold auto-closing on
-// completion, and steers are the user's own words — neither belongs to the
-// model's work process.
+// outside the fold. Warnings must survive the fold auto-closing on completion,
+// and steers are the user's own words — neither belongs to the model's work
+// process.
+//
+// The turn is returned as ordered segments so the conversation keeps its real
+// timeline: process that ran after an answer or steer opens a new segment
+// (and thus a new fold) instead of being pulled ahead of it. Warn notices
+// stay visible but do not split the fold — a mid-turn warning is not a
+// conversational boundary.
 function partitionTurnItems(
   items: readonly Item[],
   liveId?: string,
   liveHasAnswerText = false,
   liveHasReasoning = false,
-): TurnDisplayParts {
-  const processItems: Item[] = [];
-  const outsideItems: Array<NoticeItem | AssistantItem> = [];
+): TurnDisplayParts[] {
+  const segments: TurnDisplayParts[] = [];
+  let current: TurnDisplayParts = { processItems: [], outsideItems: [] };
+  let currentHasConversation = false;
+  const flushSegment = () => {
+    if (current.processItems.length === 0 && current.outsideItems.length === 0) return;
+    segments.push(current);
+    current = { processItems: [], outsideItems: [] };
+    currentHasConversation = false;
+  };
+  const pushProcess = (item: Item) => {
+    if (currentHasConversation) flushSegment();
+    current.processItems.push(item);
+  };
   for (const item of items) {
     if (item.kind === "user") continue;
-    if (item.kind === "notice" && (item.level === "warn" || isSteerNoticeText(item.text))) {
-      outsideItems.push(item);
+    if (item.kind === "notice") {
+      if (isSteerNoticeText(item.text)) {
+        current.outsideItems.push(item);
+        currentHasConversation = true;
+      } else if (item.level === "warn") {
+        current.outsideItems.push(item);
+      } else {
+        pushProcess(item);
+      }
       continue;
     }
     if (item.kind !== "assistant") {
-      processItems.push(item);
+      pushProcess(item);
       continue;
     }
     const hasReasoning = Boolean(item.reasoning || (liveId === item.id && liveHasReasoning));
     if (assistantHasVisibleAnswer(item, liveId, liveHasAnswerText)) {
-      outsideItems.push(item);
-      if (hasReasoning) processItems.push(assistantReasoningOnly(item));
+      if (hasReasoning) pushProcess(assistantReasoningOnly(item));
+      current.outsideItems.push(item);
+      currentHasConversation = true;
       continue;
     }
-    if (hasReasoning) processItems.push(item);
+    if (hasReasoning) pushProcess(item);
   }
-  return { processItems, outsideItems };
+  flushSegment();
+  return segments;
 }
 
 // ── Transcript component ──────────────────────────────────────────────────────
@@ -583,45 +609,50 @@ export function Transcript({
     };
 
     const pushTurnBody = (key: string, turnItems: readonly Item[], turnIsActive: boolean) => {
-      const parts = partitionTurnItems(turnItems, liveId, liveHasAnswerText, liveHasReasoning);
-      if (parts.processItems.length > 0) {
-        out.push(
-          <TurnCollapse
-            key={`turn-process-${key}`}
-            items={parts.processItems}
-            durationMs={turnWorkDurationMs(turnItems)}
-            mode={displayMode}
-            subcalls={subcallsByParent}
-            tabId={tabId}
-            creationMode={creationMode}
-            turnStartAt={turnIsActive ? turnStartAt : undefined}
-            turnActive={turnIsActive}
-            preferredKind="reasoning"
-            hasOutsideContent={parts.outsideItems.length > 0}
-          />,
-        );
-      }
-      for (const item of parts.outsideItems) {
-        if (item.kind === "notice") {
-          if (isSteerNoticeText(item.text)) {
-            out.push(<SteerCard key={item.id} text={item.text} />);
-            continue;
-          }
-          out.push(<NoticeCard key={item.id} level={item.level} text={item.text} detail={item.detail} />);
-        } else {
+      const segments = partitionTurnItems(turnItems, liveId, liveHasAnswerText, liveHasReasoning);
+      const turnHasOutsideContent = segments.some((segment) => segment.outsideItems.length > 0);
+      segments.forEach((segment, segmentIndex) => {
+        const isLastSegment = segmentIndex === segments.length - 1;
+        if (segment.processItems.length > 0) {
           out.push(
-            <LiveAssistantMessage
-              key={item.id}
-              item={assistantAnswerOnly(item)}
-              defaultExpanded={false}
-              expandWhileStreaming={false}
-              truncateStreamingReasoning={true}
+            <TurnCollapse
+              key={`turn-process-${key}-${segment.processItems[0].id}`}
+              items={segment.processItems}
+              durationMs={isLastSegment ? turnWorkDurationMs(turnItems) : 0}
+              mode={displayMode}
+              subcalls={subcallsByParent}
+              tabId={tabId}
               creationMode={creationMode}
-              reasoningDisplay="hide"
+              turnStartAt={turnIsActive && isLastSegment ? turnStartAt : undefined}
+              turnActive={turnIsActive && isLastSegment}
+              preferredKind="reasoning"
+              labelStyle={isLastSegment ? "full" : "counts"}
+              hasOutsideContent={turnHasOutsideContent}
             />,
           );
         }
-      }
+        for (const item of segment.outsideItems) {
+          if (item.kind === "notice") {
+            if (isSteerNoticeText(item.text)) {
+              out.push(<SteerCard key={item.id} text={item.text} />);
+              continue;
+            }
+            out.push(<NoticeCard key={item.id} level={item.level} text={item.text} detail={item.detail} />);
+          } else {
+            out.push(
+              <LiveAssistantMessage
+                key={item.id}
+                item={assistantAnswerOnly(item)}
+                defaultExpanded={false}
+                expandWhileStreaming={false}
+                truncateStreamingReasoning={true}
+                creationMode={creationMode}
+                reasoningDisplay="hide"
+              />,
+            );
+          }
+        }
+      });
     };
 
     const hotGroups = turnGroups.filter((group) => group.startIdx >= hotStartIdx);
@@ -923,7 +954,8 @@ function WarmTurnItems({
   const turn = userTurnMap.get(user.id);
   const checkpoint = turn == null ? undefined : checkpoints.get(turn);
   const turnItems = items.slice(startIdx + 1, Math.min(endIdx, items.length));
-  const parts = partitionTurnItems(turnItems);
+  const segments = partitionTurnItems(turnItems);
+  const turnHasOutsideContent = segments.some((segment) => segment.outsideItems.length > 0);
   nodes.push(
     <UserMessage
       key={user.id}
@@ -938,39 +970,43 @@ function WarmTurnItems({
       editDisabled={rewindDisabled || !checkpoint?.canConversation}
     />,
   );
-  if (parts.processItems.length > 0) {
-    nodes.push(
-      <TurnCollapse
-        key={`warm-process-${user.id}`}
-        items={parts.processItems}
-        durationMs={turnWorkDurationMs(turnItems)}
-        mode={mode}
-        subcalls={subcalls}
-        tabId={tabId}
-        creationMode={creationMode}
-        preferredKind="reasoning"
-        hasOutsideContent={parts.outsideItems.length > 0}
-      />,
-    );
-  }
-  for (const item of parts.outsideItems) {
-    if (item.kind === "notice") {
-      if (isSteerNoticeText(item.text)) {
-        nodes.push(<SteerCard key={item.id} text={item.text} />);
-        continue;
-      }
-      nodes.push(<NoticeCard key={item.id} level={item.level} text={item.text} detail={item.detail} />);
-    } else {
+  segments.forEach((segment, segmentIndex) => {
+    const isLastSegment = segmentIndex === segments.length - 1;
+    if (segment.processItems.length > 0) {
       nodes.push(
-        <AssistantMessage
-          key={item.id}
-          item={assistantAnswerOnly(item)}
-          defaultExpanded={false}
+        <TurnCollapse
+          key={`warm-process-${user.id}-${segment.processItems[0].id}`}
+          items={segment.processItems}
+          durationMs={isLastSegment ? turnWorkDurationMs(turnItems) : 0}
+          mode={mode}
+          subcalls={subcalls}
+          tabId={tabId}
           creationMode={creationMode}
+          preferredKind="reasoning"
+          labelStyle={isLastSegment ? "full" : "counts"}
+          hasOutsideContent={turnHasOutsideContent}
         />,
       );
     }
-  }
+    for (const item of segment.outsideItems) {
+      if (item.kind === "notice") {
+        if (isSteerNoticeText(item.text)) {
+          nodes.push(<SteerCard key={item.id} text={item.text} />);
+          continue;
+        }
+        nodes.push(<NoticeCard key={item.id} level={item.level} text={item.text} detail={item.detail} />);
+      } else {
+        nodes.push(
+          <AssistantMessage
+            key={item.id}
+            item={assistantAnswerOnly(item)}
+            defaultExpanded={false}
+            creationMode={creationMode}
+          />,
+        );
+      }
+    }
+  });
 
   let actionText = "";
   for (const item of turnItems) {
@@ -1071,13 +1107,17 @@ type TurnCollapseProps = {
   turnStartAt?: number;
   turnActive?: boolean;
   preferredKind?: "tool" | "reasoning" | "process";
+  // "full" carries the turn's work-duration label; "counts" is for earlier
+  // segments of a multi-fold turn, which only list what they contain — the
+  // turn's wall-clock belongs to the segment where the turn ends.
+  labelStyle?: "full" | "counts";
   // Whether the turn renders anything outside this fold (answer text, warning,
   // steer). When nothing is outside, the fold is the turn's only content and
   // must not collapse it away.
   hasOutsideContent?: boolean;
 };
 
-function TurnCollapse({ items, durationMs, mode, subcalls, tabId, creationMode = false, turnStartAt, turnActive = false, preferredKind, hasOutsideContent = true }: TurnCollapseProps) {
+function TurnCollapse({ items, durationMs, mode, subcalls, tabId, creationMode = false, turnStartAt, turnActive = false, preferredKind, labelStyle = "full", hasOutsideContent = true }: TurnCollapseProps) {
   const t = useT();
   const live = useContext(LiveStreamContext);
   const [foldPreference, setFoldPreference] = useState<ProcessFoldPreference>(getProcessFoldPreference);
@@ -1136,6 +1176,20 @@ function TurnCollapse({ items, durationMs, mode, subcalls, tabId, creationMode =
       setOpen(false);
     }
   }, [hasRunningWork, hasOutsideContent, foldPreference]);
+  // Switching the preference is an explicit act that also applies to folds
+  // already on screen, not only future ones; it clears per-fold manual
+  // overrides so the whole transcript lands in one consistent state.
+  const prevFoldPreference = useRef(foldPreference);
+  useEffect(() => {
+    if (prevFoldPreference.current === foldPreference) return;
+    prevFoldPreference.current = foldPreference;
+    userOverriddenOpen.current = false;
+    if (foldPreference === "expanded") {
+      setOpen(true);
+    } else if (!hasRunningWork && hasOutsideContent) {
+      setOpen(false);
+    }
+  }, [foldPreference, hasRunningWork, hasOutsideContent]);
 
   if (displayItems.length === 0) return null;
 
@@ -1156,7 +1210,11 @@ function TurnCollapse({ items, durationMs, mode, subcalls, tabId, creationMode =
   const countParts: string[] = [];
   if (toolCount > 0) countParts.push(t("transcript.toolCount", { n: toolCount }));
   if (thoughtCount > 0) countParts.push(t("transcript.thoughtCount", { n: thoughtCount }));
-  const label = countParts.length > 0 ? `${baseLabel} · ${countParts.join(" · ")}` : baseLabel;
+  const label = labelStyle === "counts"
+    ? (countParts.length > 0 ? countParts.join(" · ") : t("transcript.processed"))
+    : countParts.length > 0
+      ? `${baseLabel} · ${countParts.join(" · ")}`
+      : baseLabel;
   const creationLabel = collapseKind === "tool"
     ? t("creation.toolCallsLabel")
     : collapseKind === "reasoning"

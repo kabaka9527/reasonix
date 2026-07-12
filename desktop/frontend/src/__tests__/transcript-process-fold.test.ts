@@ -88,7 +88,9 @@ try {
   }
 
   // Assistant content is model output addressed to the user — every message
-  // with answer text stays outside the fold, not just the last one (#4092).
+  // with answer text stays outside the fold, not just the last one (#4092),
+  // and process that ran AFTER an answer opens a new fold so the transcript
+  // keeps the real timeline: plan → answer → tool work → answer.
   const intermediateDoc = render([
     { kind: "user", id: "u2", text: "continue" },
     { kind: "assistant", id: "a4", text: "I will inspect the files", reasoning: "plan", streaming: false },
@@ -97,25 +99,26 @@ try {
   ]);
   const intermediate = Array.from(intermediateDoc.querySelectorAll(".msg--assistant")).find((node) => node.textContent?.includes("I will inspect the files"));
   const final = Array.from(intermediateDoc.querySelectorAll(".msg--assistant")).find((node) => node.textContent?.includes("all done"));
-  ok(intermediateDoc.querySelectorAll(".turn-collapse").length === 1, "intermediate assistant text does not create another fold");
+  const folds = Array.from(intermediateDoc.querySelectorAll(".turn-collapse"));
+  ok(folds.length === 2, "work after an intermediate answer opens a second fold");
   ok(intermediate && !intermediate.closest(".turn-collapse"), "intermediate assistant text renders outside the work fold");
   ok(final && !final.closest(".turn-collapse"), "final assistant answer renders outside the work fold");
-  const fold = intermediateDoc.querySelector(".turn-collapse");
-  const foldBeforeIntermediate = Boolean(
-    fold &&
-    intermediate &&
-    (fold.compareDocumentPosition(intermediate) & intermediateDoc.defaultView!.Node.DOCUMENT_POSITION_FOLLOWING),
+  const inOrder = (a: Element | null | undefined, b: Element | null | undefined) => Boolean(
+    a && b && (a.compareDocumentPosition(b) & intermediateDoc.defaultView!.Node.DOCUMENT_POSITION_FOLLOWING),
   );
-  const intermediateBeforeFinal = Boolean(
-    intermediate &&
-    final &&
-    (intermediate.compareDocumentPosition(final) & intermediateDoc.defaultView!.Node.DOCUMENT_POSITION_FOLLOWING),
+  ok(
+    inOrder(folds[0], intermediate) && inOrder(intermediate, folds[1]) && inOrder(folds[1], final),
+    "folds and answers keep the turn's real timeline",
   );
-  ok(foldBeforeIntermediate && intermediateBeforeFinal, "answers keep their order after the fold");
-  ok(fold?.textContent?.includes("plan") && fold?.textContent?.includes("verify"), "reasoning segments stay inside the fold");
+  ok(folds[0]?.textContent?.includes("plan") && !folds[0]?.textContent?.includes("verify"), "first fold holds only the work before the first answer");
+  ok(folds[1]?.textContent?.includes("verify") && folds[1]?.textContent?.includes("read_file"), "second fold holds the work after the first answer");
+  ok(folds[0]?.querySelector(".turn-collapse__label")?.textContent === "1 thoughts", "earlier folds carry a counts-only label");
+  ok(folds[1]?.querySelector(".turn-collapse__label")?.textContent?.startsWith("Worked"), "the closing fold carries the turn's work label");
 
   // A mid-turn steer is the user's own message (#6238): it renders on the
-  // user side, outside the fold; ordinary info notices keep folding.
+  // user side, outside the fold, at its real position — work that followed
+  // the steer folds after it, not ahead of it. Ordinary info notices keep
+  // folding.
   const steerDoc = render([
     { kind: "user", id: "u-steer", text: "start" },
     { kind: "assistant", id: "a-steer-1", text: "", reasoning: "thinking", streaming: false },
@@ -128,6 +131,14 @@ try {
   ok(steer?.textContent?.includes("use plan B instead"), "steer bubble carries the user's guidance text");
   const plainInfo = Array.from(steerDoc.querySelectorAll(".notice-line")).find((node) => node.textContent?.includes("plain info notice"));
   ok(plainInfo && plainInfo.closest(".turn-collapse"), "plain info notices keep folding");
+  const steerFolds = Array.from(steerDoc.querySelectorAll(".turn-collapse"));
+  const steerInOrder = (a: Element | null | undefined, b: Element | null | undefined) => Boolean(
+    a && b && (a.compareDocumentPosition(b) & steerDoc.defaultView!.Node.DOCUMENT_POSITION_FOLLOWING),
+  );
+  ok(
+    steerFolds.length === 2 && steerInOrder(steerFolds[0], steer) && steerInOrder(steer, steerFolds[1]),
+    "work after the steer folds after it, keeping the steer's position",
+  );
 
   const errorDoc = render([
     { kind: "user", id: "u-error", text: "finish" },
