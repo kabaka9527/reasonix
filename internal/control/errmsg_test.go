@@ -129,7 +129,12 @@ func TestRedactAuthReason(t *testing.T) {
 		{"masked tail", "Your api key: ****ae54 is invalid", "Your api key: **** is invalid"},
 		{"masked prefix form", "key sk-ab**** was rejected", "key **** was rejected"},
 		{"full key echoed by a relay", "Invalid key sk-proj-abc123def456ghi789 provided", "Invalid key **** provided"},
+		{"digit-free sk key via secrets.Redact", "api key: sk-proj-abcdefghijklmnop is invalid", "api key: **** is invalid"},
+		{"digit-free value after credential word", "api key: relaykey_abcdefghijklmn rejected", "api key: **** rejected"},
+		{"bearer value collapses fully", "Bearer abc.def-ghijklmnopqrs rejected", "Bearer **** rejected"},
+		{"mixed-case token without context", "rejected AbCdEfGhIjKlMnOpQr", "rejected ****"},
 		{"digit-free identifier survives", "code: invalid_authentication_token", "code: invalid_authentication_token"},
+		{"all-caps code survives", "code INVALID_AUTHENTICATION_TOKEN", "code INVALID_AUTHENTICATION_TOKEN"},
 		{"short tokens survive", "token expired at gateway", "token expired at gateway"},
 		{"empty", "", ""},
 	}
