@@ -153,12 +153,7 @@ assert.notEqual(
 assert.equal(
   shouldOpenTodoPanelByDefault(),
   false,
-  "new incomplete todo batches collapse by default",
-);
-assert.equal(
-  shouldOpenTodoPanelByDefault(),
-  false,
-  "completed todo batches collapse by default",
+  "todo batches collapse by default regardless of completion",
 );
 
 const iterations = 200_000;
