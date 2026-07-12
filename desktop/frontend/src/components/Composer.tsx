@@ -1301,6 +1301,12 @@ export function Composer({
     });
   };
 
+  const focusComposerFromContentBlank = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget || disabled || readOnly) return;
+    event.preventDefault();
+    setComposerSelection(textRef.current.length);
+  };
+
   const setTextCaretEnd = (next: string) => {
     textRef.current = next;
     setText(next);
@@ -3426,7 +3432,7 @@ export function Composer({
         >
           <div className="composer__input-row">
             <span className="composer__caret">{shellModeActive ? "$" : "›"}</span>
-            <div className="composer__content">
+            <div className="composer__content" onMouseDown={focusComposerFromContentBlank}>
               {invocations.length > 0 ? (
                 <RichComposerInput
                   ref={richInputRef}

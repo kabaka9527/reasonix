@@ -1176,6 +1176,17 @@ console.log("\ncomposer goal toggle");
 
   const richInput = document.querySelector(".composer__rich-input") as HTMLDivElement | null;
   if (!richInput) throw new Error("rich composer did not render");
+  const richContent = document.querySelector(".composer__content") as HTMLDivElement | null;
+  if (!richContent) throw new Error("rich composer content area did not render");
+  richInput.blur();
+  await act(async () => {
+    richContent.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    await flushTimers();
+  });
+  ok(document.activeElement === richInput, "clicking blank rich-composer space focuses the editable task input");
+
   const invocationToken = richInput.querySelector(".composer-invocation-token");
   if (!invocationToken) throw new Error("rich invocation token did not render");
   const richRange = document.createRange();
