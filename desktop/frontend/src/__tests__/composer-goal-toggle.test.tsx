@@ -234,12 +234,12 @@ console.log("\ncomposer goal toggle");
   eq(intentButton.textContent?.trim(), "Standard", "execution method trigger shows only the current method");
   eq(intentButton.getAttribute("aria-label"), "Execution method · Standard", "execution method trigger keeps its full accessible name");
   await act(async () => {
-    intentButton.focus();
+    intentButton.dispatchEvent(new window.FocusEvent("focusin", { bubbles: true }));
     await flushTimers();
   });
   eq(document.querySelector('[role="tooltip"]')?.textContent, "Execution method · Standard: Analyze and act as you go", "execution method tooltip combines category, value, and summary");
   await act(async () => {
-    intentButton.blur();
+    intentButton.dispatchEvent(new window.FocusEvent("focusout", { bubbles: true }));
     await flushTimers();
   });
 

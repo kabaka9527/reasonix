@@ -804,8 +804,8 @@ func chatREPL(args []string) int {
 	// model (carrying the conversation). It must NOT touch the running model —
 	// runModelSubcommand performs the swap on the live copy. The same stable sink
 	// feeds the new controller, so events keep flowing to this TUI.
-	m.buildController = func(ref string, carry []provider.Message, resumePath string) (*control.Controller, error) {
-		c, err := setupQuietProfile(ctx, ref, *maxSteps, false, sink, profile)
+	m.buildController = func(spec controllerBuildSpec, carry []provider.Message, resumePath string) (*control.Controller, error) {
+		c, err := setupQuietProfile(ctx, spec.ModelRef, *maxSteps, false, sink, spec.RuntimeProfile)
 		if err != nil {
 			return nil, err
 		}
@@ -814,11 +814,13 @@ func chatREPL(args []string) int {
 		path := agent.ContinueSessionPath(resumePath, c.SessionDir(), c.Label())
 		c.AdoptHistory(carry, path)
 		c.EnableInteractiveApproval()
-		if *yolo {
-			c.SetAutoApproveTools(true)
+		c.SetPlanMode(spec.PlanMode)
+		if spec.ToolApprovalMode != "" {
+			c.SetToolApprovalMode(spec.ToolApprovalMode)
 		}
 		return c, nil
 	}
+	m.runtimeProfile = profile
 	if cfg, e := config.Load(); e == nil {
 		name := *model
 		if name == "" {

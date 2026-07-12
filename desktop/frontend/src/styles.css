@@ -6538,6 +6538,11 @@ body > .mermaid-diagram--fullscreen {
   text-align: center;
 }
 
+.composer-content-menu__divider {
+  height: 1px;
+  margin: 4px 8px;
+  background: var(--border-soft);
+}
 .composer-access-menu__section {
   display: flex;
   flex-direction: column;

@@ -433,6 +433,7 @@ Mode and display shortcuts:
 | `Shift+Tab` | Toggles Plan on/off | Plan is read-only planning and does not cycle Ask/Auto/YOLO. |
 | `Ctrl+Y` | Toggles YOLO on/off | Turning YOLO off restores the previous Ask/Auto base when known. Terminals that forward Command/Super may also send `Cmd+Y`, but `Ctrl+Y` is the reliable terminal shortcut. |
 | `--yolo`, `--dangerously-skip-permissions` | Starts chat in YOLO | Same runtime mode as `Ctrl+Y`. |
+| `/work-mode [economy|balanced|delivery]` | Shows or switches the current session's work mode | `/profile` is a compatibility alias. Switching rebuilds the runtime atomically, preserves the conversation and approval posture, and is blocked while work is active. |
 | `Ctrl+O` | Toggles verbose reasoning display | Also available through `/verbose`. |
 | `Ctrl+B` | Expands or collapses long shell output | Long shell-output hint lines can also be clicked in the transcript; text selection is handled in-app while the full-screen TUI has mouse reporting enabled. |
 | Ask / Auto | No keyboard cycle | Ask is the default interactive base. Auto is not entered through `Shift+Tab`; use clients or APIs that expose the tool approval posture directly. |
@@ -660,7 +661,7 @@ convenient.
 ## Slash commands
 
 In an interactive `reasonix` session, built-in commands (`/compact`, `/new`, `/clear`, `/rewind`,
-`/tree`, `/branch`, `/switch`, `/todo`, `/model`, `/mcp`, `/skills`, `/hooks`,
+`/tree`, `/branch`, `/switch`, `/todo`, `/model`, `/work-mode`, `/mcp`, `/skills`, `/hooks`,
 `/memory`, `/memory-v5`, `/goal`, `/output-style`, `/sandbox`, `/language`,
 `/auto-plan`, `/reasoning-language`, `/help`) run
 locally — `/help` lists them all. Built-in **skills** such as `/init`,
@@ -854,7 +855,7 @@ token economy mode, connect only this narrow surface with
 `connect_tool_source(source="read_only_skill")`; the full `skills` source still
 enables writer-capable skill tools and remains blocked in plan mode.
 
-Choose a per-session runtime profile with
+Choose the startup runtime profile with
 `--profile economy|balanced|delivery` (for example, `reasonix run --profile
 delivery "fix and verify this bug"`). Economy keeps the initial tool surface
 lean and connects optional sources on demand. Balanced is the byte-compatible
@@ -871,6 +872,16 @@ require structured review (and security review when high). Meta tools such as
 `task`, `run_skill`, and `review` are not counted as mutations by themselves —
 only real child writes are. Read-only analysis remains available without
 forcing a write.
+Inside an interactive TUI session, use `/work-mode` to inspect the current
+choice or `/work-mode economy|balanced|delivery` to switch it. `/profile` is a
+compatibility alias. The switch atomically rebuilds the controller while
+preserving history, the session path, leases, and the Ask/Auto/YOLO posture; it
+is rejected while a turn, approval/question, background job, or another runtime
+switch is active. A failed build leaves the previous controller usable. This
+command changes only the current session and does not persist a new global
+default. Crossing profiles creates one new provider cache prefix; requests
+within the selected profile keep a stable system contract and tool schema.
+
 Desktop tabs expose the same three choices and persist Economy or Delivery;
 legacy empty/`full` values remain Balanced.
 

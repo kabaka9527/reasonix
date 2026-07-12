@@ -66,6 +66,7 @@ func builtinHelpItems() []compItem {
 		{label: "/switch", hint: i18n.M.CmdSwitchBranch},
 		{label: "/todo", hint: i18n.M.CmdTodo},
 		{label: "/model", hint: i18n.M.CmdModel},
+		{label: "/work-mode", hint: i18n.M.CmdWorkMode},
 		{label: "/provider", hint: i18n.M.CmdProvider},
 		{label: "/mcp", hint: i18n.M.CmdMcp},
 		{label: "/skills", hint: i18n.M.CmdSkill},

@@ -129,6 +129,10 @@ func (m *chatTUI) skillSaveEnabledChanges(changes map[string]bool) {
 		m.notice("cannot change skills while a turn is running")
 		return
 	}
+	if m.modelSwitchPending {
+		m.notice("wait for the current runtime switch to finish")
+		return
+	}
 	known := map[string]string{}
 	for _, sk := range m.ctrl.AllSkills() {
 		known[config.SkillNameKey(sk.Name)] = sk.Name
@@ -193,6 +197,10 @@ func (m *chatTUI) scheduleSkillSessionRefresh(reason, notice string) bool {
 		m.notice("cannot refresh skills while a turn is running")
 		return false
 	}
+	if m.modelSwitchPending {
+		m.notice("wait for the current runtime switch to finish")
+		return false
+	}
 	if err := m.ctrl.Snapshot(); err != nil {
 		slog.Warn(reason+": snapshot failed", "err", err)
 	}
@@ -217,7 +225,12 @@ func (m *chatTUI) scheduleSkillSessionRefresh(reason, notice string) bool {
 	ref := m.modelRef
 	m.modelSwitchPending = true
 	m.pendingModelSwitch = func() tea.Msg {
-		c, err := build(ref, carried, prevPath)
+		c, err := build(controllerBuildSpec{
+			ModelRef:         ref,
+			RuntimeProfile:   m.runtimeProfile,
+			ToolApprovalMode: oldCtrl.ToolApprovalMode(),
+			PlanMode:         oldCtrl.PlanMode(),
+		}, carried, prevPath)
 		if err != nil {
 			return modelSwitchMsg{ref: ref, err: err}
 		}

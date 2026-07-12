@@ -74,6 +74,7 @@ func (m *chatTUI) slashItems() []compItem {
 		{label: "/mcp", insert: "/mcp", hint: i18n.M.CmdMcp},
 		{label: "/plugins", insert: "/plugins", hint: i18n.M.CmdPlugins},
 		{label: "/model", insert: "/model ", hint: i18n.M.CmdModel, descend: true},
+		{label: "/work-mode", insert: "/work-mode ", hint: i18n.M.CmdWorkMode, descend: true},
 		{label: "/provider", insert: "/provider ", hint: i18n.M.CmdProvider, descend: true},
 		{label: "/skills", insert: "/skills", hint: i18n.M.CmdSkill},
 		{label: "/reload-cmd", insert: "/reload-cmd", hint: i18n.M.CmdReloadCmd},
@@ -165,6 +166,9 @@ func (m *chatTUI) updateCompletion() {
 // currently /mcp; custom commands and MCP prompts take free-form template args,
 // so they yield nothing.
 func (m *chatTUI) slashArgItems(val string) ([]compItem, int, bool) {
+	if items, from, ok := m.workModeArgItems(val); ok {
+		return items, from, len(items) > 0
+	}
 	if items, from, ok := m.branchArgItems(val); ok {
 		return items, from, len(items) > 0
 	}
