@@ -4,7 +4,6 @@ import {
   aggregateLongTaskProfile,
   buildCrashPayload,
   buildPerformancePayload,
-  copyReportText,
   formatLongTaskAttribution,
   formatPerformanceContext,
   globalCrashReportReason,
@@ -22,6 +21,7 @@ import {
   type PerformanceSnapshot,
   type ProfilerTrace,
 } from "../lib/crash";
+import { writeClipboardText } from "../lib/clipboard";
 
 let passed = 0;
 let failed = 0;
@@ -226,8 +226,12 @@ eq(shouldRecordEventLoopLagSample(true, 60_000), false, "ignores event-loop lag 
 eq(shouldRecordEventLoopLagSample(false, 3_000), false, "ignores event-loop lag immediately after visibility resumes");
 eq(shouldRecordEventLoopLagSample(false, 6_000), true, "records event-loop lag after the visibility resume grace period");
 eq(shouldRecordEventLoopLagSample(false, 60_000, false), false, "ignores event-loop lag while unfocused");
-eq(shouldRecordEventLoopLagSample(false, 60_000, true, 29_000), true, "records large lag spikes while visible and focused");
-eq(shouldRecordEventLoopLagSample(false, 60_000, true, 30_000), false, "treats suspension-scale lag readings as paused timers, not jank");
+eq(
+  shouldRecordEventLoopLagSample(false, 60_000, true, 3_000),
+  false,
+  "ignores event-loop lag immediately after focus resumes",
+);
+eq(shouldRecordEventLoopLagSample(false, 60_000, true, 6_000), true, "records event-loop lag once both resume grace windows pass");
 
 eq(shouldPromptForPerformanceLabel(false, 11 * 60_000, false), true, "prompts an unhandled label past cooldown while visible");
 eq(shouldPromptForPerformanceLabel(true, 11 * 60_000, false), false, "suppresses an already reported or dismissed label");
@@ -238,15 +242,21 @@ eq(shouldPromptForPerformanceLabel(false, 11 * 60_000, false, false), false, "ne
 {
   let interval: (() => void) | undefined;
   let now = 0;
+  let focused = true;
   let promptPainted = false;
   const previousWindow = (globalThis as any).window;
   const previousDocument = (globalThis as any).document;
   const previousPerformance = (globalThis as any).performance;
   const previousPerformanceObserver = (globalThis as any).PerformanceObserver;
   (globalThis as any).performance = { now: () => now };
+  // Listeners are intentionally no-ops: this exercises the sampler's own
+  // hidden/unfocused self-observation, i.e. the case where a throttled tick
+  // runs before the visibilitychange/focus task is delivered (the race behind
+  // the field reports #6419/#5909).
   (globalThis as any).window = {
     runtime: {},
     location: { protocol: "app:", host: "test", pathname: "/", hash: "" },
+    addEventListener: () => {},
     setInterval: (cb: () => void) => {
       interval = cb;
       return 1;
@@ -254,7 +264,7 @@ eq(shouldPromptForPerformanceLabel(false, 11 * 60_000, false, false), false, "ne
   };
   (globalThis as any).document = {
     visibilityState: "visible",
-    hasFocus: () => true,
+    hasFocus: () => focused,
     addEventListener: () => {},
     getElementById: () => {
       promptPainted = true;
@@ -274,18 +284,16 @@ eq(shouldPromptForPerformanceLabel(false, 11 * 60_000, false, false), false, "ne
   interval?.(); // records a 0ms sample in the steady visible state
   (globalThis as any).document.visibilityState = "hidden";
   now = 47_000;
-  interval?.(); // hidden tick: observed hidden, sample dropped
+  interval?.(); // hidden tick: observed hidden, sample dropped (visibilitychange never delivered)
   (globalThis as any).document.visibilityState = "visible";
   now = 49_500;
   try {
-    interval?.(); // resume-boundary tick, 1.5s overdue, visibilitychange never ran
+    interval?.(); // resume-boundary tick, 1.5s overdue, visibilitychange still not delivered
   } catch {
     // a regressed sampler paints into the stubbed DOM and throws; the eq below reports it
   }
   eq(promptPainted, false, "resume-boundary tick does not report suspended-timer delay as event-loop lag");
 
-  // The restarted visible window must not permanently mute the detector:
-  // sustained lag while visible and past the resume grace still prompts.
   now = 50_500;
   interval?.(); // re-primes after the restart
   now = 51_500;
@@ -296,18 +304,48 @@ eq(shouldPromptForPerformanceLabel(false, 11 * 60_000, false, false), false, "ne
   interval?.();
   now = 54_500;
   interval?.(); // grace over, steady 0ms samples resume
+
+  // Focus-only cycle, self-observed: the window loses focus (a throttled tick
+  // observes it before any blur task), the app naps, and on refocus the overdue
+  // tick runs before the focus task. Without focus tracking this reads as a
+  // multi-second lag spike and prompts (the #6138 path #6424 must absorb).
+  focused = false;
+  now = 59_000;
+  interval?.(); // unfocused tick: arms the resume restart, records nothing
+  focused = true;
+  now = 61_500;
+  try {
+    interval?.(); // refocus-boundary tick, 1.5s overdue, focus task not yet delivered
+  } catch {
+    // a regressed sampler paints into the stubbed DOM and throws; the eq below reports it
+  }
+  eq(promptPainted, false, "refocus-boundary tick does not report napped-timer delay as event-loop lag");
+
+  now = 62_600;
+  interval?.(); // re-primes
+  now = 63_600;
+  interval?.();
+  now = 64_600;
+  interval?.();
+  now = 65_600;
+  interval?.();
+  now = 66_600;
+  interval?.(); // both grace windows over, steady samples resume
+
+  // A severe main-thread freeze while visible, focused, and settled must still
+  // produce a report — there is deliberately no absolute duration cap.
   let promptAttempted = false;
   (globalThis as any).document.getElementById = () => {
     promptAttempted = true;
     throw new Error("stop before painting into the stubbed DOM");
   };
-  now = 57_000;
+  now = 112_600;
   try {
-    interval?.(); // 1.5s late while visible and settled: a genuine lag spike
+    interval?.(); // 45s late with no visibility or focus transition: a real freeze
   } catch {
     // paint intentionally stopped at getElementById
   }
-  eq(promptAttempted, true, "sustained visible lag past the restarted grace window still prompts");
+  eq(promptAttempted, true, "a severe settled-state freeze still prompts (no absolute suspension cap)");
   (globalThis as any).window = previousWindow;
   (globalThis as any).document = previousDocument;
   (globalThis as any).performance = previousPerformance;
@@ -322,23 +360,41 @@ eq([...parseReportedPerf("{not json", "abc123")], [], "tolerates corrupt storage
 
 {
   const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  const previousWindow = (globalThis as any).window;
+  const previousHTMLElement = (globalThis as any).HTMLElement;
   const setNavigator = (value: unknown) =>
     Object.defineProperty(globalThis, "navigator", { value, configurable: true });
 
   setNavigator({ clipboard: { writeText: async () => {} } });
-  eq(await copyReportText("report"), true, "copy reports success through the async clipboard API");
+  eq(await writeClipboardText("report"), true, "copy reports success through the async clipboard API");
 
-  setNavigator({
+  const rejectingClipboard = {
     clipboard: {
       writeText: async () => {
         throw new Error("denied");
       },
     },
-  });
-  eq(await copyReportText("report"), false, "copy reports failure when the clipboard rejects and no DOM fallback exists");
+  };
+  setNavigator(rejectingClipboard);
+  let bridgeCalls = 0;
+  (globalThis as any).window = {
+    runtime: {
+      ClipboardSetText: async (value: string) => {
+        bridgeCalls += 1;
+        return value.length > 0;
+      },
+    },
+  };
+  eq(await writeClipboardText("report"), true, "copy falls back to the Wails native clipboard bridge when the clipboard API rejects");
+  eq(bridgeCalls, 1, "the rejected clipboard write goes through the native bridge exactly once");
 
+  setNavigator(rejectingClipboard);
   const execCommands: string[] = [];
+  (globalThis as any).window = {};
+  (globalThis as any).HTMLElement = class {};
   (globalThis as any).document = {
+    activeElement: undefined,
+    getSelection: () => null,
     createElement: () => ({ value: "", style: {}, setAttribute: () => {}, select: () => {}, remove: () => {} }),
     body: { appendChild: () => {} },
     execCommand: (command: string) => {
@@ -346,10 +402,13 @@ eq([...parseReportedPerf("{not json", "abc123")], [], "tolerates corrupt storage
       return true;
     },
   };
-  eq(await copyReportText("report"), true, "copy falls back to execCommand when the clipboard write is rejected");
-  eq(execCommands, ["copy"], "fallback drives the execCommand copy path");
+  eq(await writeClipboardText("report"), true, "copy falls back to execCommand when both the clipboard API and bridge are unavailable");
+  eq(execCommands, ["copy"], "the last-resort path drives the execCommand copy");
   delete (globalThis as any).document;
 
+  (globalThis as any).window = previousWindow;
+  if (previousHTMLElement === undefined) delete (globalThis as any).HTMLElement;
+  else (globalThis as any).HTMLElement = previousHTMLElement;
   if (originalNavigator) Object.defineProperty(globalThis, "navigator", originalNavigator);
   else delete (globalThis as any).navigator;
 }

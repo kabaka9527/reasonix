@@ -2,6 +2,7 @@
 // whole tree (blank window), and global errors/rejections leave no trace either.
 
 import { addBreadcrumb, dumpBreadcrumbs, snapshotBreadcrumbs, type Breadcrumb } from "./breadcrumbs";
+import { writeClipboardText } from "./clipboard";
 import { t } from "./i18n";
 
 declare const __BUILD_COMMIT__: string;
@@ -117,10 +118,6 @@ const STARTUP_GRACE_MS = 15_000;
 const PROMPT_COOLDOWN_MS = 10 * 60_000;
 const MAX_LAG_SAMPLES = 60;
 const VISIBILITY_RESUME_GRACE_MS = 5_000;
-// Timer callbacks that were suspended (hidden-view throttling, system sleep, debugger
-// pauses) report the whole pause as "lag" when they finally run; past this bound the
-// reading describes scheduler suspension rather than main-thread jank.
-const EVENT_LOOP_SUSPEND_LAG_MS = 30_000;
 
 const longTasks: LongTaskSample[] = [];
 const lagSamples: number[] = [];
@@ -516,12 +513,11 @@ export function shouldRecordEventLoopLagSample(
   visibilityHidden: boolean,
   msSinceVisible: number,
   focused = true,
-  lagMs = 0,
+  msSinceFocused = msSinceVisible,
 ): boolean {
   if (!focused) return false;
   if (visibilityHidden) return false;
-  if (lagMs >= EVENT_LOOP_SUSPEND_LAG_MS) return false;
-  return msSinceVisible >= VISIBILITY_RESUME_GRACE_MS;
+  return msSinceVisible >= VISIBILITY_RESUME_GRACE_MS && msSinceFocused >= VISIBILITY_RESUME_GRACE_MS;
 }
 
 export function buildPerformancePayload(snapshot: PerformanceSnapshot): CrashPayload {
@@ -609,47 +605,13 @@ function sendButton(
 
 const COPY_FEEDBACK_MS = 2_000;
 
-function fallbackCopyToClipboard(text: string): boolean {
-  if (typeof document === "undefined") return false;
-  const area = document.createElement("textarea");
-  area.value = text;
-  area.setAttribute("readonly", "");
-  area.style.position = "fixed";
-  area.style.opacity = "0";
-  document.body.appendChild(area);
-  area.select();
-  let copied = false;
-  try {
-    copied = document.execCommand("copy");
-  } catch {
-    copied = false;
-  }
-  area.remove();
-  return copied;
-}
-
-// WebViews can leave navigator.clipboard undefined or reject writes (focus and
-// permission rules differ per platform), so fall back to an execCommand copy.
-export async function copyReportText(text: string): Promise<boolean> {
-  const clipboard = typeof navigator !== "undefined" ? navigator.clipboard : undefined;
-  try {
-    if (clipboard?.writeText) {
-      await clipboard.writeText(text);
-      return true;
-    }
-  } catch {
-    // fall through to the legacy path
-  }
-  return fallbackCopyToClipboard(text);
-}
-
 function copyButton(text: string, className: string): HTMLButtonElement {
   const copy = document.createElement("button");
   copy.className = className;
   copy.textContent = t("crash.copy");
   copy.onclick = async () => {
     copy.disabled = true;
-    const copied = await copyReportText(text);
+    const copied = await writeClipboardText(text);
     copy.textContent = copied ? t("crash.copied") : t("crash.copyFailed");
     copy.disabled = false;
     window.setTimeout(() => {
@@ -837,13 +799,15 @@ export function installPerformancePressureMonitor() {
   const isHidden = () => typeof document !== "undefined" && document.visibilityState === "hidden";
   const isFocused = () => typeof document === "undefined" || document.hasFocus?.() !== false;
   let visibleSince = isHidden() ? Number.POSITIVE_INFINITY : startedAt;
+  let focusedSince = isFocused() ? startedAt : Number.POSITIVE_INFINITY;
   let expected = performance.now() + 1000;
   let eventLoopLagPrimed = false;
-  // When the view is shown again, overdue timer callbacks can run before the queued
-  // visibilitychange task, so visibleSince may still describe the previous visible
-  // period at that point. The sampler tracks hidden observations itself and restarts
-  // the visible window on the first visible tick instead of trusting visibleSince.
-  let pendingResume = isHidden();
+  // When the view is shown or focused again, overdue timer callbacks can run before
+  // the queued visibilitychange/focus task, so visibleSince/focusedSince may still
+  // describe the previous settled period at that point. The sampler tracks hidden and
+  // unfocused observations itself and restarts both windows on the first settled tick
+  // instead of trusting the listener-maintained timestamps.
+  let pendingResume = isHidden() || !isFocused();
 
   const pastGrace = () => performance.now() >= graceUntil;
   const inspectLongTasks = () => {
@@ -857,20 +821,24 @@ export function installPerformancePressureMonitor() {
 
   startLongTaskProfiler();
 
+  // Blur/hide park the timestamps at +Infinity so a stale read before the matching
+  // resume listener has run can never satisfy the grace windows.
+  const resetSamples = () => {
+    const now = performance.now();
+    longTasks.length = 0;
+    lagSamples.length = 0;
+    expected = now + 1000;
+    eventLoopLagPrimed = false;
+    visibleSince = isHidden() ? Number.POSITIVE_INFINITY : now;
+    focusedSince = isFocused() ? now : Number.POSITIVE_INFINITY;
+    pendingResume = isHidden() || !isFocused();
+  };
+
   if (typeof document !== "undefined") {
-    document.addEventListener("visibilitychange", () => {
-      longTasks.length = 0;
-      lagSamples.length = 0;
-      expected = performance.now() + 1000;
-      eventLoopLagPrimed = false;
-      if (isHidden()) {
-        pendingResume = true;
-      } else {
-        visibleSince = performance.now();
-        pendingResume = false;
-      }
-    });
+    document.addEventListener("visibilitychange", resetSamples);
   }
+  window.addEventListener("focus", resetSamples);
+  window.addEventListener("blur", resetSamples);
 
   if (typeof PerformanceObserver !== "undefined") {
     try {
@@ -898,11 +866,12 @@ export function installPerformancePressureMonitor() {
 
   window.setInterval(() => {
     const now = performance.now();
-    if (isHidden()) {
+    if (isHidden() || !isFocused()) {
       pendingResume = true;
     } else if (pendingResume) {
       pendingResume = false;
       visibleSince = now;
+      focusedSince = now;
       longTasks.length = 0;
       lagSamples.length = 0;
       expected = now + 1000;
@@ -920,7 +889,7 @@ export function installPerformancePressureMonitor() {
     }
     const lagMs = Math.max(0, now - expected);
     expected = now + 1000;
-    if (!shouldRecordEventLoopLagSample(isHidden(), now - visibleSince, isFocused(), lagMs)) return;
+    if (!shouldRecordEventLoopLagSample(isHidden(), now - visibleSince, isFocused(), now - focusedSince)) return;
     lagSamples.push(lagMs);
     if (lagSamples.length > MAX_LAG_SAMPLES) lagSamples.shift();
     if (lagMs >= EVENT_LOOP_LAG_PROMPT_MS) promptPerformanceReport(`event loop lag ${fmtNumber(lagMs)}ms`, lagMs);
