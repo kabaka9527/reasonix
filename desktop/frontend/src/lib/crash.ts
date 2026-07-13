@@ -611,12 +611,22 @@ function copyButton(text: string, className: string): HTMLButtonElement {
   copy.textContent = t("crash.copy");
   copy.onclick = async () => {
     copy.disabled = true;
-    const copied = await writeClipboardText(text);
-    copy.textContent = copied ? t("crash.copied") : t("crash.copyFailed");
-    copy.disabled = false;
-    window.setTimeout(() => {
-      copy.textContent = t("crash.copy");
-    }, COPY_FEEDBACK_MS);
+    let copied = false;
+    // The crash overlay is the last-resort surface, so the button must re-enable
+    // even if the clipboard path throws unexpectedly — a stuck disabled Copy is
+    // exactly the #6388 unresponsive symptom. Catch so a rejection can't escape as
+    // an unhandledrejection into the global crash handler either.
+    try {
+      copied = await writeClipboardText(text);
+    } catch {
+      copied = false;
+    } finally {
+      copy.textContent = copied ? t("crash.copied") : t("crash.copyFailed");
+      copy.disabled = false;
+      window.setTimeout(() => {
+        copy.textContent = t("crash.copy");
+      }, COPY_FEEDBACK_MS);
+    }
   };
   return copy;
 }

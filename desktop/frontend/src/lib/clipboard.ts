@@ -45,6 +45,11 @@ export function fallbackCopyText(value: string): boolean {
   let ok = false;
   try {
     ok = document.execCommand("copy");
+  } catch {
+    // Some WebViews reject execCommand("copy") with NotAllowedError instead of
+    // returning false; treat that as a failed copy, never a thrown rejection, so
+    // callers (and writeClipboardText's Promise<boolean> contract) stay honored.
+    ok = false;
   } finally {
     textarea.remove();
     if (selection) {

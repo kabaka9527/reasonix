@@ -404,6 +404,30 @@ eq([...parseReportedPerf("{not json", "abc123")], [], "tolerates corrupt storage
   };
   eq(await writeClipboardText("report"), true, "copy falls back to execCommand when both the clipboard API and bridge are unavailable");
   eq(execCommands, ["copy"], "the last-resort path drives the execCommand copy");
+
+  // Some WebViews reject execCommand("copy") with NotAllowedError. It must
+  // surface as a resolved `false`, never a thrown rejection — otherwise the crash
+  // overlay's Copy button stays disabled (the #6388 unresponsive symptom).
+  let removed = false;
+  (globalThis as any).document = {
+    activeElement: undefined,
+    getSelection: () => null,
+    createElement: () => ({ value: "", style: {}, setAttribute: () => {}, select: () => {}, remove: () => { removed = true; } }),
+    body: { appendChild: () => {} },
+    execCommand: () => {
+      throw new DOMException("not allowed", "NotAllowedError");
+    },
+  };
+  let threw = false;
+  let result: boolean | undefined;
+  try {
+    result = await writeClipboardText("report");
+  } catch {
+    threw = true;
+  }
+  eq(threw, false, "writeClipboardText never rejects when execCommand throws");
+  eq(result, false, "an execCommand that throws resolves to a failed copy");
+  eq(removed, true, "the hidden textarea is still cleaned up when execCommand throws");
   delete (globalThis as any).document;
 
   (globalThis as any).window = previousWindow;
