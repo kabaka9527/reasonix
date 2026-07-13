@@ -2,16 +2,35 @@ package installsource
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
 	"reasonix/internal/pluginpkg"
+	"reasonix/internal/proc"
 	"reasonix/internal/secrets"
 )
+
+const (
+	claudeMarketplaceManifest = ".claude-plugin/marketplace.json"
+	maxMarketplacePlugins     = 64
+)
+
+type claudeMarketplace struct {
+	Name     string `json:"name"`
+	Metadata struct {
+		PluginRoot string `json:"pluginRoot"`
+	} `json:"metadata"`
+	Plugins []struct {
+		Name   string          `json:"name"`
+		Source json.RawMessage `json:"source"`
+	} `json:"plugins"`
+}
 
 func (t *installSourceTool) localPluginPackageAction(req request, root string) (action, []string, error) {
 	pkg, warnings, err := pluginpkg.ParseDir(root)
@@ -35,17 +54,156 @@ func (t *installSourceTool) planGitHubPluginPackage(ctx context.Context, req req
 	if err != nil {
 		return nil, nil, err
 	}
-	defer cleanup()
 	pkg, warnings, err := pluginpkg.ParseDir(root)
-	if err != nil {
-		return nil, warnings, newErr(ErrManifestMissing, "no plugin manifest found in GitHub repository %s/%s: %v", src.Owner, src.Repo, err)
+	if err == nil {
+		defer cleanup()
+		act := t.pluginPackageAction(req, pkg, req.Source)
+		act.Source = req.Source
+		// The commit joins the action and therefore the plan ID, so the approval
+		// fingerprints the exact snapshot; apply pins to it.
+		act.Commit = commit
+		return []action{act}, warnings, nil
 	}
-	act := t.pluginPackageAction(req, pkg, req.Source)
-	act.Source = req.Source
-	// The commit joins the action and therefore the plan ID, so the approval
-	// fingerprints the exact snapshot; apply pins to it.
-	act.Commit = commit
-	return []action{act}, warnings, nil
+
+	actions, marketplaceWarnings, marketplaceErr := t.planClaudeMarketplace(ctx, req, src, root, commit)
+	warnings = append(warnings, marketplaceWarnings...)
+	if marketplaceErr != nil {
+		cleanup()
+		return nil, warnings, newErr(ErrManifestMissing, "no plugin manifest or supported Claude marketplace found in GitHub repository %s/%s: plugin: %v; marketplace: %v", src.Owner, src.Repo, err, marketplaceErr)
+	}
+	if req.Apply {
+		// All marketplace entries come from this one immutable clone. Reusing it
+		// keeps a 12-plugin marketplace at one clone during apply and guarantees
+		// every copied plugin is the snapshot represented by act.Commit.
+		actions[0].cleanup = cleanup
+		return actions, warnings, nil
+	}
+	cleanup()
+	return actions, warnings, nil
+}
+
+func (t *installSourceTool) planClaudeMarketplace(ctx context.Context, req request, src githubRepoSource, root, commit string) ([]action, []string, error) {
+	manifestPath := filepath.Join(root, filepath.FromSlash(claudeMarketplaceManifest))
+	body, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	var marketplace claudeMarketplace
+	if err := json.Unmarshal(body, &marketplace); err != nil {
+		return nil, nil, fmt.Errorf("parse %s: %w", claudeMarketplaceManifest, err)
+	}
+	if strings.TrimSpace(marketplace.Name) == "" {
+		return nil, nil, fmt.Errorf("%s has no marketplace name", claudeMarketplaceManifest)
+	}
+	if len(marketplace.Plugins) == 0 {
+		return nil, nil, fmt.Errorf("%s contains no plugins", claudeMarketplaceManifest)
+	}
+	if len(marketplace.Plugins) > maxMarketplacePlugins {
+		return nil, nil, fmt.Errorf("%s contains %d plugins; limit is %d", claudeMarketplaceManifest, len(marketplace.Plugins), maxMarketplacePlugins)
+	}
+
+	branch := strings.TrimSpace(src.Branch)
+	if branch == "" {
+		branch = currentPluginGitBranch(ctx, root)
+	}
+	if branch == "" {
+		branch = src.branches()[0]
+	}
+
+	selected := strings.TrimSpace(req.Name)
+	foundSelected := selected == ""
+	seen := make(map[string]bool, len(marketplace.Plugins))
+	var actions []action
+	var warnings []string
+	for _, entry := range marketplace.Plugins {
+		entryName := strings.TrimSpace(entry.Name)
+		if selected != "" && entryName != selected {
+			continue
+		}
+		foundSelected = true
+		if entryName == "" {
+			warnings = append(warnings, "skipped Claude marketplace entry with an empty name")
+			continue
+		}
+		if seen[entryName] {
+			return nil, warnings, fmt.Errorf("%s contains duplicate plugin name %q", claudeMarketplaceManifest, entryName)
+		}
+		seen[entryName] = true
+
+		var source string
+		if err := json.Unmarshal(entry.Source, &source); err != nil {
+			warnings = append(warnings, fmt.Sprintf("skipped Claude marketplace plugin %q: only relative string sources are supported", entryName))
+			continue
+		}
+		rel, err := claudeMarketplaceRelativePath(marketplace.Metadata.PluginRoot, source)
+		if err != nil {
+			return nil, warnings, fmt.Errorf("plugin %q: %w", entryName, err)
+		}
+		pluginRoot := filepath.Join(root, filepath.FromSlash(rel))
+		pkg, pkgWarnings, err := pluginpkg.ParseDir(pluginRoot)
+		warnings = append(warnings, pkgWarnings...)
+		if err != nil {
+			return nil, warnings, fmt.Errorf("plugin %q at %s: %w", entryName, rel, err)
+		}
+		if pkg.Manifest.Name != entryName {
+			return nil, warnings, fmt.Errorf("marketplace plugin %q points to manifest named %q", entryName, pkg.Manifest.Name)
+		}
+
+		repoPath := joinURLPath(src.Path, rel)
+		pluginSource := fmt.Sprintf("https://github.com/%s/%s/tree/%s/%s", src.Owner, src.Repo, branch, repoPath)
+		actionReq := req
+		actionReq.Name = ""
+		act := t.pluginPackageAction(actionReq, pkg, pluginSource)
+		act.Source = pluginSource
+		act.Commit = commit
+		act.preparedRoot = pluginRoot
+		actions = append(actions, act)
+	}
+	if !foundSelected {
+		return nil, warnings, fmt.Errorf("%s does not contain plugin %q", claudeMarketplaceManifest, selected)
+	}
+	if len(actions) == 0 {
+		return nil, warnings, fmt.Errorf("%s contains no supported relative-path plugins", claudeMarketplaceManifest)
+	}
+	sort.Slice(actions, func(i, j int) bool { return actions[i].Name < actions[j].Name })
+	sort.Strings(warnings)
+	warnings = slices.Compact(warnings)
+	return actions, warnings, nil
+}
+
+func claudeMarketplaceRelativePath(pluginRoot, source string) (string, error) {
+	pluginRoot = strings.TrimSpace(pluginRoot)
+	if pluginRoot == "" {
+		pluginRoot = "."
+	}
+	fields := []struct {
+		label string
+		value string
+	}{
+		{label: "metadata.pluginRoot", value: pluginRoot},
+		{label: "source", value: strings.TrimSpace(source)},
+	}
+	for _, field := range fields {
+		if field.value != "." && field.value != "./" && !strings.HasPrefix(field.value, "./") {
+			return "", fmt.Errorf("%s %q must be a relative path beginning with ./", field.label, field.value)
+		}
+	}
+	cleanRoot := filepath.Clean(filepath.FromSlash(strings.TrimPrefix(pluginRoot, "./")))
+	cleanSource := filepath.Clean(filepath.FromSlash(strings.TrimPrefix(strings.TrimSpace(source), "./")))
+	rel := filepath.Clean(filepath.Join(cleanRoot, cleanSource))
+	if rel == "." || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("source %q escapes or does not identify a plugin subdirectory", source)
+	}
+	return filepath.ToSlash(rel), nil
+}
+
+func currentPluginGitBranch(ctx context.Context, root string) string {
+	cmd := pluginGitCommand(ctx, "-C", root, "branch", "--show-current")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // pluginSource resolves a plugin source to an on-disk tree. Both the plan and
@@ -117,9 +275,13 @@ func (t *installSourceTool) applyInstallPluginPackage(ctx context.Context, req r
 		return newErr(ErrInvalidManifest, "invalid plugin name %q", act.Name)
 	}
 	target := pluginpkg.InstallRoot(t.reasonixHome, act.Name)
-	sourceRoot, commit, cleanup, err := t.pluginSource(ctx, act.Source, act.Mode)
-	if err != nil {
-		return err
+	sourceRoot, commit, cleanup := act.preparedRoot, act.Commit, func() {}
+	if sourceRoot == "" {
+		var err error
+		sourceRoot, commit, cleanup, err = t.pluginSource(ctx, act.Source, act.Mode)
+		if err != nil {
+			return err
+		}
 	}
 	defer cleanup()
 	if act.Commit != "" && commit != act.Commit {
@@ -192,15 +354,13 @@ func (t *installSourceTool) preparePluginSource(ctx context.Context, source, mod
 			args = append(args, "--branch", src.Branch)
 		}
 		args = append(args, cloneURL, tmp)
-		cmd := exec.CommandContext(ctx, "git", args...)
-		cmd.Env = secrets.ProcessEnv()
+		cmd := pluginGitCommand(ctx, args...)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			_ = os.RemoveAll(tmp)
 			return "", "", func() {}, newErr(ErrSourceUnreadable, "git clone failed: %v: %s", err, strings.TrimSpace(string(out)))
 		}
 		commit := ""
-		rev := exec.CommandContext(ctx, "git", "-C", tmp, "rev-parse", "HEAD")
-		rev.Env = secrets.ProcessEnv()
+		rev := pluginGitCommand(ctx, "-C", tmp, "rev-parse", "HEAD")
 		if out, err := rev.Output(); err == nil {
 			commit = strings.TrimSpace(string(out))
 		}
@@ -242,17 +402,22 @@ func verifyCopiedCapabilities(src pluginpkg.Package, target string) error {
 // stays reachable after ordinary pushes; a history rewrite that discarded it
 // fails here — exactly the case where the user must re-review the plan.
 func checkoutPluginCommit(ctx context.Context, cloneRoot, commit string) error {
-	fetch := exec.CommandContext(ctx, "git", "-C", cloneRoot, "fetch", "--depth=1", "origin", commit)
-	fetch.Env = secrets.ProcessEnv()
+	fetch := pluginGitCommand(ctx, "-C", cloneRoot, "fetch", "--depth=1", "origin", commit)
 	if out, err := fetch.CombinedOutput(); err != nil {
 		return fmt.Errorf("fetch approved commit %s: %v: %s", commit, err, strings.TrimSpace(string(out)))
 	}
-	co := exec.CommandContext(ctx, "git", "-C", cloneRoot, "checkout", "--detach", commit)
-	co.Env = secrets.ProcessEnv()
+	co := pluginGitCommand(ctx, "-C", cloneRoot, "checkout", "--detach", commit)
 	if out, err := co.CombinedOutput(); err != nil {
 		return fmt.Errorf("checkout approved commit %s: %v: %s", commit, err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+func pluginGitCommand(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Env = secrets.ProcessEnv()
+	proc.HideWindow(cmd)
+	return cmd
 }
 
 // installCopiedPlugin copies sourceRoot into a staging directory next to

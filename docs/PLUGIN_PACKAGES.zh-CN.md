@@ -220,8 +220,11 @@ Reasonix 原生插件在根目录声明 `reasonix-plugin.json`：
 
 Reasonix 也会读取 `.codex-plugin/plugin.json` 和 `.claude-plugin/plugin.json`。
 Reasonix 尚未映射的 Claude 插件能力（`agents/`、`hooks/hooks.json`、
-`.mcp.json`）会以安装警告的形式提示，而不是被静默丢弃；多插件的
-`marketplace.json` 索引暂不支持——请逐个安装插件目录。
+`.mcp.json`）会以安装警告的形式提示，而不是被静默丢弃。GitHub 仓库若在
+`.claude-plugin/marketplace.json` 中通过 `./plugins/example` 这类相对字符串
+列出多个插件，可以直接从仓库根目录安装；预检会在写入前逐项展示安装动作。
+填写可选安装名称时，可只选择 marketplace 中的同名插件。外部/object 来源、
+npm、`strict: false` 以及其他高级 marketplace 来源协议暂未实现。
 对于 Superpowers 和 Claude 风格 skill 包，Reasonix 会映射：
 
 - `skills` 到 Reasonix skill root。Claude 清单若未声明 `skills` 字段，会回退到
@@ -245,8 +248,7 @@ Reasonix 尚未映射的 Claude 插件能力（`agents/`、`hooks/hooks.json`、
   Claude 的 `matcher` 字段会映射到 Reasonix `match`；hook 命令以插件根目录作为
   `cwd` 执行；Claude `timeout` 按秒解析。
 
-不支持的 Claude hook item type 会跳过并产生 warning。Reasonix 不会执行第三方安装脚本，
-也不会实现 marketplace 专用安装协议。
+不支持的 Claude hook item type 会跳过并产生 warning。Reasonix 不会执行第三方安装脚本。
 
 插件 hook 会收到这些环境变量：
 

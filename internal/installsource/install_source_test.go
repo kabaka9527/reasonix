@@ -1706,6 +1706,155 @@ func TestGitHubPluginPlanMatchesApply(t *testing.T) {
 	}
 }
 
+// TestGitHubClaudeMarketplacePlansAndAppliesRelativePlugins pins the desktop
+// workflow reported by users: entering a GitHub marketplace root should plan
+// each relative-path plugin, then install all approved entries from one clone.
+func TestGitHubClaudeMarketplacePlansAndAppliesRelativePlugins(t *testing.T) {
+	marketplaceRoot := t.TempDir()
+	writeFile(t, filepath.Join(marketplaceRoot, ".claude-plugin", "marketplace.json"), `{
+  "name": "legal-tools",
+  "owner": {"name": "Legal Team"},
+  "plugins": [
+    {"name": "beta-legal", "source": "./plugins/beta"},
+    {"name": "alpha-legal", "source": "./plugins/alpha"}
+  ]
+}`)
+	writeFile(t, filepath.Join(marketplaceRoot, "plugins", "alpha", ".claude-plugin", "plugin.json"), `{"name":"alpha-legal","version":"1.0.0"}`)
+	writeFile(t, filepath.Join(marketplaceRoot, "plugins", "alpha", "skills", "alpha", "SKILL.md"), "---\ndescription: alpha\n---\nAlpha")
+	writeFile(t, filepath.Join(marketplaceRoot, "plugins", "beta", ".claude-plugin", "plugin.json"), `{"name":"beta-legal","version":"2.0.0"}`)
+	writeFile(t, filepath.Join(marketplaceRoot, "plugins", "beta", "commands", "review.md"), "---\ndescription: review\n---\nReview")
+
+	project := t.TempDir()
+	home := t.TempDir()
+	tl := NewTool(Options{ProjectRoot: project, HomeDir: home})
+	tool := tl.(*installSourceTool)
+	cloneCalls := 0
+	cleanupCalls := 0
+	tool.preparePlugin = func(ctx context.Context, source, mode string) (string, string, func(), error) {
+		cloneCalls++
+		if source != "https://github.com/acme/legal-tools" {
+			t.Fatalf("unexpected extra clone for %q", source)
+		}
+		return marketplaceRoot, "cafe0001", func() { cleanupCalls++ }, nil
+	}
+
+	plan := execInstall(t, tl, map[string]any{
+		"source": "https://github.com/acme/legal-tools",
+		"kind":   "plugin",
+	})
+	if !plan.OK || plan.Status != "planned" || len(plan.Actions) != 2 {
+		t.Fatalf("plan response = %+v", plan)
+	}
+	if plan.Actions[0].Name != "alpha-legal" || plan.Actions[1].Name != "beta-legal" {
+		t.Fatalf("actions = %+v, want stable marketplace-name order", plan.Actions)
+	}
+	if plan.Actions[0].Source != "https://github.com/acme/legal-tools/tree/main/plugins/alpha" ||
+		plan.Actions[1].Source != "https://github.com/acme/legal-tools/tree/main/plugins/beta" {
+		t.Fatalf("marketplace action sources = %q / %q", plan.Actions[0].Source, plan.Actions[1].Source)
+	}
+	if cloneCalls != 1 || cleanupCalls != 1 {
+		t.Fatalf("preview clone/cleanup calls = %d/%d, want 1/1", cloneCalls, cleanupCalls)
+	}
+
+	applied := execInstall(t, tl, map[string]any{
+		"source": "https://github.com/acme/legal-tools",
+		"kind":   "plugin",
+		"apply":  true,
+	})
+	if !applied.OK || applied.Status != "done" || len(applied.Actions) != 2 {
+		t.Fatalf("apply response = %+v", applied)
+	}
+	if cloneCalls != 2 || cleanupCalls != 2 {
+		t.Fatalf("preview+apply clone/cleanup calls = %d/%d, want 2/2 (one clone per phase)", cloneCalls, cleanupCalls)
+	}
+	for _, name := range []string{"alpha-legal", "beta-legal"} {
+		if _, ok, err := pluginpkg.FindInstalled(filepath.Join(home, ".reasonix"), name); err != nil || !ok {
+			t.Fatalf("installed plugin %q missing: ok=%v err=%v", name, ok, err)
+		}
+	}
+}
+
+func TestGitHubClaudeMarketplaceNameSelectsOnePlugin(t *testing.T) {
+	marketplaceRoot := t.TempDir()
+	writeFile(t, filepath.Join(marketplaceRoot, ".claude-plugin", "marketplace.json"), `{
+  "name": "legal-tools",
+  "plugins": [
+    {"name": "alpha-legal", "source": "./alpha"},
+    {"name": "beta-legal", "source": "./beta"}
+  ]
+}`)
+	for _, name := range []string{"alpha-legal", "beta-legal"} {
+		dir := strings.TrimSuffix(name, "-legal")
+		writeFile(t, filepath.Join(marketplaceRoot, dir, ".claude-plugin", "plugin.json"), fmt.Sprintf(`{"name":%q}`, name))
+	}
+
+	tl := NewTool(Options{ProjectRoot: t.TempDir(), HomeDir: t.TempDir()})
+	tool := tl.(*installSourceTool)
+	tool.preparePlugin = func(ctx context.Context, source, mode string) (string, string, func(), error) {
+		return marketplaceRoot, "cafe0001", func() {}, nil
+	}
+	plan := execInstall(t, tl, map[string]any{
+		"source": "https://github.com/acme/legal-tools",
+		"kind":   "plugin",
+		"name":   "beta-legal",
+	})
+	if len(plan.Actions) != 1 || plan.Actions[0].Name != "beta-legal" {
+		t.Fatalf("selected plan = %+v, want only beta-legal", plan.Actions)
+	}
+}
+
+func TestGitHubClaudeMarketplaceRejectsEscapingRelativeSource(t *testing.T) {
+	marketplaceRoot := t.TempDir()
+	writeFile(t, filepath.Join(marketplaceRoot, ".claude-plugin", "marketplace.json"), `{
+  "name": "unsafe-tools",
+  "plugins": [{"name": "escape", "source": "./../escape"}]
+}`)
+
+	tl := NewTool(Options{ProjectRoot: t.TempDir(), HomeDir: t.TempDir()})
+	tool := tl.(*installSourceTool)
+	tool.preparePlugin = func(ctx context.Context, source, mode string) (string, string, func(), error) {
+		return marketplaceRoot, "cafe0001", func() {}, nil
+	}
+	raw, _ := json.Marshal(map[string]any{
+		"source": "https://github.com/acme/unsafe-tools",
+		"kind":   "plugin",
+	})
+	_, err := tl.Execute(context.Background(), raw)
+	if err == nil || !strings.Contains(err.Error(), "escapes") {
+		t.Fatalf("error = %v, want marketplace path escape rejection", err)
+	}
+}
+
+func TestGitHubClaudeMarketplaceCleansCloneWhenApprovalIsDenied(t *testing.T) {
+	marketplaceRoot := t.TempDir()
+	writeFile(t, filepath.Join(marketplaceRoot, ".claude-plugin", "marketplace.json"), `{
+  "name": "one-tool",
+  "plugins": [{"name": "alpha", "source": "./alpha"}]
+}`)
+	writeFile(t, filepath.Join(marketplaceRoot, "alpha", ".claude-plugin", "plugin.json"), `{"name":"alpha"}`)
+
+	cleanupCalls := 0
+	tl := NewTool(Options{
+		ProjectRoot: t.TempDir(),
+		HomeDir:     t.TempDir(),
+		Approval: func(actions []action) error {
+			return errors.New("not approved")
+		},
+	})
+	tool := tl.(*installSourceTool)
+	tool.preparePlugin = func(ctx context.Context, source, mode string) (string, string, func(), error) {
+		return marketplaceRoot, "cafe0001", func() { cleanupCalls++ }, nil
+	}
+	resp := execInstall(t, tl, map[string]any{
+		"source": "https://github.com/acme/one-tool",
+		"kind":   "plugin",
+		"apply":  true,
+	})
+	if resp.Status != "denied" || cleanupCalls != 1 {
+		t.Fatalf("response=%+v cleanupCalls=%d, want denied and one cleanup", resp, cleanupCalls)
+	}
+}
+
 // TestGitHubPluginApplyRefusesUnpinnableDrift pins the snapshot contract: when
 // the source resolves to a different commit than the plan approved and the
 // approved snapshot cannot be restored, apply must refuse instead of
