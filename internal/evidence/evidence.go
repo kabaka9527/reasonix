@@ -56,15 +56,25 @@ type Receipt struct {
 	OutputBytes int `json:"output_bytes,omitempty"`
 }
 
+// BackgroundLease identifies a background job whose evidence was provisionally
+// merged into the current turn's ledger. The host commits these leases only
+// after the turn passes its delivery gates, so a failed turn leaves the job's
+// evidence collectable again.
+type BackgroundLease struct {
+	Session string
+	JobID   string
+}
+
 // Ledger stores the receipts available to complete_step for the current turn.
 type Ledger struct {
-	mu       sync.Mutex
-	receipts []Receipt
+	mu               sync.Mutex
+	receipts         []Receipt
+	backgroundLeases []BackgroundLease
 }
 
 func NewLedger() *Ledger { return &Ledger{} }
 
-// Reset clears receipts between user turns.
+// Reset clears receipts and background leases between user turns.
 func (l *Ledger) Reset() {
 	if l == nil {
 		return
@@ -72,6 +82,42 @@ func (l *Ledger) Reset() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.receipts = nil
+	l.backgroundLeases = nil
+}
+
+// NoteBackgroundLease records that a background job's evidence was merged into
+// this turn. It returns false when the job was already noted this turn so the
+// caller can skip a duplicate merge — collection is idempotent within a turn,
+// while a fresh turn (after Reset) leases again.
+func (l *Ledger) NoteBackgroundLease(session, jobID string) bool {
+	if l == nil {
+		return false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, lease := range l.backgroundLeases {
+		if lease.Session == session && lease.JobID == jobID {
+			return false
+		}
+	}
+	l.backgroundLeases = append(l.backgroundLeases, BackgroundLease{Session: session, JobID: jobID})
+	return true
+}
+
+// BackgroundLeases returns the background jobs merged into this turn, for the
+// host to commit once the turn's delivery gates pass.
+func (l *Ledger) BackgroundLeases() []BackgroundLease {
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.backgroundLeases) == 0 {
+		return nil
+	}
+	out := make([]BackgroundLease, len(l.backgroundLeases))
+	copy(out, l.backgroundLeases)
+	return out
 }
 
 // Record appends a receipt. Failed receipts are retained for auditability but

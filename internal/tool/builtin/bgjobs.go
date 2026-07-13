@@ -196,5 +196,14 @@ func collectBackgroundEvidence(ctx context.Context, jm *jobs.Manager, jobID stri
 	if !ok || ledger == nil || jm == nil {
 		return
 	}
-	ledger.MergeChild(jm.TakeEvidenceForSession(jobs.SessionFromContext(ctx), jobID))
+	session := jobs.SessionFromContext(ctx)
+	// Note the lease before merging so a second wait/bash_output in the same
+	// turn does not double-count. The merge is provisional: LeaseEvidence does
+	// not consume, so if this turn fails the agent never commits and the next
+	// turn re-collects. The agent commits leased jobs only after the turn
+	// passes its delivery gates.
+	if !ledger.NoteBackgroundLease(session, jobID) {
+		return
+	}
+	ledger.MergeChild(jm.LeaseEvidenceForSession(session, jobID))
 }

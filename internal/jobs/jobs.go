@@ -131,8 +131,8 @@ type Job struct {
 	artifactErr      string
 	tombstone        bool
 
-	evidence      evidence.ChildEvidenceSummary
-	evidenceTaken bool
+	evidence          evidence.ChildEvidenceSummary
+	evidenceCommitted bool
 }
 
 // Manager is the session's background-job table. It is safe for concurrent use.
@@ -449,21 +449,21 @@ func mutationEvidenceFromArtifact(meta artifactMeta) evidence.ChildEvidenceSumma
 	if meta.Kind != "task" {
 		return evidence.ChildEvidenceSummary{}
 	}
-	if meta.MutationEvidenceVersion == 0 {
-		// Legacy artifact from before mutation evidence was persisted: that
-		// flow never published child receipts, so there is nothing to recover.
-		// Synthesizing a mutation here would retroactively demand inspection
-		// and review for work no collecting turn ever saw — pure burden with
-		// no safety gain over the old behavior.
-		return evidence.ChildEvidenceSummary{}
-	}
 	if meta.MutationEvidenceVersion != mutationEvidenceVersion {
-		// A newer build persisted a shape this one cannot parse. Assume the
-		// worst (an opaque mutation) so downgrade coexistence on a shared
-		// state directory cannot skip review.
+		// Any version this build cannot parse — a pre-feature artifact
+		// (version 0) or one written by a newer build — is treated as an
+		// opaque mutation. A missing summary only proves the mutation state
+		// was not recorded, not that the task made no changes: a legacy
+		// background writer task collected after upgrade could carry real,
+		// unreviewed edits. Recovering it as opaque RiskHigh forces fresh
+		// inspection and review rather than silently skipping it, and keeps
+		// downgrade coexistence on a shared state directory conservative.
 		return opaqueRecoveredTaskMutation()
 	}
 	if meta.MutationEvidence == nil {
+		// Same-version artifact with no summary: this build DID record the
+		// mutation state and found none, so there is genuinely nothing to
+		// recover.
 		return evidence.ChildEvidenceSummary{}
 	}
 
@@ -1653,10 +1653,17 @@ func PublishEvidence(ctx context.Context, summary evidence.ChildEvidenceSummary)
 	j.mu.Unlock()
 }
 
-// TakeEvidenceForSession returns a terminal job's evidence exactly once. This
-// prevents repeated wait/bash_output calls from duplicating receipts in the
-// collecting turn's ledger.
-func (m *Manager) TakeEvidenceForSession(parentSession, id string) evidence.ChildEvidenceSummary {
+// LeaseEvidenceForSession returns a copy of a terminal job's evidence without
+// consuming it. Collection is only provisional: the receipts merge into the
+// collecting turn's ledger, but that ledger is discarded if the turn is
+// cancelled, errors, or the process exits before the turn commits. Consuming
+// here would then lose the mutation for good — the parent's next turn resets its
+// ledger and this job would report nothing, so a background change would ship
+// unreviewed. The evidence is drained only by CommitEvidenceForSession, which
+// the agent calls after the collecting turn passes its delivery gates. A
+// committed job returns empty so a re-poll after successful delivery does not
+// re-demand review.
+func (m *Manager) LeaseEvidenceForSession(parentSession, id string) evidence.ChildEvidenceSummary {
 	j := m.get(parentSession, id)
 	if j == nil {
 		return evidence.ChildEvidenceSummary{}
@@ -1668,22 +1675,41 @@ func (m *Manager) TakeEvidenceForSession(parentSession, id string) evidence.Chil
 	default:
 		return evidence.ChildEvidenceSummary{}
 	}
-	if j.evidenceTaken {
+	if j.evidenceCommitted {
 		return evidence.ChildEvidenceSummary{}
 	}
-	j.evidenceTaken = true
 	out := make([]evidence.Receipt, len(j.evidence.Receipts))
 	copy(out, j.evidence.Receipts)
+	return evidence.ChildEvidenceSummary{Receipts: out}
+}
+
+// CommitEvidenceForSession permanently consumes a terminal job's evidence after
+// the collecting turn has accounted for it (passed final-readiness). It clears
+// the in-memory copy and drains the persisted mutation summary so neither a
+// same-process re-poll nor a restart resurrects receipts the delivered turn
+// already reviewed. Best-effort on the disk rewrite — a failed rewrite merely
+// restores the conservative resurrection behavior.
+func (m *Manager) CommitEvidenceForSession(parentSession, id string) {
+	j := m.get(parentSession, id)
+	if j == nil {
+		return
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	select {
+	case <-j.done:
+	default:
+		return
+	}
+	if j.evidenceCommitted {
+		return
+	}
+	hadEvidence := len(j.evidence.Receipts) > 0
+	j.evidenceCommitted = true
 	j.evidence = evidence.ChildEvidenceSummary{}
-	if len(out) > 0 {
-		// Drain the persisted copy too: the artifact meta still carries the
-		// mutation summary, and a restart would otherwise resurrect it for a
-		// re-polled job id, re-arming inspection and review demands for work
-		// the collecting turn already handled. Best-effort — a failed rewrite
-		// merely restores the conservative resurrection behavior.
+	if hadEvidence {
 		if err := m.writeJobMetaLocked(j, j.status); err != nil {
 			j.noteArtifactErr("evidence drain: " + err.Error())
 		}
 	}
-	return evidence.ChildEvidenceSummary{Receipts: out}
 }

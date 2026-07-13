@@ -145,7 +145,7 @@ func TestReserveStartForSessionCountsKilledJobUntilExit(t *testing.T) {
 	}
 }
 
-func TestTakeEvidenceWaitsForKilledJobExit(t *testing.T) {
+func TestLeaseEvidenceWaitsForKilledJobExit(t *testing.T) {
 	m := NewManager(event.Discard)
 	defer m.Close()
 	exit := make(chan struct{})
@@ -159,15 +159,24 @@ func TestTakeEvidenceWaitsForKilledJobExit(t *testing.T) {
 	if !m.KillForSession("session-a", j.ID) {
 		t.Fatal("KillForSession did not find running job")
 	}
-	if early := m.TakeEvidenceForSession("session-a", j.ID); len(early.Receipts) != 0 {
+	if early := m.LeaseEvidenceForSession("session-a", j.ID); len(early.Receipts) != 0 {
 		t.Fatalf("collected evidence before killed job exited: %+v", early)
 	}
 	close(exit)
 	if res := m.WaitForSession(context.Background(), "session-a", []string{j.ID}, 5); len(res) != 1 || res[0].Status != Killed {
 		t.Fatalf("killed job result = %+v", res)
 	}
-	if got := m.TakeEvidenceForSession("session-a", j.ID); !got.HasMutation() {
+	if got := m.LeaseEvidenceForSession("session-a", j.ID); !got.HasMutation() {
 		t.Fatalf("partial evidence lost after killed job exit: %+v", got)
+	}
+	// Lease does not consume: a second lease still returns the receipts, and a
+	// commit is required to drain them.
+	if again := m.LeaseEvidenceForSession("session-a", j.ID); !again.HasMutation() {
+		t.Fatalf("lease consumed evidence without a commit: %+v", again)
+	}
+	m.CommitEvidenceForSession("session-a", j.ID)
+	if after := m.LeaseEvidenceForSession("session-a", j.ID); len(after.Receipts) != 0 {
+		t.Fatalf("committed evidence still leasable: %+v", after)
 	}
 }
 

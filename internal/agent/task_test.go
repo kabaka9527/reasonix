@@ -897,7 +897,7 @@ func TestTaskToolBackgroundSalvagePublishesEvidenceForCollection(t *testing.T) {
 		t.Fatal("background goroutine wrote directly into the parent turn ledger")
 	}
 
-	summary := jm.TakeEvidenceForSession("parent-session", jobID)
+	summary := jm.LeaseEvidenceForSession("parent-session", jobID)
 	if !summary.HasMutation() {
 		t.Fatal("terminal background task did not publish its mutation evidence")
 	}
@@ -905,8 +905,100 @@ func TestTaskToolBackgroundSalvagePublishesEvidenceForCollection(t *testing.T) {
 	if len(paths) != 1 || filepath.ToSlash(paths[0]) != "qa/bank.md" {
 		t.Fatalf("background mutation paths = %v, want qa/bank.md", paths)
 	}
-	if second := jm.TakeEvidenceForSession("parent-session", jobID); len(second.Receipts) != 0 {
-		t.Fatalf("background evidence was collectible twice: %+v", second)
+	// Lease does not consume: the evidence stays available until the collecting
+	// turn commits, so a cancelled/errored turn can re-collect it.
+	if again := jm.LeaseEvidenceForSession("parent-session", jobID); !again.HasMutation() {
+		t.Fatalf("lease consumed background evidence without a commit: %+v", again)
+	}
+	jm.CommitEvidenceForSession("parent-session", jobID)
+	if after := jm.LeaseEvidenceForSession("parent-session", jobID); len(after.Receipts) != 0 {
+		t.Fatalf("committed background evidence still leasable: %+v", after)
+	}
+}
+
+// startTerminalBackgroundMutation registers a background task job that publishes
+// one mutation and returns after it reaches a terminal state, ready to collect.
+func startTerminalBackgroundMutation(t *testing.T, jm *jobs.Manager, session, path string) string {
+	t.Helper()
+	j := jm.StartForSession(session, "task", "bg writer", func(ctx context.Context, _ io.Writer) (string, error) {
+		jobs.PublishEvidence(ctx, evidence.ChildEvidenceSummary{Receipts: []evidence.Receipt{{
+			ToolName: "write_file", Success: true, Write: true, Mutation: true, Paths: []string{path},
+		}}})
+		return "background answer", nil
+	})
+	if res := jm.WaitForSession(context.Background(), session, []string{j.ID}, 5); len(res) != 1 || res[0].Status != jobs.Done {
+		t.Fatalf("background job = %+v, want done", res)
+	}
+	return j.ID
+}
+
+func waitBuiltin(t *testing.T, reg *tool.Registry) {
+	t.Helper()
+	wait, ok := tool.LookupBuiltin("wait")
+	if !ok {
+		t.Fatal("wait builtin not registered")
+	}
+	reg.Add(wait)
+}
+
+func TestBackgroundEvidenceNotCommittedWhenTurnFails(t *testing.T) {
+	// The delivery turn collects a background writer's mutation via wait, then
+	// fails to sign it off, exhausting readiness. Because the turn never
+	// delivered, the lease must not be committed: the mutation stays collectable
+	// so the next turn can review it instead of shipping it unreviewed.
+	jm := jobs.NewManager(event.Discard)
+	defer jm.Close()
+	jobID := startTerminalBackgroundMutation(t, jm, "parent-session", "qa/bank.md")
+
+	reg := evidenceRegistry()
+	waitBuiltin(t, reg)
+	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
+		{toolCallChunk("w", "wait", `{"job_ids":["`+jobID+`"]}`), {Type: provider.ChunkDone}},
+		{{Type: provider.ChunkText, Text: "all set"}, {Type: provider.ChunkDone}}, // no sign-off
+		{{Type: provider.ChunkText, Text: "all set"}, {Type: provider.ChunkDone}},
+		{{Type: provider.ChunkText, Text: "all set"}, {Type: provider.ChunkDone}},
+	}}
+	a := New(prov, reg, NewSession(""), Options{DeliveryProfile: true, Jobs: jm}, event.Discard)
+	ctx := jobs.WithManager(WithParentSession(context.Background(), "parent-session"), jm)
+	ctx = jobs.WithSession(ctx, "parent-session")
+
+	err := a.Run(ctx, "collect and finish the background task")
+	var readiness *FinalReadinessError
+	if !errors.As(err, &readiness) {
+		t.Fatalf("turn = %v, want readiness exhaustion on the uncollected sign-off", err)
+	}
+	// The failed turn must not have consumed the evidence.
+	if leased := jm.LeaseEvidenceForSession("parent-session", jobID); !leased.HasMutation() {
+		t.Fatalf("failed delivery turn consumed the background evidence: %+v", leased)
+	}
+}
+
+func TestBackgroundEvidenceCommittedWhenTurnDelivers(t *testing.T) {
+	// A successful turn that collected a background writer's mutation commits the
+	// lease, permanently draining the job's evidence so a later re-poll does not
+	// re-demand review of work already delivered.
+	jm := jobs.NewManager(event.Discard)
+	defer jm.Close()
+	jobID := startTerminalBackgroundMutation(t, jm, "parent-session", "notes.txt")
+
+	reg := tool.NewRegistry()
+	reg.Add(fakeTool{name: "read_file", readOnly: true})
+	waitBuiltin(t, reg)
+	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
+		{toolCallChunk("w", "wait", `{"job_ids":["`+jobID+`"]}`), {Type: provider.ChunkDone}},
+		{{Type: provider.ChunkText, Text: "collected the result"}, {Type: provider.ChunkDone}},
+	}}
+	// No delivery profile: the turn succeeds immediately after collecting, so the
+	// commit-on-success hook fires without a full sign-off script.
+	a := New(prov, reg, NewSession(""), Options{Jobs: jm}, event.Discard)
+	ctx := jobs.WithManager(WithParentSession(context.Background(), "parent-session"), jm)
+	ctx = jobs.WithSession(ctx, "parent-session")
+
+	if err := a.Run(ctx, "collect the background task"); err != nil {
+		t.Fatalf("delivering turn failed: %v", err)
+	}
+	if leased := jm.LeaseEvidenceForSession("parent-session", jobID); len(leased.Receipts) != 0 {
+		t.Fatalf("delivered turn did not commit the background lease: %+v", leased)
 	}
 }
 
