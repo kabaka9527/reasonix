@@ -553,6 +553,11 @@ func TestToolCallMutatesForDeliveryProfile(t *testing.T) {
 		{name: "formatter write", toolName: "bash", args: `{"command":"gofmt -w internal/a.go"}`, want: true},
 		{name: "file redirect", toolName: "bash", args: `{"command":"printf x > generated.txt"}`, want: true},
 		{name: "compound verification", toolName: "bash", args: `{"command":"go test ./... 2>&1 | tail -20"}`},
+		{name: "pytest snapshot update stays opaque", toolName: "bash", args: `{"command":"pytest --snapshot-update"}`, want: true},
+		{name: "pytest junitxml report stays opaque", toolName: "bash", args: `{"command":"pytest --junitxml=report.xml"}`, want: true},
+		{name: "gotestsum junitfile stays opaque", toolName: "bash", args: `{"command":"gotestsum --junitfile out.xml ./..."}`, want: true},
+		{name: "go test coverprofile stays opaque", toolName: "bash", args: `{"command":"go test -coverprofile=cover.out ./..."}`, want: true},
+		{name: "plain pytest", toolName: "bash", args: `{"command":"pytest"}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -560,6 +565,38 @@ func TestToolCallMutatesForDeliveryProfile(t *testing.T) {
 				t.Fatalf("ToolCallMutates(%q, %s) = %v, want %v", tt.toolName, tt.args, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRunnerWriteOutputFlagsCannotMasqueradeAsVerification(t *testing.T) {
+	// Snapshot flags rewrite checked-in fixtures and report/profile flags
+	// write explicit output paths; both must stay opaque mutations so the
+	// files they produce still require review and sign-off.
+	for _, command := range []string{
+		"pytest --snapshot-update",
+		"pytest --junitxml=report.xml",
+		"mypy --junit-xml report.xml src/",
+		"gotestsum --junitfile out.xml ./...",
+		"go test -coverprofile=cover.out ./...",
+		"go test --coverprofile cover.out ./...",
+		"npm test -- --updateSnapshot",
+	} {
+		if bashCommandIsVerification(command) {
+			t.Fatalf("%q writes files and must not be classified as verification", command)
+		}
+		if !ToolCallMutates("bash", json.RawMessage(`{"command":"`+command+`"}`), false) {
+			t.Fatalf("%q must remain an opaque mutation", command)
+		}
+	}
+	for _, command := range []string{
+		"pytest",
+		"gotestsum ./...",
+		"go test -cover ./...",
+		"mypy src/",
+	} {
+		if !bashCommandIsVerification(command) {
+			t.Fatalf("%q should remain a verification command", command)
+		}
 	}
 }
 

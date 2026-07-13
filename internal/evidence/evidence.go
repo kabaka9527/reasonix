@@ -1007,6 +1007,9 @@ func bashSegmentIsVerification(fields []string) bool {
 	if hasCommandArg(args, "--fix", "--write", "-w", "--update", "-u") {
 		return false
 	}
+	if hasWriteOutputFlag(args) {
+		return false
+	}
 	switch base {
 	case "go":
 		if len(args) == 0 {
@@ -1071,6 +1074,39 @@ func hasCommandArg(args []string, candidates ...string) bool {
 			if strings.EqualFold(arg, candidate) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// writeOutputFlags are test-runner and linter flags that write snapshot,
+// report, or profile files. Snapshot flags rewrite checked-in fixtures (the
+// --update/-u class rejected above); the others write explicit output paths.
+// A runner invoked with one of them changes workspace state, so the segment
+// must not count as read-only verification.
+var writeOutputFlags = map[string]bool{
+	"snapshot-update": true, // pytest-snapshot / syrupy
+	"updatesnapshot":  true, // jest --updateSnapshot via npm/yarn wrappers
+	"junitxml":        true, // pytest
+	"junit-xml":       true, // pytest / mypy
+	"junitfile":       true, // gotestsum
+	"jsonfile":        true, // gotestsum
+	"coverprofile":    true, // go test
+	"cpuprofile":      true, // go test
+	"memprofile":      true, // go test
+}
+
+func hasWriteOutputFlag(args []string) bool {
+	for _, arg := range args {
+		name := strings.TrimLeft(arg, "-")
+		if len(name) == len(arg) || name == "" {
+			continue // not a flag
+		}
+		if i := strings.IndexByte(name, '='); i >= 0 {
+			name = name[:i]
+		}
+		if writeOutputFlags[strings.ToLower(name)] {
+			return true
 		}
 	}
 	return false
