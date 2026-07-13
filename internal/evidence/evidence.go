@@ -1015,7 +1015,15 @@ func bashSegmentIsVerification(fields []string) bool {
 		if len(args) == 0 {
 			return false
 		}
-		if args[0] == "test" || args[0] == "vet" {
+		if args[0] == "vet" {
+			return true
+		}
+		if args[0] == "test" {
+			for _, arg := range args[1:] {
+				if goTestFlagWritesFile(arg) {
+					return false
+				}
+			}
 			return true
 		}
 		return args[0] == "build" && !hasCommandArg(args, "-o")
@@ -1094,6 +1102,8 @@ var writeOutputFlags = map[string]bool{
 	"coverprofile":    true, // go test
 	"cpuprofile":      true, // go test
 	"memprofile":      true, // go test
+	"blockprofile":    true, // go test
+	"mutexprofile":    true, // go test
 }
 
 func hasWriteOutputFlag(args []string) bool {
@@ -1110,6 +1120,24 @@ func hasWriteOutputFlag(args []string) bool {
 		}
 	}
 	return false
+}
+
+// goTestFlagWritesFile reports whether a go test flag writes a workspace
+// artifact: -c/-o emit the test binary and -trace writes an execution trace.
+// These stay out of writeOutputFlags because the dash-stripped global match
+// would also hit node -c (a syntax-only check) and pytest --trace (a
+// read-only debugger flag). Go flags accept single- and double-dash forms.
+func goTestFlagWritesFile(arg string) bool {
+	name := strings.ToLower(arg)
+	if i := strings.IndexByte(name, '='); i >= 0 {
+		name = name[:i]
+	}
+	switch name {
+	case "-c", "--c", "-o", "--o", "-trace", "--trace":
+		return true
+	default:
+		return false
+	}
 }
 
 func completeStepVerificationCommands(args json.RawMessage) []string {

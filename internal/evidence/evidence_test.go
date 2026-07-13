@@ -557,6 +557,9 @@ func TestToolCallMutatesForDeliveryProfile(t *testing.T) {
 		{name: "pytest junitxml report stays opaque", toolName: "bash", args: `{"command":"pytest --junitxml=report.xml"}`, want: true},
 		{name: "gotestsum junitfile stays opaque", toolName: "bash", args: `{"command":"gotestsum --junitfile out.xml ./..."}`, want: true},
 		{name: "go test coverprofile stays opaque", toolName: "bash", args: `{"command":"go test -coverprofile=cover.out ./..."}`, want: true},
+		{name: "go test blockprofile stays opaque", toolName: "bash", args: `{"command":"go test -blockprofile=block.out ./..."}`, want: true},
+		{name: "go test trace stays opaque", toolName: "bash", args: `{"command":"go test -trace trace.out ./..."}`, want: true},
+		{name: "go test compile binary stays opaque", toolName: "bash", args: `{"command":"go test -c ./internal/evidence"}`, want: true},
 		{name: "plain pytest", toolName: "bash", args: `{"command":"pytest"}`},
 	}
 	for _, tt := range tests {
@@ -579,6 +582,11 @@ func TestRunnerWriteOutputFlagsCannotMasqueradeAsVerification(t *testing.T) {
 		"gotestsum --junitfile out.xml ./...",
 		"go test -coverprofile=cover.out ./...",
 		"go test --coverprofile cover.out ./...",
+		"go test -blockprofile=block.out ./...",
+		"go test -mutexprofile mutex.out ./...",
+		"go test -trace trace.out ./...",
+		"go test -c ./internal/evidence",
+		"go test -o evidence.test -c ./internal/evidence",
 		"npm test -- --updateSnapshot",
 	} {
 		if bashCommandIsVerification(command) {
@@ -592,6 +600,8 @@ func TestRunnerWriteOutputFlagsCannotMasqueradeAsVerification(t *testing.T) {
 		"pytest",
 		"gotestsum ./...",
 		"go test -cover ./...",
+		"go test -count=1 ./...",
+		"pytest --trace",
 		"mypy src/",
 	} {
 		if !bashCommandIsVerification(command) {
