@@ -139,6 +139,24 @@ ok(
 );
 
 ok(
+  finalDeclaration(":root[data-theme-style] .tabbar__tabs", "gap") === "6px" &&
+    finalDeclaration(":root[data-theme-style] .tabbar__tab", "border") === "1px solid var(--border)",
+  "themed tabs keep distinct full outlines with visible spacing",
+);
+
+ok(
+  finalDeclaration(":root[data-theme-style] .app-chrome--tabs .tabbar__tab + .tabbar__tab:not(.tabbar__tab--drop-before)::before", "width") === "1px" &&
+    finalDeclaration(":root[data-theme-style] .app-chrome--tabs .tabbar__tab + .tabbar__tab:not(.tabbar__tab--drop-before)::before", "background") === "var(--border-2)",
+  "adjacent AppChrome tabs render a stronger divider inside their gap",
+);
+
+ok(
+  finalDeclaration(":root[data-theme-style] .tabbar__tab--active", "border-color") === "var(--border-2)" &&
+    finalDeclaration(":root[data-theme-style] .tabbar__tab--active", "font-weight") === "600",
+  "active themed tabs combine a stronger border outline and heavier label weight",
+);
+
+ok(
   /workbenchChrome \? \(\s*<span className="app-chrome__spacer" aria-hidden="true" \/>/s.test(appChromeSource),
   "AppChrome workbench branch skips the tab strip",
 );
