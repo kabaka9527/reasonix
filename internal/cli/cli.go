@@ -283,6 +283,23 @@ func chdirTo(dir string) int {
 	return 0
 }
 
+// workspaceRootForDir returns the explicit project root to pin when --dir was
+// given. It runs after chdirTo has already switched into dir, so the process
+// working directory is the resolved root. An empty dir means no override (fall
+// back to git-root detection). A Getwd failure is returned rather than swallowed:
+// silently reverting to "" would re-trigger git-root/default resolution and break
+// the explicit --dir guarantee, so the caller must fail loudly instead.
+func workspaceRootForDir(dir string) (string, error) {
+	if dir == "" {
+		return "", nil
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("resolve --dir workspace root: %w", err)
+	}
+	return wd, nil
+}
+
 func modelForResumePath(modelName, resumePath string, cfg *config.Config) string {
 	if strings.TrimSpace(modelName) != "" || strings.TrimSpace(resumePath) == "" {
 		return modelName
@@ -340,11 +357,10 @@ func runAgent(args []string) int {
 	if rc := chdirTo(*dir); rc != 0 {
 		return rc
 	}
-	var workspaceRoot string
-	if *dir != "" {
-		if wd, err := os.Getwd(); err == nil {
-			workspaceRoot = wd
-		}
+	workspaceRoot, err := workspaceRootForDir(*dir)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+		return 1
 	}
 	cfg, _ := config.Load()
 	configureCLIThemeFromConfigForTTYOutput()
@@ -673,11 +689,10 @@ func chatREPL(args []string) int {
 	if rc := chdirTo(*dir); rc != 0 {
 		return rc
 	}
-	var workspaceRoot string
-	if *dir != "" {
-		if wd, err := os.Getwd(); err == nil {
-			workspaceRoot = wd
-		}
+	workspaceRoot, err := workspaceRootForDir(*dir)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+		return 1
 	}
 	cfg, err := config.Load()
 	if err == nil {
