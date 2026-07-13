@@ -28435,6 +28435,16 @@ body > .mermaid-diagram--fullscreen {
 }
 
 /* popover 卡片 —— 对齐 context-panel__capacity-card 风格（portal 到 body，无 .app--creation 前缀） */
+/*
+ * NOTE (font-scale): this popover is portaled to <body>, so it has no
+ * .app--creation prefix, yet it is ONLY rendered in creation layout
+ * (Composer gates it behind showContextWindowRing = sidebarCreation =
+ * desktopLayoutStyle === "creation"). Font sizes here intentionally use
+ * calc(<px> * var(--font-scale)) to match the rest of creation and follow
+ * the interface text-size setting. Keep the calc(); do NOT revert to bare px.
+ * The typography-overflow-contract test asserts no bare-px font-size remains
+ * in .context-ring-popover rules, so a plain "12px" here will fail CI.
+ */
 .context-ring-popover,
 :root[data-theme-style] .context-ring-popover {
   min-width: 220px;
