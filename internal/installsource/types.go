@@ -108,6 +108,12 @@ type action struct {
 	entry      config.PluginEntry
 	skill      skillCandidate
 	disconnect func() // optional MCP rollback; nil when not connected
+	// preparedRoot lets a multi-plugin marketplace apply reuse the exact clone
+	// that produced its approved plan instead of cloning the same repository
+	// once per plugin. cleanup is attached to one action and runs after all
+	// actions finish.
+	preparedRoot string
+	cleanup      func()
 }
 
 func actionPlanKey(a action) string {
@@ -150,6 +156,8 @@ func publicActions(in []action) []action {
 		out[i] = in[i]
 		out[i].entry = config.PluginEntry{}
 		out[i].skill = skillCandidate{}
+		out[i].preparedRoot = ""
+		out[i].cleanup = nil
 	}
 	return out
 }
