@@ -287,7 +287,12 @@ such as Superpowers and Claude-style skill packs, Reasonix maps:
   events when the event names match. `matcher`, `args`, `async`, `env`, and
   timeout are preserved. Imported hooks receive Claude-compatible snake_case
   stdin payloads, including `hook_event_name`, and `${CLAUDE_PLUGIN_ROOT}` is
-  expanded by the host before process launch.
+  expanded by the host before process launch. A `PreToolUse` hook can still
+  deny the call via exit code 2 or a `hookSpecificOutput.permissionDecision`
+  JSON deny on exit 0; an imported `PermissionRequest` hook additionally
+  denies the permission (rather than only notifying) via exit code 2 or
+  `hookSpecificOutput.decision.behavior`, matching Claude's own contract.
+  `updatedInput` is not yet applied to the tool call.
 - A plugin-root `.mcp.json` to installed MCP entries. Claude `local` maps to
   stdio, non-ASCII display names receive stable internal IDs, and duplicate
   declarations are deduplicated. Imported servers default to

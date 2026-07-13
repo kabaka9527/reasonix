@@ -562,25 +562,86 @@ func TestMatchesTool(t *testing.T) {
 
 func TestDecideOutcome(t *testing.T) {
 	cases := []struct {
-		name  string
-		event Event
-		r     SpawnResult
-		want  Decision
+		name   string
+		event  Event
+		format string
+		r      SpawnResult
+		want   Decision
 	}{
-		{"pass", PreToolUse, SpawnResult{ExitCode: 0}, DecisionPass},
-		{"block-exit2", PreToolUse, SpawnResult{ExitCode: 2}, DecisionBlock},
-		{"exit2-nonblocking-warns", PostToolUse, SpawnResult{ExitCode: 2}, DecisionWarn},
-		{"permission-exit2-warns", PermissionRequest, SpawnResult{ExitCode: 2}, DecisionWarn},
-		{"other-nonzero-warns", PreToolUse, SpawnResult{ExitCode: 1}, DecisionWarn},
-		{"timeout-blocking", UserPromptSubmit, SpawnResult{TimedOut: true}, DecisionBlock},
-		{"permission-timeout-warns", PermissionRequest, SpawnResult{TimedOut: true}, DecisionWarn},
-		{"timeout-nonblocking", Stop, SpawnResult{TimedOut: true}, DecisionWarn},
-		{"spawn-error", PreToolUse, SpawnResult{SpawnErr: os.ErrNotExist}, DecisionError},
+		{"pass", PreToolUse, "", SpawnResult{ExitCode: 0}, DecisionPass},
+		{"block-exit2", PreToolUse, "", SpawnResult{ExitCode: 2}, DecisionBlock},
+		{"exit2-nonblocking-warns", PostToolUse, "", SpawnResult{ExitCode: 2}, DecisionWarn},
+		{"permission-exit2-warns", PermissionRequest, "", SpawnResult{ExitCode: 2}, DecisionWarn},
+		{"other-nonzero-warns", PreToolUse, "", SpawnResult{ExitCode: 1}, DecisionWarn},
+		{"timeout-blocking", UserPromptSubmit, "", SpawnResult{TimedOut: true}, DecisionBlock},
+		{"permission-timeout-warns", PermissionRequest, "", SpawnResult{TimedOut: true}, DecisionWarn},
+		{"timeout-nonblocking", Stop, "", SpawnResult{TimedOut: true}, DecisionWarn},
+		{"spawn-error", PreToolUse, "", SpawnResult{SpawnErr: os.ErrNotExist}, DecisionError},
+		// Claude's own PermissionRequest contract blocks on exit 2/timeout the
+		// same way PreToolUse does; native Reasonix PermissionRequest hooks
+		// (format == "") stay advisory-only, verified above.
+		{"claude-permission-exit2-blocks", PermissionRequest, "claude", SpawnResult{ExitCode: 2}, DecisionBlock},
+		{"claude-permission-timeout-blocks", PermissionRequest, "claude", SpawnResult{TimedOut: true}, DecisionBlock},
 	}
 	for _, c := range cases {
-		if got := decideOutcome(c.event, c.r); got != c.want {
+		h := ResolvedHook{Event: c.event, HookConfig: HookConfig{PayloadFormat: c.format}}
+		if got := decideOutcome(h, c.r); got != c.want {
 			t.Errorf("%s: decideOutcome = %s, want %s", c.name, got, c.want)
 		}
+	}
+}
+
+func TestClaudeJSONDeny(t *testing.T) {
+	cases := []struct {
+		name       string
+		event      Event
+		stdout     string
+		wantDeny   bool
+		wantReason string
+	}{
+		{
+			name:       "pretooluse-permission-decision-deny",
+			event:      PreToolUse,
+			stdout:     `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"rm -rf blocked"}}`,
+			wantDeny:   true,
+			wantReason: "rm -rf blocked",
+		},
+		{
+			name:     "pretooluse-permission-decision-allow",
+			event:    PreToolUse,
+			stdout:   `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}`,
+			wantDeny: false,
+		},
+		{
+			name:       "permissionrequest-decision-behavior-deny",
+			event:      PermissionRequest,
+			stdout:     `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny"}}}`,
+			wantDeny:   true,
+			wantReason: "",
+		},
+		{
+			name:     "non-json-stdout-never-denies",
+			event:    PreToolUse,
+			stdout:   "looks fine",
+			wantDeny: false,
+		},
+		{
+			name:     "unsupported-event-never-denies",
+			event:    PostToolUse,
+			stdout:   `{"hookSpecificOutput":{"hookEventName":"PostToolUse","permissionDecision":"deny"}}`,
+			wantDeny: false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			deny, reason := claudeJSONDeny(c.event, c.stdout)
+			if deny != c.wantDeny {
+				t.Errorf("deny = %v, want %v", deny, c.wantDeny)
+			}
+			if reason != c.wantReason {
+				t.Errorf("reason = %q, want %q", reason, c.wantReason)
+			}
+		})
 	}
 }
 
@@ -640,6 +701,47 @@ func TestRunStopsAtFirstBlock(t *testing.T) {
 	}
 	if len(ran) != 1 || ran[0] != "first" {
 		t.Errorf("should stop after the first block, ran %v", ran)
+	}
+}
+
+func TestRunHonorsClaudeJSONDenyOnExitZero(t *testing.T) {
+	hooks := []ResolvedHook{
+		{HookConfig: HookConfig{Command: "guard", PayloadFormat: "claude"}, Event: PreToolUse},
+	}
+	denyJSON := `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"rm -rf blocked"}}`
+	rep := Run(context.Background(), Payload{Event: PreToolUse, ToolName: "bash"}, hooks,
+		func(_ context.Context, in SpawnInput) SpawnResult { return SpawnResult{ExitCode: 0, Stdout: denyJSON} })
+	if !rep.Blocked {
+		t.Fatal("exit-0 hook with a Claude JSON deny decision should block")
+	}
+	if rep.Outcomes[0].Decision != DecisionBlock {
+		t.Errorf("Decision = %s, want block", rep.Outcomes[0].Decision)
+	}
+}
+
+func TestRunNativeHookIgnoresPermissionDecisionField(t *testing.T) {
+	// A native (non-Claude) hook's stdout happening to contain a field named
+	// "permissionDecision" must not gain new blocking power — only imported
+	// Claude hooks (PayloadFormat "claude") opt into that contract.
+	hooks := []ResolvedHook{
+		{HookConfig: HookConfig{Command: "guard"}, Event: PreToolUse},
+	}
+	denyJSON := `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"}}`
+	rep := Run(context.Background(), Payload{Event: PreToolUse, ToolName: "bash"}, hooks,
+		func(_ context.Context, in SpawnInput) SpawnResult { return SpawnResult{ExitCode: 0, Stdout: denyJSON} })
+	if rep.Blocked {
+		t.Fatal("native hook JSON output should not be interpreted as a Claude deny decision")
+	}
+}
+
+func TestRunClaudePermissionRequestExit2Blocks(t *testing.T) {
+	hooks := []ResolvedHook{
+		{HookConfig: HookConfig{Command: "guard", PayloadFormat: "claude"}, Event: PermissionRequest},
+	}
+	rep := Run(context.Background(), Payload{Event: PermissionRequest, ToolName: "bash"}, hooks,
+		func(_ context.Context, in SpawnInput) SpawnResult { return SpawnResult{ExitCode: 2} })
+	if !rep.Blocked {
+		t.Fatal("Claude-imported PermissionRequest hook exiting 2 should block")
 	}
 }
 

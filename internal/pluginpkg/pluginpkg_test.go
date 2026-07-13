@@ -316,6 +316,34 @@ func TestParseClaudePluginIgnoresEmptyConventionDirAndExplicitSkillsWin(t *testi
 	}
 }
 
+func TestParseClaudeHooksKeepsDistinctEnvTimeoutAsyncCwd(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, ClaudeManifest), `{"name": "hook-pack"}`)
+	// Same event/matcher/command/args, but each block differs in exactly one
+	// of env, timeout, async, cwd — none should be dropped as a duplicate of
+	// another.
+	writeTestFile(t, filepath.Join(root, "hooks", "hooks.json"), `{
+  "hooks": {"PreToolUse": [
+    {"matcher": "bash", "hooks": [{"type":"command","command":"bin/guard","env":{"MODE":"a"}}]},
+    {"matcher": "bash", "hooks": [{"type":"command","command":"bin/guard","env":{"MODE":"b"}}]},
+    {"matcher": "bash", "hooks": [{"type":"command","command":"bin/guard","env":{"MODE":"b"},"timeout":5}]},
+    {"matcher": "bash", "hooks": [{"type":"command","command":"bin/guard","env":{"MODE":"b"},"timeout":5,"async":true}]},
+    {"matcher": "bash", "hooks": [{"type":"command","command":"bin/guard","env":{"MODE":"b"},"timeout":5,"async":true}]}
+  ]}
+}`)
+
+	pkg, _, err := ParseDir(root)
+	if err != nil {
+		t.Fatalf("ParseDir: %v", err)
+	}
+	hooks := pkg.Manifest.Hooks["PreToolUse"]
+	// Four distinct configurations; the fifth block is an exact duplicate of
+	// the fourth (same env, timeout, and async) and must still be dropped.
+	if len(hooks) != 4 {
+		t.Fatalf("hooks = %#v, want 4 distinct configurations (dedup must not collapse different env/timeout/async)", hooks)
+	}
+}
+
 func TestParseClaudePluginMapsConventionCapabilities(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, filepath.Join(root, ClaudeManifest), `{"name": "big-pack"}`)

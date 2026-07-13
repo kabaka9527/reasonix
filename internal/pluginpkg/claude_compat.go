@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -130,13 +131,24 @@ func appendClaudeHooksFile(root, rel string, manifest *Manifest) ([]string, []Co
 
 func appendUniqueHook(hooks []Hook, candidate Hook) []Hook {
 	for _, existing := range hooks {
-		if existing.Match == candidate.Match && existing.Command == candidate.Command &&
-			strings.Join(existing.Args, "\x00") == strings.Join(candidate.Args, "\x00") &&
-			existing.PayloadFormat == candidate.PayloadFormat {
+		if hooksEqual(existing, candidate) {
 			return hooks
 		}
 	}
 	return append(hooks, candidate)
+}
+
+// hooksEqual reports whether two hooks are duplicate declarations of the same
+// invocation. Two hooks that run the same command with the same matcher and
+// args but different Env, Timeout, Async, or Cwd are distinct configurations,
+// not duplicates — comparing only match/command/args/payload format would
+// silently drop the second one.
+func hooksEqual(a, b Hook) bool {
+	return a.Match == b.Match && a.Command == b.Command &&
+		strings.Join(a.Args, "\x00") == strings.Join(b.Args, "\x00") &&
+		a.PayloadFormat == b.PayloadFormat &&
+		a.Async == b.Async && a.Timeout == b.Timeout && a.Cwd == b.Cwd &&
+		maps.Equal(a.Env, b.Env)
 }
 
 func appendClaudeMCPFile(root string, manifest *Manifest) ([]string, []CompatibilityIssue) {
@@ -179,9 +191,10 @@ func appendClaudeMCPFile(root string, manifest *Manifest) ([]string, []Compatibi
 	for _, displayName := range names {
 		spec := raw.MCPServers[displayName]
 		typ := strings.ToLower(strings.TrimSpace(spec.Type))
-		if typ == "streamable-http" {
+		switch typ {
+		case "streamable-http":
 			typ = "http"
-		} else if typ == "local" {
+		case "local":
 			typ = "stdio"
 		}
 		if typ == "" {

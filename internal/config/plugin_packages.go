@@ -176,8 +176,8 @@ func pluginPackageEnv(installed pluginpkg.InstalledPlugin, root, workspaceRoot s
 
 func pluginPackageWorkspaceValue(root, workspaceRoot, value string) string {
 	value = pluginPackageValue(root, value)
-	value = strings.ReplaceAll(value, "${CLAUDE_PROJECT_DIR}", workspaceRoot)
-	return strings.ReplaceAll(value, "$CLAUDE_PROJECT_DIR", workspaceRoot)
+	value = expandPluginPathVar(value, "${CLAUDE_PROJECT_DIR}", workspaceRoot)
+	return expandPluginPathVar(value, "$CLAUDE_PROJECT_DIR", workspaceRoot)
 }
 
 func pluginPackageWorkspaceValues(root, workspaceRoot string, values []string) []string {
@@ -203,8 +203,40 @@ func pluginPackageWorkspaceMap(root, workspaceRoot string, values map[string]str
 }
 
 func pluginPackageValue(root, value string) string {
-	value = strings.ReplaceAll(value, "${CLAUDE_PLUGIN_ROOT}", root)
-	return strings.ReplaceAll(value, "$CLAUDE_PLUGIN_ROOT", root)
+	value = expandPluginPathVar(value, "${CLAUDE_PLUGIN_ROOT}", root)
+	return expandPluginPathVar(value, "$CLAUDE_PLUGIN_ROOT", root)
+}
+
+// expandPluginPathVar replaces every occurrence of placeholder with root and
+// normalizes the path suffix that follows each occurrence (up to the next
+// "$" or the end of the string) to the host separator. Claude manifests
+// always author that suffix with "/" regardless of host OS (e.g.
+// "${CLAUDE_PLUGIN_ROOT}/bin/server"); root is already OS-native, so a plain
+// string replace leaves a mixed "C:\...\pkg/bin/server" value on Windows that
+// no longer round-trips through filepath.Join comparisons.
+func expandPluginPathVar(value, placeholder, root string) string {
+	var b strings.Builder
+	rest := value
+	for {
+		idx := strings.Index(rest, placeholder)
+		if idx < 0 {
+			b.WriteString(rest)
+			return b.String()
+		}
+		b.WriteString(rest[:idx])
+		b.WriteString(root)
+		rest = rest[idx+len(placeholder):]
+		end := strings.IndexByte(rest, '$')
+		suffix := rest
+		if end >= 0 {
+			suffix = rest[:end]
+		}
+		b.WriteString(filepath.FromSlash(suffix))
+		if end < 0 {
+			return b.String()
+		}
+		rest = rest[end:]
+	}
 }
 
 func pluginEntryByName(entries []PluginEntry, name string) (PluginEntry, bool) {
@@ -226,15 +258,6 @@ func pluginPackageEntriesEqual(a, b PluginEntry) bool {
 		delete(env, "CLAUDE_PLUGIN_ROOT")
 	}
 	return reflect.DeepEqual(a, b)
-}
-
-func pluginNameExists(entries []PluginEntry, name string) bool {
-	for _, p := range entries {
-		if p.Name == name {
-			return true
-		}
-	}
-	return false
 }
 
 func stringSliceContainsPath(paths []string, path string) bool {

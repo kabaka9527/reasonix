@@ -71,8 +71,20 @@ var Events = []Event{
 
 // IsBlocking reports whether a non-zero/exit-2 (or timed-out) hook on this event
 // can block the loop. Only the gating events qualify. (PreCompact does not block;
-// it only contributes guidance via stdout.)
+// it only contributes guidance via stdout.) This governs native Reasonix hooks;
+// see claudePermissionBlocking for the Claude-imported PermissionRequest case.
 func IsBlocking(e Event) bool { return e == PreToolUse || e == UserPromptSubmit }
+
+// claudePermissionBlocking reports whether exit code 2 (or a timeout) on h
+// aborts the action even though PermissionRequest is not one of Reasonix's own
+// blocking events (docs/DESKTOP_HOOKS.md: "只有 PreToolUse 和 UserPromptSubmit
+// 是阻塞型事件"). Claude's own PermissionRequest contract denies the permission
+// on exit 2 the same way PreToolUse does (https://code.claude.com/docs/en/hooks),
+// so an imported Claude hook (PayloadFormat "claude") honors that instead of
+// silently downgrading to a notification.
+func claudePermissionBlocking(h ResolvedHook) bool {
+	return h.Event == PermissionRequest && h.PayloadFormat == "claude"
+}
 
 // defaultTimeout is the per-event timeout when a hook sets none. Tool/prompt
 // hooks gate progress, so they're tight; post/stop hooks get more room.
@@ -417,12 +429,24 @@ type Report struct {
 // HookOutput is the parsed, model-facing part of a successful hook stdout.
 type HookOutput struct {
 	AdditionalContext string
+	// Deny and DenyReason carry a Claude-style JSON deny decision returned on
+	// exit 0 (hookSpecificOutput.permissionDecision for PreToolUse,
+	// hookSpecificOutput.decision.behavior for PermissionRequest). Claude hooks
+	// commonly deny this way instead of exiting 2; see
+	// https://code.claude.com/docs/en/hooks.
+	Deny       bool
+	DenyReason string
 }
 
 type hookJSONOutput struct {
 	HookSpecificOutput struct {
-		HookEventName     Event  `json:"hookEventName"`
-		AdditionalContext string `json:"additionalContext"`
+		HookEventName            Event  `json:"hookEventName"`
+		AdditionalContext        string `json:"additionalContext"`
+		PermissionDecision       string `json:"permissionDecision"`
+		PermissionDecisionReason string `json:"permissionDecisionReason"`
+		Decision                 struct {
+			Behavior string `json:"behavior"`
+		} `json:"decision"`
 	} `json:"hookSpecificOutput"`
 }
 
@@ -444,32 +468,52 @@ func ParseOutput(event Event, stdout string) (HookOutput, []string) {
 		return HookOutput{}, []string{fmt.Sprintf("hook %s returned invalid JSON stdout: %v", event, err)}
 	}
 	spec := parsed.HookSpecificOutput
-	if spec.HookEventName == "" && strings.TrimSpace(spec.AdditionalContext) == "" {
+	deny := strings.EqualFold(spec.PermissionDecision, "deny") || strings.EqualFold(spec.Decision.Behavior, "deny")
+	if spec.HookEventName == "" && strings.TrimSpace(spec.AdditionalContext) == "" && !deny {
 		return HookOutput{}, nil
 	}
-	if spec.HookEventName != event {
+	if spec.HookEventName != "" && spec.HookEventName != event {
 		return HookOutput{}, []string{fmt.Sprintf("hook output event %q does not match current event %q", spec.HookEventName, event)}
 	}
-	return HookOutput{AdditionalContext: strings.TrimSpace(spec.AdditionalContext)}, nil
+	out := HookOutput{AdditionalContext: strings.TrimSpace(spec.AdditionalContext)}
+	if deny {
+		out.Deny = true
+		out.DenyReason = strings.TrimSpace(spec.PermissionDecisionReason)
+	}
+	return out, nil
 }
 
-// decideOutcome maps a spawn result to a verdict.
-func decideOutcome(event Event, r SpawnResult) Decision {
+// decideOutcome maps a spawn result to a verdict for hook h.
+func decideOutcome(h ResolvedHook, r SpawnResult) Decision {
+	blocking := IsBlocking(h.Event) || claudePermissionBlocking(h)
 	switch {
 	case r.SpawnErr != nil:
 		return DecisionError
 	case r.TimedOut:
-		if IsBlocking(event) {
+		if blocking {
 			return DecisionBlock
 		}
 		return DecisionWarn
 	case r.ExitCode == 0:
 		return DecisionPass
-	case r.ExitCode == 2 && IsBlocking(event):
+	case r.ExitCode == 2 && blocking:
 		return DecisionBlock
 	default:
 		return DecisionWarn
 	}
+}
+
+// claudeJSONDeny reports whether a Claude-format hook's exit-0 stdout still
+// carries a JSON deny decision (see HookOutput.Deny). Reasonix must honor it
+// for the events it claims Claude hook compatibility for, or a plugin's
+// "block this dangerous command" hook silently no-ops whenever the script
+// signals deny via JSON instead of exit code 2.
+func claudeJSONDeny(event Event, stdout string) (bool, string) {
+	if event != PreToolUse && event != PermissionRequest {
+		return false, ""
+	}
+	out, _ := ParseOutput(event, stdout)
+	return out.Deny, out.DenyReason
 }
 
 // SpawnInput / SpawnResult / Spawner are the test seam around the real spawn.
@@ -525,7 +569,15 @@ func Run(ctx context.Context, payload Payload, hooks []ResolvedHook, spawner Spa
 		}
 		start := time.Now()
 		r := runResolvedHook(ctx, h, input, spawner)
-		decision := decideOutcome(event, r)
+		decision := decideOutcome(h, r)
+		if decision == DecisionPass && h.PayloadFormat == "claude" {
+			if deny, reason := claudeJSONDeny(event, r.Stdout); deny {
+				decision = DecisionBlock
+				if reason != "" {
+					r.Stdout = reason
+				}
+			}
+		}
 		report.Outcomes = append(report.Outcomes, Outcome{
 			Hook:      h,
 			Decision:  decision,

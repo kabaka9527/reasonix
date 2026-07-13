@@ -122,16 +122,20 @@ func (r *Runner) PostToolUseFailure(ctx context.Context, name string, args json.
 	}
 }
 
-// PermissionRequest fires before a tool approval prompt is shown. It can't
-// block; non-pass outcomes are surfaced to the user via notify.
-func (r *Runner) PermissionRequest(ctx context.Context, name, subject string, args json.RawMessage) {
+// PermissionRequest fires before a tool approval prompt is shown. A native
+// Reasonix hook here can't block (non-pass outcomes are surfaced via notify
+// only); a Claude-imported hook (PayloadFormat "claude") can deny the
+// permission via exit 2 or a JSON decision, matching Claude's own contract —
+// block=true means the caller should skip the approval prompt entirely and
+// treat it as denied.
+func (r *Runner) PermissionRequest(ctx context.Context, name, subject string, args json.RawMessage) (block bool, message string) {
 	if !r.Enabled() {
-		return
+		return false, ""
 	}
 	p := r.payload(PermissionRequest)
 	p.ToolName, p.ToolArgs, p.Subject = name, args, subject
 	rep := Run(ctx, p, r.hooks, r.spawner)
-	r.handle(rep)
+	return r.handle(rep)
 }
 
 // PromptSubmit fires before a turn starts. block=true aborts the turn; message

@@ -254,7 +254,11 @@ Reasonix 也会读取 `.codex-plugin/plugin.json` 和 `.claude-plugin/plugin.jso
 - `.claude/settings.json` 和 `hooks/hooks.json` 里的 command hooks 会按同名事件映射。
   `matcher`、`args`、`async`、`env` 和 timeout 均会保留。导入 Hook 的 stdin 使用
   Claude 兼容的 snake_case 载荷（包括 `hook_event_name`），宿主会在启动进程前展开
-  `${CLAUDE_PLUGIN_ROOT}`。
+  `${CLAUDE_PLUGIN_ROOT}`。`PreToolUse` hook 仍可通过退出码 2 或退出码 0 时的
+  `hookSpecificOutput.permissionDecision` JSON 拒绝该次调用；导入的
+  `PermissionRequest` hook 同样会通过退出码 2 或
+  `hookSpecificOutput.decision.behavior` 直接拒绝权限，而不只是发通知，
+  与 Claude 官方语义保持一致。`updatedInput` 暂未应用到实际工具调用参数。
 - 插件根目录 `.mcp.json` 会映射为已安装 MCP。Claude 的 `local` 会转换为 stdio；
   中文等显示名称会生成稳定内部 ID；重复声明会去重。导入服务器默认
   `auto_start=false`，由用户按需连接，避免启动时改变提供给模型的工具 schema。

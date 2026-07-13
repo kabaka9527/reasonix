@@ -5111,6 +5111,18 @@ func (c *Controller) requestApprovalDecisionWithOptions(ctx context.Context, too
 	if c.approval.preApprovedForDecision(tool, subject, opts.fresh) {
 		return approvalReply{allow: true}, nil
 	}
+
+	// Claude's PermissionRequest contract answers the dialog on the plugin's
+	// behalf (auto-allow/auto-deny) instead of merely observing it, so a
+	// deny here must preempt the prompt rather than just notify — this runs
+	// synchronously and before the dialog is shown. Native Reasonix
+	// PermissionRequest hooks stay advisory-only (see claudePermissionBlocking).
+	if hookSubject, hookArgs, ok := permissionRequestHookPayload(tool, subject, args); ok {
+		if block, _ := c.hooks.PermissionRequest(ctx, tool, hookSubject, hookArgs); block {
+			return approvalReply{}, nil
+		}
+	}
+
 	var id string
 	var reply chan approvalReply
 	if opts.fresh {
@@ -5120,9 +5132,6 @@ func (c *Controller) requestApprovalDecisionWithOptions(ctx context.Context, too
 	}
 
 	c.sink.Emit(event.Event{Kind: event.ApprovalRequest, Approval: event.Approval{ID: id, Tool: tool, Subject: subject, Reason: reason}})
-	if hookSubject, hookArgs, ok := permissionRequestHookPayload(tool, subject, args); ok {
-		go c.hooks.PermissionRequest(ctx, tool, hookSubject, hookArgs)
-	}
 	// The agent now needs the user's attention; a Notification hook can ping an
 	// external channel (desktop notice, phone) while the run blocks on the reply.
 	go c.hooks.Notification(ctx, approvalNotificationText(tool, subject), "permission_prompt")
