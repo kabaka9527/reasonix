@@ -141,10 +141,17 @@ interface State {
   // so background tabs keep counting while not rendered by Composer.
   turnWaitAccumMs: number;
   promptWaitStartedAt?: number;
-  // promptEventClock() reading taken when the live approval/ask event arrived.
-  // Orders the prompt against reconciliation snapshots so a snapshot fetched
-  // before the event cannot clear the prompt it never knew about (#6429).
+  // promptEventClock() reading taken when the CURRENT pending prompt first
+  // arrived. Orders the prompt against reconciliation snapshots so a snapshot
+  // fetched before the event cannot clear the prompt it never knew about
+  // (#6429). Anchored to the prompt's first arrival and NOT advanced by a
+  // same-id replay, so an authoritative idle snapshot taken after the user
+  // answered is never mistaken for stale (#6432 reverse race).
   promptArrivedAt?: number;
+  // Id of the prompt promptArrivedAt is anchored to. A replay re-emitting the
+  // same id keeps the original arrival time; only a genuinely new prompt id
+  // (backend ids are monotonic within a controller) re-anchors it.
+  promptArrivedId?: string;
   turnTokens: number;
   turnTotalTokens: number;
   turnCost: number;
@@ -942,7 +949,11 @@ function applyEvent(s: State, e: WireEvent): State {
       return beginPromptWait({
         ...s,
         approval: e.approval,
-        promptArrivedAt: promptEventClock(),
+        // A replay of the SAME prompt (post-answer delayed delivery, or the
+        // #6429 re-arm after activation) keeps the original arrival time; only
+        // a genuinely new prompt id re-anchors it (#6432 reverse race).
+        promptArrivedAt: e.approval?.id === s.promptArrivedId ? s.promptArrivedAt : promptEventClock(),
+        promptArrivedId: e.approval?.id,
         pendingPrompt: true,
         running: true,
         turnActive: true,
@@ -954,7 +965,8 @@ function applyEvent(s: State, e: WireEvent): State {
       return beginPromptWait({
         ...s,
         ask: e.ask,
-        promptArrivedAt: promptEventClock(),
+        promptArrivedAt: e.ask?.id === s.promptArrivedId ? s.promptArrivedAt : promptEventClock(),
+        promptArrivedId: e.ask?.id,
         pendingPrompt: true,
         running: true,
         turnActive: true,
@@ -1060,6 +1072,10 @@ export function reducer(s: State, a: Action): State {
         cancelRequested: false,
         cancellable: true,
         ...resetTurnTiming(),
+        // New turn epoch: forget the previous prompt anchor so a genuinely new
+        // prompt re-anchors freshly instead of inheriting a stale id/time.
+        promptArrivedAt: undefined,
+        promptArrivedId: undefined,
         pendingUser: a.text,
         discardTurn: false,
       };
@@ -1075,6 +1091,8 @@ export function reducer(s: State, a: Action): State {
         cancellable: false,
         approval: undefined,
         ask: undefined,
+        promptArrivedAt: undefined,
+        promptArrivedId: undefined,
         live: undefined,
       });
       return cleared;
@@ -1086,6 +1104,8 @@ export function reducer(s: State, a: Action): State {
         cancelRequested: true,
         approval: undefined,
         ask: undefined,
+        promptArrivedAt: undefined,
+        promptArrivedId: undefined,
         cancellable: s.running || s.turnActive,
       });
     }
@@ -1202,6 +1222,11 @@ export function reducer(s: State, a: Action): State {
       pendingPrompt: false,
       approval: undefined,
       ask: undefined,
+      // New tab epoch: drop the prompt anchor so the post-activation replay
+      // re-anchors against this activation, keeping the #6429 stale-snapshot
+      // guard armed for the freshly restored prompt.
+      promptArrivedAt: undefined,
+      promptArrivedId: undefined,
       running: false,
       turnActive: false,
       cancellable: false,

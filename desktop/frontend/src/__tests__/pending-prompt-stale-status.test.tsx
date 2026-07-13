@@ -81,13 +81,66 @@ eq(staleAskIdle.ask?.id, "ask-1", "stale idle snapshot keeps the ask card visibl
 const freshAskIdle = reducer(withAsk, { ...idleStatus, snapshotAt: promptEventClock() });
 eq(freshAskIdle.ask, undefined, "fresh idle snapshot still reconciles a dead ask");
 
-// Production shape: prompt cleared by activation, replayed by the backend,
-// then a snapshot fetched between the original and the replay lands late.
-const betweenPrompts = promptEventClock();
+// A replay of the SAME prompt id keeps the original arrival time — it must not
+// advance the anchor, or an authoritative post-answer idle snapshot would look
+// stale (#6432 reverse race).
 const replayed = reducer(withApproval, { type: "event", e: planApprovalEvent });
-ok((replayed.promptArrivedAt ?? 0) >= (withApproval.promptArrivedAt ?? 0), "replayed prompt refreshes its arrival time");
-const staleAfterReplay = reducer(replayed, { ...idleStatus, snapshotAt: betweenPrompts });
-eq(staleAfterReplay.approval?.id, "plan-1", "snapshot fetched before the replayed prompt stays stale");
+eq(replayed.promptArrivedAt, withApproval.promptArrivedAt, "same-id replay keeps the original arrival time");
+eq(replayed.promptArrivedId, "plan-1", "same-id replay keeps the anchor id");
+
+// #6432 reverse race: user answers, a delayed replay of the answered prompt
+// re-arms it, then the authoritative idle snapshot (fetched after the answer,
+// before the delayed replay) must still clear the resolved prompt, and a later
+// turn_done must not resurrect it.
+{
+  const armed = reducer({ ...initialState }, { type: "event", e: planApprovalEvent });
+  const originalArrival = armed.promptArrivedAt!;
+  const answeredEarly = reducer(armed, { type: "clearApproval" });
+  const authoritativeIdleAt = promptEventClock();
+  const zombie = reducer(answeredEarly, { type: "event", e: planApprovalEvent });
+  eq(zombie.promptArrivedAt, originalArrival, "delayed replay of an answered prompt does not advance the anchor");
+  ok(authoritativeIdleAt > originalArrival, "authoritative idle snapshot is newer than the original arrival");
+  const reconciled = reducer(zombie, { ...idleStatus, snapshotAt: authoritativeIdleAt });
+  eq(reconciled.approval, undefined, "authoritative idle after the answer clears the resurrected approval");
+  eq(reconciled.running, false, "authoritative idle after the answer ends the blocked state");
+  const afterTurnDone = reducer(reconciled, { type: "event", e: { kind: "turn_done" } as WireEvent });
+  eq(afterTurnDone.approval, undefined, "turn_done cannot resurrect an already-reconciled plan approval");
+  // Ordering variant: turn_done arrives BEFORE the authoritative idle snapshot.
+  const keptByTurnDone = reducer(zombie, { type: "event", e: { kind: "turn_done" } as WireEvent });
+  eq(keptByTurnDone.approval?.id, "plan-1", "turn_done still keeps a plan approval it cannot yet disprove");
+  const clearedLate = reducer(keptByTurnDone, { ...idleStatus, snapshotAt: promptEventClock() });
+  eq(clearedLate.approval, undefined, "a later authoritative idle clears the zombie kept by turn_done");
+}
+
+// A genuinely new prompt (different id) after an answer re-anchors, so its own
+// stale pre-arrival snapshot is still rejected (#6429 preserved).
+{
+  const armed = reducer({ ...initialState }, { type: "event", e: planApprovalEvent });
+  const answeredEarly = reducer(armed, { type: "clearApproval" });
+  const betweenPrompts = promptEventClock();
+  const nextPrompt = reducer(answeredEarly, { type: "event", e: { kind: "approval_request", approval: { id: "plan-2", tool: "exit_plan_mode", subject: "Approve plan" } } as WireEvent });
+  ok((nextPrompt.promptArrivedAt ?? 0) > betweenPrompts, "a new prompt id re-anchors the arrival time");
+  const staleForNext = reducer(nextPrompt, { ...idleStatus, snapshotAt: betweenPrompts });
+  eq(staleForNext.approval?.id, "plan-2", "a stale snapshot predating the new prompt is still rejected");
+}
+
+// backend_activation_start drops the anchor so a post-activation replay
+// re-anchors against the activation (#6429 tab-switch path).
+{
+  const stale = reducer({ ...initialState }, { type: "event", e: planApprovalEvent });
+  const activated = reducer(stale, { type: "backend_activation_start" });
+  eq(activated.promptArrivedId, undefined, "activation drops the prompt anchor");
+  eq(activated.promptArrivedAt, undefined, "activation drops the prompt arrival time");
+}
+
+// A new user turn drops the anchor so the next turn's prompts re-anchor fresh.
+{
+  const armed = reducer({ ...initialState }, { type: "event", e: planApprovalEvent });
+  const answeredEarly = reducer(armed, { type: "clearApproval" });
+  const nextTurn = reducer(answeredEarly, { type: "user", text: "continue", seq: 0 });
+  eq(nextTurn.promptArrivedId, undefined, "a new user message drops the prompt anchor id");
+  eq(nextTurn.promptArrivedAt, undefined, "a new user message drops the prompt arrival time");
+}
 
 const answered = reducer(withApproval, { type: "clearApproval" });
 eq(answered.approval, undefined, "explicit answer clears the prompt");
