@@ -325,6 +325,19 @@ func (a *App) ensureMediaTokenStore() *mediaTokenStore {
 	return a.mediaTokens
 }
 
+// jsProfilingMiddleware opts every asset response into the JS Self-Profiling
+// document policy so the frontend performance monitor can attach sampled stacks
+// to long-task reports. Chromium WebViews (WebView2) honor it; WebKit ignores
+// both the header and the API, so the frontend degrades to unattributed reports.
+func (a *App) jsProfilingMiddleware() func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Document-Policy", "js-profiling")
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 // workspaceMediaMiddleware returns an HTTP middleware that intercepts
 // /__reasonix_workspace_media/{token}/{filename} requests and serves the
 // corresponding workspace file. All other paths pass through to the Wails
@@ -4185,6 +4198,7 @@ type HistoryMessage struct {
 	Role               string                    `json:"role"`
 	Content            string                    `json:"content"`
 	Detail             string                    `json:"detail,omitempty"`
+	Code               string                    `json:"code,omitempty"`
 	SubmitText         string                    `json:"submitText,omitempty"`
 	CheckpointTurn     *int                      `json:"checkpointTurn,omitempty"`
 	Reasoning          string                    `json:"reasoning,omitempty"`
@@ -4970,6 +4984,7 @@ type previewEventRecord struct {
 	UpdatedAtSnake   json.RawMessage           `json:"updated_at"`
 	Text             string                    `json:"text"`
 	Detail           string                    `json:"detail"`
+	Code             string                    `json:"code"`
 	Content          string                    `json:"content"`
 	Reasoning        string                    `json:"reasoning"`
 	ReasoningContent string                    `json:"reasoningContent"`
@@ -5077,7 +5092,7 @@ func previewEventSessionMessages(path string) ([]HistoryMessage, bool, error) {
 			if level != "warn" {
 				level = "info"
 			}
-			out = append(out, HistoryMessage{Role: "notice", Level: level, Content: firstNonEmpty(rec.Text, rec.Content), Detail: rec.Detail})
+			out = append(out, HistoryMessage{Role: "notice", Level: level, Content: firstNonEmpty(rec.Text, rec.Content), Detail: rec.Detail, Code: rec.Code})
 		case "compaction_started":
 			c := rec.compactionPayload()
 			out = append(out, HistoryMessage{Role: "compaction", Pending: true, Trigger: c.Trigger})

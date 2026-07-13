@@ -867,7 +867,7 @@ func (t *WorkspaceTab) recordPlannerDisplayEvent(e event.Event) {
 			if e.Level == event.LevelWarn {
 				level = "warn"
 			}
-			t.plannerDisplay = append(t.plannerDisplay, HistoryMessage{Role: "notice", Level: level, Content: e.Text, Detail: e.Detail})
+			t.plannerDisplay = append(t.plannerDisplay, HistoryMessage{Role: "notice", Level: level, Content: e.Text, Detail: e.Detail, Code: e.Code})
 		}
 	}
 }
@@ -1201,6 +1201,12 @@ func topicActivityStatusFromEvent(e event.Event) (string, bool) {
 	case event.ApprovalRequest, event.AskRequest:
 		return topicStatusWaitingConfirmation, true
 	case event.TurnDone:
+		if e.Outcome == event.TurnOutcomeFinalReadiness {
+			// The transcript presents this turn end as a recoverable delivery
+			// pause with a continue action, so the sidebar must not flag it
+			// as an error.
+			return topicStatusPaused, true
+		}
 		if e.Err != nil {
 			return topicStatusError, true
 		}
@@ -3718,6 +3724,13 @@ func topicTitleUserTurnsFromSession(path string) []string {
 	}
 	var users []string
 	for _, msg := range msgs {
+		// Host-injected synthetic turns (readiness nudges, recovery retries) and
+		// mid-turn steers are persisted as role "user" but are not user-authored:
+		// counting them inflated userTurns past the stage-3 threshold and let
+		// "Host final-answer readiness check failed…" become a topic title.
+		if !agent.IsUserAuthoredTurn(msg.Text) {
+			continue
+		}
 		content := control.StripComposePrefixes(agent.HandoffTask(msg.Text))
 		content = control.StripReferencedContextPrefix(content)
 		if strings.TrimSpace(content) != "" {
@@ -5336,7 +5349,7 @@ func activityStatusForTab(tab *WorkspaceTab) string {
 		return topicStatusWaitingConfirmation
 	}
 	if runtimeStatus.Running {
-		if status == "" || status == topicStatusError {
+		if status == "" || status == topicStatusError || status == topicStatusPaused {
 			return topicStatusThinking
 		}
 		return status

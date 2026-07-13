@@ -79,9 +79,9 @@ ok(
 );
 
 ok(
-  /const WORKSPACE_PANEL_DEFAULT_OPEN = false;/.test(layoutStoreSource) &&
+  /const WORKSPACE_PANEL_DEFAULT_OPEN = true;/.test(layoutStoreSource) &&
     /workspacePanelOpen:\s*WORKSPACE_PANEL_DEFAULT_OPEN/.test(layoutStoreSource),
-  "right dock starts collapsed on launch",
+  "right dock starts expanded on launch",
 );
 
 ok(

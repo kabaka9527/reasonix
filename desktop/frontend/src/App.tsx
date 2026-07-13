@@ -37,12 +37,12 @@ import {
 import { useToast } from "./lib/toast";
 import { useWailsResizeFix } from "./lib/useWailsResizeFix";
 import { asArray } from "./lib/array";
-import { clearLegacyLangPref, normalizeLangPref, readLegacyLangPref, useI18n, useT, type Translator } from "./lib/i18n";
-import { localizedBackendNoticeText, useController, type Item, type LiveStream } from "./lib/useController";
+import { clearLegacyLangPref, normalizeLangPref, readLegacyLangPref, t, useI18n, useT, type Translator } from "./lib/i18n";
+import { localizedNoticeText, useController, type Item, type LiveStream } from "./lib/useController";
 import { app, onEvent, onProjectTreeChanged, onReady, onRuntimeRebuilt, onSessionRecovered } from "./lib/bridge";
 import { generativeMusic, isGenerativeMusicEnabled } from "./lib/generative-music";
 import { clearAttentionChimeKeys, playAttentionChime, playSuccessChime, shouldPlayAttentionChimeForEvent } from "./lib/sound";
-import { Transcript } from "./components/Transcript";
+import { NoticeCard, Transcript } from "./components/Transcript";
 import { Composer } from "./components/Composer";
 import { TodoPanel } from "./components/TodoPanel";
 import { ApprovalModal } from "./components/ApprovalModal";
@@ -118,6 +118,8 @@ import {
   type RestorableToolApprovalMode,
 } from "./lib/toolApprovalMode";
 import {
+  CREATION_RIGHT_DOCK_MIN_RENDER_WIDTH,
+  CREATION_RIGHT_DOCK_TREE_MIN_WIDTH,
   CREATION_SIDEBAR_MIN_WIDTH,
   RIGHT_DOCK_MAX_WIDTH,
   RIGHT_DOCK_MIN_RENDER_WIDTH,
@@ -128,10 +130,14 @@ import {
   type RightDockMode,
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
+  applyLayoutStyleDefaults,
+  clampCreationRightDockTreeWidth,
   clampCreationSidebarWidth,
   clampRightDockPreviewWidth,
   clampRightDockTreeWidth,
   clampSidebarWidth,
+  defaultCreationRightDockTreeWidth,
+  defaultCreationSidebarWidth,
   defaultRightDockTreeWidth,
   defaultSidebarWidth,
   saveRightDockPreviewWidth,
@@ -171,19 +177,28 @@ function noticePreviewMockEnabled(): boolean {
 }
 
 function noticePreviewItems(): Item[] {
-  const notice = (index: number, level: "info" | "warn", text: string, detail: string): Item => ({
+  const notice = (index: number, level: "info" | "warn", text: string, detail: string, code?: string): Item => ({
     kind: "notice",
     id: `notice-preview-${index}`,
     level,
-    text: localizedBackendNoticeText(text),
+    text: localizedNoticeText(text, code),
     detail,
   });
   return [
-    notice(0, "info", "Task status needs one more check; asking the assistant to finish or explain what is blocking it.", "final-answer readiness blocked: latest successful todo_write still has incomplete items: UI spinner in_progress, settings persistence pending"),
-    notice(1, "info", "No visible answer was produced; asking the assistant to respond again.", "empty final answer blocked: qwen3.7-plus returned no visible answer text (finish=stop, reasoning=2314 chars); retrying"),
-    notice(2, "info", "The assistant answered before taking action; asking it to use the required tools.", "executor handoff: assistant produced a proposal before running required repository commands; nudged to execute"),
-    notice(3, "info", "Tool round limit reached; asking the assistant to summarize progress.", "tool budget reached after 128 tool calls; requesting a progress summary before continuing"),
-    notice(4, "info", "The assistant is stuck retrying a blocked action; asking it to change approach.", "loop guard: repeated command failure matched the same stderr signature across 3 attempts"),
+    {
+      kind: "notice",
+      id: "notice-preview-delivery",
+      level: "info",
+      variant: "delivery",
+      title: t("notice.deliveryIncompleteTitle"),
+      text: t("notice.deliveryIncompleteBody"),
+      detail: "final-answer readiness failed 3 times: missing verification, review_report, and complete_step receipts",
+      action: "continue_delivery",
+    },
+    notice(1, "info", "No visible answer was produced; asking the assistant to respond again.", "empty final answer blocked: qwen3.7-plus returned no visible answer text (finish=stop, reasoning=2314 chars); retrying", "empty_final"),
+    notice(2, "info", "The assistant answered before taking action; asking it to use the required tools.", "executor handoff: assistant produced a proposal before running required repository commands; nudged to execute", "executor_handoff"),
+    notice(3, "info", "Tool round limit reached; asking the assistant to summarize progress.", "tool budget reached after 128 tool calls; requesting a progress summary before continuing", "tool_budget"),
+    notice(4, "info", "The assistant is stuck retrying a blocked action; asking it to change approach.", "loop guard: repeated command failure matched the same stderr signature across 3 attempts", "loop_guard"),
     notice(5, "info", "Context is getting large; preserving cache until cleanup is needed.", "context window 82% full; deferred cleanup to preserve reusable prompt cache"),
     notice(6, "info", "Context cleanup skipped for now.", "cleanup skipped: recent turn included unresolved user approval state"),
     notice(7, "info", "Automatic context cleanup paused because the context window is too small.", "configured compact threshold exceeds current model context window; auto cleanup paused for this model"),
@@ -209,7 +224,7 @@ function noticePreviewItems(): Item[] {
   ];
 }
 
-function NoticePreviewPanel({ detailsLabel }: { detailsLabel: string }) {
+function NoticePreviewPanel() {
   return (
     <div
       style={{
@@ -222,20 +237,7 @@ function NoticePreviewPanel({ detailsLabel }: { detailsLabel: string }) {
       <div style={{ maxWidth: 920, margin: "0 auto" }}>
         {noticePreviewItems().map((item) => {
           if (item.kind !== "notice") return null;
-          return (
-            <div key={item.id} className={`notice-line notice-line--${item.level}`} data-entrance="true">
-              <span className="notice-line__icon">{item.level === "warn" ? "⚠ " : "ℹ "}</span>
-              <div className="notice-line__text">
-                {item.text}
-                {item.detail ? (
-                  <details className="notice-line__details">
-                    <summary>{detailsLabel}</summary>
-                    <div>{item.detail}</div>
-                  </details>
-                ) : null}
-              </div>
-            </div>
-          );
+          return <NoticeCard key={item.id} item={item} onAction={item.action ? () => undefined : undefined} />;
         })}
       </div>
     </div>
@@ -1298,7 +1300,9 @@ export default function App() {
       const nextTheme = normalizeThemePreference(settings.desktopTheme);
       const nextStyle = normalizeThemeStyleForTheme(settings.desktopThemeStyle, nextTheme);
       applyTheme(nextTheme, nextStyle, { persist: false });
-      setDesktopLayoutStyle(normalizeDesktopLayoutStyle(settings.desktopLayoutStyle));
+      const nextLayoutStyle = normalizeDesktopLayoutStyle(settings.desktopLayoutStyle);
+      setDesktopLayoutStyle(nextLayoutStyle);
+      applyLayoutStyleDefaults(nextLayoutStyle);
       setLocalePref(normalizeLangPref(settings.desktopLanguage));
       setStartupUpdateChecksEnabled(settings.checkUpdates !== false);
       setStatusBarStyle(settings.statusBarStyle === "text" ? "text" : "icon");
@@ -1380,7 +1384,12 @@ export default function App() {
   }, []);
   const rightDockDetailActive = rightDockMode !== "context" && workspacePreviewActive;
   const preferredWorkspacePanelWidth = rightDockDetailActive ? rightDockPreviewWidth : rightDockTreeWidth;
-  const workspacePanelMinWidth = rightDockDetailActive ? RIGHT_DOCK_PREVIEW_MIN_WIDTH : RIGHT_DOCK_TREE_MIN_WIDTH;
+  const rightDockTreeMinWidth = desktopLayoutStyle === "creation" ? CREATION_RIGHT_DOCK_TREE_MIN_WIDTH : RIGHT_DOCK_TREE_MIN_WIDTH;
+  const rightDockTreeWidthClamp = desktopLayoutStyle === "creation" ? clampCreationRightDockTreeWidth : clampRightDockTreeWidth;
+  const rightDockMinRenderWidth = desktopLayoutStyle === "creation" && !rightDockDetailActive
+    ? CREATION_RIGHT_DOCK_MIN_RENDER_WIDTH
+    : RIGHT_DOCK_MIN_RENDER_WIDTH;
+  const workspacePanelMinWidth = rightDockDetailActive ? RIGHT_DOCK_PREVIEW_MIN_WIDTH : rightDockTreeMinWidth;
   const chatReservedWidth = workspacePanelOpen && !workspacePanelMaximized ? CHAT_COMFORT_MIN_WIDTH : CHAT_MIN_WIDTH;
   const workspacePanelAvailableWidth = availableWorkspacePanelWidth({
     viewportWidth,
@@ -1401,7 +1410,7 @@ export default function App() {
   const storedWorkspacePanelRenderWidth = workspacePanelMaximized ? preferredWorkspacePanelWidth : resolvedWorkspacePanelWidth;
   const workspacePanelRenderWidth = liveWorkspacePanelRenderWidth ?? storedWorkspacePanelRenderWidth;
   const workspacePanelRenderable =
-    workspacePanelOpen && (workspacePanelMaximized || workspacePanelRenderWidth >= RIGHT_DOCK_MIN_RENDER_WIDTH);
+    workspacePanelOpen && (workspacePanelMaximized || workspacePanelRenderWidth >= rightDockMinRenderWidth);
   const workspacePanelGridOpen = workspacePanelRenderable && !workspacePanelMaximized;
   const resolveLiveWorkspacePanelRenderWidth = useCallback(
     (preferredWidth: number, nextSidebarWidth = sidebarWidth) =>
@@ -1699,8 +1708,9 @@ export default function App() {
   // successful top-level todo_write result; failed or still-running attempts do
   // not advance the canonical panel state. Incomplete lists are always shown so
   // a stale local dismissal cannot hide work that still blocks final readiness;
-  // completed lists collapse automatically and can then be dismissed. The
-  // dismissal key is still based on stable todo content/state so history reloads
+  // every new list starts collapsed while its header keeps showing live progress
+  // and the current task; completed lists can then be dismissed. The dismissal
+  // key is still based on stable todo content/state so history reloads
   // do not resurrect the same finished list under a different event id. The
   // batch key ignores status changes so progress within the same task list does
   // not look like a brand-new task batch. Dismissal and open state are scoped to
@@ -2108,6 +2118,26 @@ export default function App() {
     saveSidebarWidth(SIDEBAR_MIN_WIDTH);
   }, [desktopLayoutStyle, sidebarWidth]);
 
+  useEffect(() => {
+    if (desktopLayoutStyle === "creation") {
+      if (rightDockTreeWidth >= CREATION_RIGHT_DOCK_TREE_MIN_WIDTH) return;
+      setRightDockTreeWidth(CREATION_RIGHT_DOCK_TREE_MIN_WIDTH);
+      saveRightDockTreeWidth(CREATION_RIGHT_DOCK_TREE_MIN_WIDTH);
+      return;
+    }
+    if (rightDockTreeWidth >= RIGHT_DOCK_TREE_MIN_WIDTH) return;
+    setRightDockTreeWidth(RIGHT_DOCK_TREE_MIN_WIDTH);
+    saveRightDockTreeWidth(RIGHT_DOCK_TREE_MIN_WIDTH);
+  }, [desktopLayoutStyle, rightDockTreeWidth]);
+
+  // Creation no longer exposes the overview tab. If a previous session left
+  // rightDockMode on "context", coerce it to files so 文件 stays selected.
+  useEffect(() => {
+    if (desktopLayoutStyle !== "creation") return;
+    if (rightDockMode !== "context") return;
+    setRightDockMode("files");
+  }, [desktopLayoutStyle, rightDockMode, setRightDockMode]);
+
   const setExpandedSidebarWidth = useCallback((width: number) => {
     closeTransientOverlays();
     const next = sidebarWidthClamp(width);
@@ -2189,11 +2219,11 @@ export default function App() {
         saveRightDockPreviewWidth(next);
         return;
       }
-      const next = clampRightDockTreeWidth(width);
+      const next = rightDockTreeWidthClamp(width);
       setRightDockTreeWidth(next);
       saveRightDockTreeWidth(next);
     },
-    [closeTransientOverlays, rightDockDetailActive],
+    [closeTransientOverlays, rightDockDetailActive, rightDockTreeWidthClamp],
   );
 
   const ensureWorkspacePanelWidth = useCallback(
@@ -2230,7 +2260,7 @@ export default function App() {
         if (rightDockDetailActive) {
           nextDockWidth = clampRightDockPreviewWidth(nextDockWidth);
         } else {
-          nextDockWidth = clampRightDockTreeWidth(nextDockWidth);
+          nextDockWidth = rightDockTreeWidthClamp(nextDockWidth);
         }
         liveResize.schedule(resolveLiveWorkspacePanelRenderWidth(nextDockWidth));
       };
@@ -2251,7 +2281,7 @@ export default function App() {
       window.addEventListener("pointerup", onDone);
       window.addEventListener("pointercancel", onDone);
     },
-    [closeTransientOverlays, resolveLiveWorkspacePanelRenderWidth, rightDockDetailActive, setSavedWorkspacePanelWidth, workspacePanelOpen, workspacePanelRenderWidth],
+    [closeTransientOverlays, resolveLiveWorkspacePanelRenderWidth, rightDockDetailActive, rightDockTreeWidthClamp, setSavedWorkspacePanelWidth, workspacePanelOpen, workspacePanelRenderWidth],
   );
 
   const resizeWorkspacePanelWithKeyboard = useCallback(
@@ -2261,13 +2291,13 @@ export default function App() {
         setSavedWorkspacePanelWidth(workspacePanelRenderWidth + (event.key === "ArrowLeft" ? 16 : -16));
       } else if (event.key === "Home") {
         event.preventDefault();
-        setSavedWorkspacePanelWidth(rightDockDetailActive ? RIGHT_DOCK_PREVIEW_MIN_WIDTH : RIGHT_DOCK_TREE_MIN_WIDTH);
+        setSavedWorkspacePanelWidth(rightDockDetailActive ? RIGHT_DOCK_PREVIEW_MIN_WIDTH : rightDockTreeMinWidth);
       } else if (event.key === "End") {
         event.preventDefault();
         setSavedWorkspacePanelWidth(rightDockDetailActive ? RIGHT_DOCK_MAX_WIDTH : RIGHT_DOCK_TREE_MAX_WIDTH);
       }
     },
-    [rightDockDetailActive, setSavedWorkspacePanelWidth, workspacePanelRenderWidth],
+    [rightDockDetailActive, rightDockTreeMinWidth, setSavedWorkspacePanelWidth, workspacePanelRenderWidth],
   );
 
   const openWorkspacePanel = useCallback(
@@ -2311,8 +2341,14 @@ export default function App() {
       closeWorkspacePanel();
       return;
     }
+    // Creation hides the overview tab; never reopen into the invisible "context"
+    // mode or neither 文件/改动 will show an active selection.
+    if (desktopLayoutStyle === "creation") {
+      openWorkspacePanel(rightDockMode === "changed" ? "changed" : "files");
+      return;
+    }
     openWorkspacePanel("context");
-  }, [closeWorkspacePanel, openWorkspacePanel, pulseWorkspaceToggle, workspacePanelRenderable]);
+  }, [closeWorkspacePanel, desktopLayoutStyle, openWorkspacePanel, pulseWorkspaceToggle, rightDockMode, workspacePanelRenderable]);
 
   const openRightDockMode = useCallback(
     (mode: RightDockMode) => {
@@ -3108,7 +3144,9 @@ export default function App() {
   const guidanceQueueMockItems = isGuidanceMockScenario(browserMockScenario) ? GUIDANCE_QUEUE_MOCK_ITEMS : undefined;
   const workspacePanelResetWidth = rightDockDetailActive
     ? RIGHT_DOCK_PREVIEW_DEFAULT_WIDTH
-    : defaultRightDockTreeWidth();
+    : desktopLayoutStyle === "creation"
+      ? defaultCreationRightDockTreeWidth()
+      : defaultRightDockTreeWidth();
   const workspacePanelResizeMinWidth = workspacePanelAriaMinWidth(workspacePanelMinWidth, workspacePanelRenderWidth);
   const workspacePanelMaxWidth = rightDockDetailActive ? RIGHT_DOCK_MAX_WIDTH : RIGHT_DOCK_TREE_MAX_WIDTH;
   const sidebarCreation = desktopLayoutStyle === "creation";
@@ -3449,7 +3487,7 @@ export default function App() {
           aria-valuenow={sidebarRenderWidth}
           onPointerDown={startSidebarResize}
           onKeyDown={resizeSidebarWithKeyboard}
-          onDoubleClick={() => setExpandedSidebarWidth(defaultSidebarWidth())}
+          onDoubleClick={() => setExpandedSidebarWidth(desktopLayoutStyle === "creation" ? defaultCreationSidebarWidth() : defaultSidebarWidth())}
         />
         {sidebarCreation && (
           <button
@@ -3615,18 +3653,20 @@ export default function App() {
               </div>
               </>
               )}
-              <Tooltip label={t("workspace.changedTab")}>
-                <button
-                  className="topicbar__action-btn topicbar__action-btn--label"
-                  type="button"
-                  aria-label={t("workspace.changedTab")}
-                  aria-pressed={workspacePanelRenderable && rightDockMode === "changed"}
-                  onClick={() => openRightDockMode("changed")}
-                >
-                  <GitBranch size={14} />
-                  <span>{t("workspace.changedTab")}</span>
-                </button>
-              </Tooltip>
+              {!sidebarCreation && (
+                <Tooltip label={t("workspace.changedTab")}>
+                  <button
+                    className="topicbar__action-btn topicbar__action-btn--label"
+                    type="button"
+                    aria-label={t("workspace.changedTab")}
+                    aria-pressed={workspacePanelRenderable && rightDockMode === "changed"}
+                    onClick={() => openRightDockMode("changed")}
+                  >
+                    <GitBranch size={14} />
+                    <span>{t("workspace.changedTab")}</span>
+                  </button>
+                </Tooltip>
+              )}
               <Tooltip label={t("shortcuts.cheatsheetTitle")}>
                 <button
                   className="topicbar__action-btn topicbar__action-btn--icon topicbar__action-btn--utility"
@@ -3643,13 +3683,17 @@ export default function App() {
               </Tooltip>
               <Tooltip label={t("topicBar.command")}>
                 <button
-                  className="topicbar__action-btn topicbar__action-btn--label topicbar__action-btn--accent"
+                  className={
+                    sidebarCreation
+                      ? "topicbar__action-btn topicbar__action-btn--icon topicbar__action-btn--utility"
+                      : "topicbar__action-btn topicbar__action-btn--label topicbar__action-btn--accent"
+                  }
                   type="button"
                   aria-label={t("topicBar.command")}
                   onClick={() => void openPalette()}
                 >
                   <Command size={14} />
-                  <span>{t("topicBar.command")}</span>
+                  {!sidebarCreation && <span>{t("topicBar.command")}</span>}
                 </button>
               </Tooltip>
               {sidebarCreation && (
@@ -3689,7 +3733,7 @@ export default function App() {
                 onOpenSession={() => void openSidebarImConnectionSession(sidebarImDetailConnection)}
               />
             ) : noticePreviewMockEnabled() ? (
-              <NoticePreviewPanel detailsLabel={t("notice.details")} />
+              <NoticePreviewPanel />
             ) : (
               <Transcript
                 items={displayItems}
@@ -3842,6 +3886,7 @@ export default function App() {
               turnWaitAccumMs={state.turnWaitAccumMs}
               promptWaitStartedAt={state.promptWaitStartedAt}
               turnTokens={state.turnTokens}
+              turnArgChars={state.turnArgChars}
               retry={state.retry}
               suspendedByDecision={Boolean(decisionSurface)}
               transientDismissSignal={transientOverlayDismissSignal}
@@ -3957,6 +4002,7 @@ export default function App() {
                   balance={state.balance}
                   sessionGen={state.sessionGen}
                   refreshKey={dockRefreshKey}
+                  usageSeq={state.usageSeq}
                 />
               ) : (
                 <WorkspacePanel
@@ -3978,6 +4024,7 @@ export default function App() {
                   refreshKey={dockRefreshKey}
                   initialViewMode={rightDockMode === "changed" ? "changed" : "files"}
                   showViewTabs={false}
+                  creationMode={sidebarCreation}
                 />
               )}
             </div>

@@ -646,6 +646,7 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 
 	acc := map[int]*provider.ToolCall{}
 	started := map[int]bool{}
+	argBucket := map[int]int{}
 	var order []int
 	var lastFinishReason string
 	var sawDone bool
@@ -739,6 +740,18 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 				emitted = true
 				if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkToolCallStart, ToolCall: &provider.ToolCall{ID: cur.ID, Name: cur.Name}}) {
 					return emitted, ctx.Err()
+				}
+			}
+			// Progress ticks while a large argument payload streams (a 30KB
+			// write_file body can take a minute-plus): one chunk per 2KB bucket
+			// so the consumer can show liveness without per-delta spam.
+			if started[tc.Index] {
+				if bucket := len(cur.Arguments) / 2048; bucket > argBucket[tc.Index] {
+					argBucket[tc.Index] = bucket
+					emitted = true
+					if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkToolCallArgsDelta, ToolCall: &provider.ToolCall{ID: cur.ID, Name: cur.Name}, ArgChars: len(cur.Arguments)}) {
+						return emitted, ctx.Err()
+					}
 				}
 			}
 		}

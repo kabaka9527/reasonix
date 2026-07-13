@@ -124,6 +124,16 @@ func TestMissingConventionDirsNoWarning(t *testing.T) {
 	r := capdiag.Collect(capdiag.Options{
 		Root: root, HomeDir: home, ReasonixHomeDir: filepath.Join(home, ".reasonix"),
 	})
+	if r.Issues == nil {
+		t.Fatal("empty issues must be a non-nil slice for JSON consumers")
+	}
+	raw, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"issues":[]`) {
+		t.Fatalf("empty issues must marshal as [], got %s", raw)
+	}
 	for _, is := range r.Issues {
 		if is.Severity == "warning" && strings.Contains(strings.ToLower(is.Message), "directory") {
 			t.Fatalf("missing dir should not warn: %+v", is)

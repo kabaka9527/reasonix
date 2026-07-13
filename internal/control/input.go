@@ -120,39 +120,13 @@ func StripReferencedContextPrefix(content string) string {
 // approval, stream recovery, readiness retry, etc.). These should not be shown
 // in the chat UI.
 func IsSyntheticUserMessage(content string) bool {
-	trimmed := strings.TrimSpace(agent.StripTransientUserBlocks(content))
-	if trimmed == planApprovedMessage {
+	if trimmed := strings.TrimSpace(agent.StripTransientUserBlocks(content)); trimmed == planApprovedMessage {
 		return true
 	}
-	for _, prefix := range syntheticPrefixes {
-		if strings.HasPrefix(trimmed, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
-// syntheticPrefixes must be kept in sync with the synthetic user messages
-// injected by the controller (planApprovedMessage, goal loop turns), agent loop
-// (streamRecoveryMessage, finalReadinessRetryMessage, emptyFinalRetryMessage,
-// executorHandoffRetryMessage in internal/agent/agent.go), and compaction
-// folds (internal/agent/compact.go), which store summaries as user-role
-// messages the chat UI must never render as user bubbles (#3653).
-var syntheticPrefixes = []string{
-	"Plan approved — plan mode is off",
-	"Host final-answer readiness check failed",
-	"You are already in the executor phase",
-	"The previous assistant response was interrupted while a tool call",
-	"The previous assistant response was interrupted during streaming",
-	"The previous assistant response was interrupted before visible",
-	"The previous assistant response finished without any visible answer",
-	"<compaction-summary>",
-	"Summary of the later conversation (compacted from here on):",
-	"Summary of earlier conversation (compacted up to here):",
-	"Continue pursuing the active goal",
-	"The agent signaled goal completion and all tasks are marked done.",
-	"Goal signaled complete but issues remain:",
-	"No tool calls in recent turns.",
+	// The prefix list lives in internal/agent (agent.SyntheticUserPrefixes) so
+	// preview/title/turn-count derivations there share the exact same filter
+	// (#3653).
+	return agent.IsSyntheticUserText(content)
 }
 
 // Compose applies the plan-mode marker to a turn's text when plan mode is on,

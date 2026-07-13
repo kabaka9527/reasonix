@@ -189,4 +189,59 @@ console.log("diagnostics settings page");
   });
 }
 
+{
+  installDom();
+  window.localStorage.setItem("reasonix-lang", "en");
+
+  const nullArrays = baseReport(false) as unknown as Record<string, unknown>;
+  nullArrays.summary = {
+    errors: 0,
+    warnings: 0,
+    infos: 0,
+    instructions: 0,
+    skills: 0,
+    commands: 0,
+    hooks: 0,
+    plugins: 0,
+    mcp_servers: 0,
+  };
+  nullArrays.issues = null;
+  nullArrays.instructions = { docs: null };
+  nullArrays.skills = { roots: null, entries: null, winners: 0, shadowed: 0 };
+  nullArrays.commands = { roots: null, entries: null, winners: 0, shadowed: 0 };
+  nullArrays.hooks = { trusted_project: false, project_defines_hooks: false, sources: null, entries: null };
+  nullArrays.plugins = { packages: null };
+  nullArrays.mcp = { servers: null };
+
+  window.go = {
+    main: {
+      App: {
+        CapabilityDiagnostics: async () => nullArrays as unknown as CapabilityDiagnosticsReport,
+      } as Partial<AppBindings> as AppBindings,
+    },
+  };
+
+  const rootEl = document.getElementById("root");
+  if (!rootEl) throw new Error("missing root");
+  const root = createRoot(rootEl);
+
+  await act(async () => {
+    root.render(
+      React.createElement(
+        LocaleProvider,
+        null,
+        React.createElement(DiagnosticsSettingsPage),
+      ),
+    );
+    await flush();
+  });
+
+  await waitFor("null arrays to render as empty", () => (rootEl.textContent || "").includes("No issues found"));
+  ok(rootEl.querySelector(".diag-summary"), "null arrays must not crash the diagnostics page");
+
+  await act(async () => {
+    root.unmount();
+  });
+}
+
 console.log("diagnostics-settings: ok");

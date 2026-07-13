@@ -187,6 +187,29 @@ eq(finalDeclaration(".composer-profile-trigger:focus-visible", "box-shadow"), "v
 eq(finalDeclaration(".composer-meta .modelsw__trigger:focus-visible", "box-shadow"), "var(--focus-ring)", "model and effort selectors use the shared keyboard focus ring");
 eq(finalDeclaration(":root[data-theme-style] .composer-modebar__item--active:focus-visible", "box-shadow"), "var(--focus-ring)", "active permission options retain keyboard focus feedback");
 eq(
+  finalDeclaration(".app--creation .msg--assistant .msg__body", "font-size"),
+  "calc(14px * var(--font-scale))",
+  "creation assistant body text follows interface text size",
+);
+eq(
+  finalDeclaration(".app--creation .composer__input", "font-size"),
+  "calc(14.5px * var(--font-scale))",
+  "creation composer input follows interface text size",
+);
+ok(
+  !/\.app--creation[^{]*\{[^}]*font-size:\s*[0-9.]+px\s*(?:!important\s*)?;/.test(styles),
+  "creation rules do not hardcode bare px font sizes (except font-size:0)",
+);
+eq(
+  finalDeclaration(".context-ring-popover__title", "font-size"),
+  "calc(14px * var(--font-scale))",
+  "creation context-ring popover (portaled to body) follows interface text size",
+);
+ok(
+  !/\.context-ring-popover[^{]*\{[^}]*font-size:\s*[0-9.]+px\s*(?:!important\s*)?;/.test(styles),
+  "context-ring popover rules do not hardcode bare px font sizes (except font-size:0)",
+);
+eq(
   finalDeclaration(".app--creation .tool:not(.tool--open) > .tool__body", "height"),
   "0 !important",
   "collapsed creation tool bodies keep mounted content clipped",

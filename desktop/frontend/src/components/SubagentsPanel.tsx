@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { Check, ChevronDown } from "lucide-react";
 
 import { app } from "../lib/bridge";
+import { asArray } from "../lib/array";
 import { useT } from "../lib/i18n";
 import { PROJECT_COLOR_OPTIONS, projectColorValue, type ProjectColorKey } from "../lib/projectColors";
 import type { MCPToolView, SettingsView, SkillView, SubagentProfileInput } from "../lib/types";
@@ -79,8 +80,8 @@ export function SubagentsSettingsPage({ s, onUseInChat }: { s: SettingsView; onU
       app.SkillsSettings().catch(() => ({ skills: [], skillRoots: [] })),
       app.AvailableSubagentTools().catch(() => []),
     ]);
-    setSkills(settingsView.skills.filter((sk) => sk.runAs === "subagent"));
-    setTools(availableTools);
+    setSkills(asArray<SkillView>(settingsView?.skills).filter((sk) => sk.runAs === "subagent"));
+    setTools(asArray<MCPToolView>(availableTools));
   }, []);
   useEffect(() => { void reload(); }, [reload]);
 

@@ -111,13 +111,25 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		fmt.Fprintf(&b, "check_updates = %v   # desktop: check for new versions on startup\n", c.DesktopCheckUpdates())
 		fmt.Fprintf(&b, "telemetry = %v   # desktop: anonymous launch ping (install id + version + OS); never content\n", c.DesktopTelemetry())
 		fmt.Fprintf(&b, "metrics = %v   # desktop: aggregate desktop metrics (anonymous signal/bucket counts); never content\n", c.DesktopMetrics())
-		if len(c.Desktop.ProviderAccess) > 0 {
+		// A non-nil empty slice is intentional: provider_access = [] means the
+		// user removed every desktop access entry. Omitting it would make the next
+		// load treat the config as legacy and infer access again.
+		if c.Desktop.ProviderAccess != nil {
 			fmt.Fprintf(&b, "provider_access = %s   # desktop settings: providers shown on Settings > Model > Access\n", renderStringArray(c.Desktop.ProviderAccess))
 		}
 		fmt.Fprintf(&b, "expand_thinking = %v   # desktop: show reasoning text expanded by default; false = collapsed\n", c.Desktop.ExpandThinking)
 		fmt.Fprintf(&b, "display_mode = %q   # desktop: standard|compact transcript display mode\n", c.DesktopDisplayMode())
 		b.WriteString("\n")
+	} else if c.Desktop.ProviderAccess != nil {
+		// provider_access is intentionally mergeable across user and project
+		// configs. It is the only desktop field written to reasonix.toml: local
+		// providers then appear in that workspace's desktop model switcher without
+		// copying user-global appearance or security preferences into the project.
+		b.WriteString("[desktop]\n")
+		fmt.Fprintf(&b, "provider_access = %s   # providers available to this workspace in the desktop model switcher\n\n", renderStringArray(c.Desktop.ProviderAccess))
+	}
 
+	if scope != RenderScopeProject {
 		b.WriteString("[notifications]\n")
 		fmt.Fprintf(&b, "enabled = %v   # system notifications for CLI and desktop turns; default off\n", c.Notifications.Enabled)
 		fmt.Fprintf(&b, "turn_done = %v   # notify when a turn finishes\n", c.Notifications.TurnDone)

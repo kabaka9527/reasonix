@@ -9,6 +9,7 @@ import { canUsePromptHistory, isFnKeyEvent, promptHistoryDirectionFromEvent } fr
 import { cacheGeneration, loadOlder } from "../lib/composerHistory";
 import { SPINNER_WORDS, useI18n } from "../lib/i18n";
 import { detectShortcutPlatform, formatShortcutCombo, matchesShortcut } from "../lib/keyboardShortcuts";
+import { fallbackCopyText } from "../lib/clipboard";
 import {
   commandUsesStructuredInvocation,
   invocationRequests,
@@ -304,39 +305,6 @@ async function dataURLHash(dataUrl: string): Promise<string> {
   }
 }
 
-function fallbackCopyText(value: string): boolean {
-  const activeElement = document.activeElement;
-  const selection = document.getSelection();
-  const ranges: Range[] = [];
-  if (selection) {
-    for (let index = 0; index < selection.rangeCount; index += 1) {
-      ranges.push(selection.getRangeAt(index));
-    }
-  }
-  const textarea = document.createElement("textarea");
-  textarea.value = value;
-  textarea.setAttribute("readonly", "");
-  textarea.style.position = "fixed";
-  textarea.style.inset = "0 auto auto 0";
-  textarea.style.width = "1px";
-  textarea.style.height = "1px";
-  textarea.style.opacity = "0";
-  document.body.appendChild(textarea);
-  textarea.select();
-  let ok = false;
-  try {
-    ok = document.execCommand("copy");
-  } finally {
-    textarea.remove();
-    if (selection) {
-      selection.removeAllRanges();
-      for (const range of ranges) selection.addRange(range);
-    }
-    if (activeElement instanceof HTMLElement) activeElement.focus();
-  }
-  return ok;
-}
-
 function composerMaxHeight(): number {
   if (typeof window === "undefined") return COMPOSER_MAX_HEIGHT;
   return Math.max(COMPOSER_MIN_HEIGHT, Math.min(COMPOSER_MAX_HEIGHT, Math.floor(window.innerHeight * COMPOSER_MAX_VIEWPORT_RATIO)));
@@ -546,6 +514,7 @@ export function Composer({
   turnWaitAccumMs = 0,
   promptWaitStartedAt,
   turnTokens,
+  turnArgChars = 0,
   retry,
   suspendedByDecision = false,
   pendingApprovalLabel,
@@ -606,6 +575,10 @@ export function Composer({
   turnWaitAccumMs?: number;
   promptWaitStartedAt?: number;
   turnTokens?: number;
+  // Streaming tool-call argument chars (no usage event yet) — folded into the
+  // pill as an estimated-token tail so a long write_file body reads as
+  // progress, not a stall.
+  turnArgChars?: number;
   retry?: { attempt: number; max: number };
   // True while a footer decision surface (approval / ask / clear context) owns
   // the UI. Pauses the model-work ticker without rendering a "waiting approval"
@@ -2179,20 +2152,36 @@ export function Composer({
     setOpenPastedLabels((prev) => (prev.includes(label) ? prev.filter((x) => x !== label) : [...prev, label]));
   };
 
+  const replacePastedBlockLabel = (block: PastedBlock, replacement: string) => {
+    const current = textRef.current;
+    const start = current.indexOf(block.label);
+    if (start < 0) return;
+    const next = replaceInvocationTextRange(
+      current,
+      invocationsRef.current,
+      start,
+      start + block.label.length,
+      replacement,
+    );
+    textRef.current = next.text;
+    invocationsRef.current = next.invocations;
+    setText(next.text);
+    setInvocations(next.invocations);
+    setComposerSelection(next.text.length);
+  };
+
   const removePastedBlock = (block: PastedBlock) => {
-    const next = text.split(block.label).join("");
     pastedBlocksRef.current = pastedBlocksRef.current.filter((x) => x.label !== block.label);
     setPastedBlocks((prev) => prev.filter((x) => x.label !== block.label));
     setOpenPastedLabels((prev) => prev.filter((x) => x !== block.label));
-    setTextCaretEnd(next);
+    replacePastedBlockLabel(block, "");
   };
 
   const expandPastedBlock = (block: PastedBlock) => {
-    const next = text.split(block.label).join(block.text);
     pastedBlocksRef.current = pastedBlocksRef.current.filter((x) => x.label !== block.label);
     setPastedBlocks((prev) => prev.filter((x) => x.label !== block.label));
     setOpenPastedLabels((prev) => prev.filter((x) => x !== block.label));
-    setTextCaretEnd(next);
+    replacePastedBlockLabel(block, block.text);
   };
 
   useEffect(() => {
@@ -2879,7 +2868,8 @@ export function Composer({
         const elapsedMs = Math.max(0, now - turnStartAt - waitAccumMs);
         const words = SPINNER_WORDS[locale];
         const word = words[Math.floor(elapsedMs / 3000) % words.length];
-        const tok = turnTokens && turnTokens > 0 ? ` · ↓ ${fmtTokens(turnTokens)} ${t("status.tokens")}` : "";
+        const liveTokens = (turnTokens ?? 0) + Math.round((turnArgChars ?? 0) / 4);
+        const tok = liveTokens > 0 ? ` · ↓ ${fmtTokens(liveTokens)} ${t("status.tokens")}` : "";
         return `${word}… ${fmtElapsed(elapsedMs)}${tok}`;
       })()
     : null;
@@ -3698,6 +3688,14 @@ export function Composer({
             </div>
             <span className="composer-meta__divider" aria-hidden="true" />
             <div className="composer-meta__control composer-meta__control--model">
+              {/*
+                Creation-only: showContextWindowRing is wired to sidebarCreation
+                (desktopLayoutStyle === "creation") in App.tsx. The ring popover
+                is portaled to <body> without an .app--creation prefix, so its
+                styles look global but only ever apply in creation layout. If you
+                ever surface this ring in another layout, its font sizes already
+                scale via --font-scale (see .context-ring-popover in styles.css).
+              */}
               {showContextWindowRing && (
                 <ContextWindowRing
                   enabled={showContextWindowRing}

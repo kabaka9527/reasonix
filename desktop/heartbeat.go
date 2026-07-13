@@ -821,7 +821,7 @@ func weeksBetween(a, b time.Time) int {
 // HeartbeatListTasks returns all heartbeat tasks.
 func (a *App) HeartbeatListTasks() []HeartbeatTask {
 	if a.heartbeat == nil {
-		return nil
+		return []HeartbeatTask{}
 	}
 	return a.heartbeat.ListTasks()
 }
@@ -829,7 +829,7 @@ func (a *App) HeartbeatListTasks() []HeartbeatTask {
 // HeartbeatReloadTasks reloads tasks from disk and returns them.
 func (a *App) HeartbeatReloadTasks() []HeartbeatTask {
 	if a.heartbeat == nil {
-		return nil
+		return []HeartbeatTask{}
 	}
 	return a.heartbeat.ReloadTasks()
 }

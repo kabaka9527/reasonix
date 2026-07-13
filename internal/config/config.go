@@ -1845,6 +1845,9 @@ func (c *Config) Validate(model string) error {
 	if e.BaseURL == "" {
 		return fmt.Errorf("provider %q: base_url is required", model)
 	}
+	if strings.TrimSpace(e.APIKeyEnv) != "" && !IsValidCredentialKey(e.APIKeyEnv) {
+		return fmt.Errorf("provider %q: api_key_env %q is invalid; use letters, numbers, and underscores, not a model name", model, e.APIKeyEnv)
+	}
 	if e.RequiresAPIKey() && e.APIKey() == "" {
 		return fmt.Errorf("provider %q: missing env %s", model, e.APIKeyEnv)
 	}

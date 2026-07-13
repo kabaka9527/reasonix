@@ -413,6 +413,7 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 	}
 
 	tools := map[int]*provider.ToolCall{} // tool_use blocks, keyed by content index
+	argBuckets := map[int]int{}           // last emitted 2KB progress bucket per block
 	var inTok, outTok, cacheCreate, cacheRead int
 	var stopReason string
 	haveUsage := false
@@ -484,6 +485,14 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 			case "input_json_delta":
 				if tc := tools[ev.Index]; tc != nil {
 					tc.Arguments += ev.Delta.PartialJSON
+					// Progress ticks for large streaming argument payloads, one
+					// per 2KB bucket (see the openai provider for rationale).
+					if bucket := len(tc.Arguments) / 2048; bucket > argBuckets[ev.Index] {
+						argBuckets[ev.Index] = bucket
+						if !send(provider.Chunk{Type: provider.ChunkToolCallArgsDelta, ToolCall: &provider.ToolCall{ID: tc.ID, Name: tc.Name}, ArgChars: len(tc.Arguments)}) {
+							return
+						}
+					}
 				}
 			}
 		case "content_block_stop":

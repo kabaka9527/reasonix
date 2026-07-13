@@ -21,6 +21,10 @@ interface ContextPanelProps {
   balance?: BalanceInfo;
   sessionGen?: number;
   refreshKey?: number;
+  // Monotonic counter bumped by EVERY usage event (executor and subagent).
+  // The executor-gated `usage` prop freezes during sub-agent runs, which used
+  // to pin 会话指标/用量分析 for minutes; this keeps the snapshot ticking.
+  usageSeq?: number;
 }
 
 function fmtFullTokens(n: number): string {
@@ -314,6 +318,7 @@ export function ContextPanel({
   balance,
   sessionGen,
   refreshKey,
+  usageSeq,
 }: ContextPanelProps) {
   const { locale, t } = useI18n();
   const [info, setInfo] = useState<ContextPanelInfo | null>(null);
@@ -345,16 +350,18 @@ export function ContextPanel({
     void refresh();
   }, [refresh, refreshKey]);
 
-  // Refresh the panel snapshot while usage events stream. The key includes
-  // general token fields so providers without cache telemetry still tick.
+  // Refresh the panel snapshot while usage events stream — from any source:
+  // usageSeq covers sub-agent/title requests the executor-gated usage prop
+  // never reflects, and usageRefreshKey keeps ticking for providers whose
+  // events lack a seq. Throttled to once per second.
   useEffect(() => {
-    if (!usageRefreshKey) return;
+    if (!usageRefreshKey && !usageSeq) return;
     const now = Date.now();
     if (now - lastRefreshTime.current >= 1000) {
       lastRefreshTime.current = now;
       void refresh();
     }
-  }, [usageRefreshKey, refresh]);
+  }, [usageRefreshKey, usageSeq, refresh]);
 
   const usedTokens = context?.used && context.used > 0 ? context.used : info?.usedTokens ?? 0;
   const windowTokens = context?.window && context.window > 0 ? context.window : info?.windowTokens ?? 0;

@@ -53,7 +53,7 @@ func Collect(opts Options) Report {
 		cfg = config.Default()
 	}
 
-	var issues []Issue
+	issues := []Issue{}
 	if cfgErr != nil {
 		issues = append(issues, Issue{
 			Severity: "error", Code: "config.load_failed", Subsystem: "config",

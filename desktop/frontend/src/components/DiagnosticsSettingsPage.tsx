@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ChevronDown, ChevronRight, Clipboard, Loader2, RefreshCw } from "lucide-react";
 import { app } from "../lib/bridge";
+import { asArray } from "../lib/array";
 import { useT } from "../lib/i18n";
 import type { CapabilityDiagnosticsReport, CapabilityIssue, SettingsTab } from "../lib/types";
 
@@ -32,7 +33,7 @@ export function DiagnosticsSettingsPage({
     setLoading(true);
     setError(null);
     try {
-      const next = await app.CapabilityDiagnostics(runtime);
+      const next = normalizeDiagnosticsReport(await app.CapabilityDiagnostics(runtime));
       // Last-request-wins: ignore stale responses after rapid refresh/toggle.
       if (seq !== loadSeq.current) return;
       setReport(next);
@@ -269,6 +270,31 @@ export function DiagnosticsSettingsPage({
       )}
     </div>
   );
+}
+
+function normalizeDiagnosticsReport(report: CapabilityDiagnosticsReport): CapabilityDiagnosticsReport {
+  return {
+    ...report,
+    issues: asArray(report.issues),
+    instructions: { ...report.instructions, docs: asArray(report.instructions?.docs) },
+    skills: {
+      ...report.skills,
+      roots: asArray(report.skills?.roots),
+      entries: asArray(report.skills?.entries),
+    },
+    commands: {
+      ...report.commands,
+      roots: asArray(report.commands?.roots),
+      entries: asArray(report.commands?.entries),
+    },
+    hooks: {
+      ...report.hooks,
+      sources: asArray(report.hooks?.sources),
+      entries: asArray(report.hooks?.entries),
+    },
+    plugins: { ...report.plugins, packages: asArray(report.plugins?.packages) },
+    mcp: { ...report.mcp, servers: asArray(report.mcp?.servers) },
+  };
 }
 
 function Collapsible({
