@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"io"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -800,6 +801,63 @@ func TestTaskToolBackgroundAncestorContinuationIncludesForkGuidance(t *testing.T
 		!strings.Contains(res[0].Output, "The requested ref resolves to an ancestor conversation transcript") ||
 		!strings.Contains(res[0].Output, "Final answer:\nchild background answer") {
 		t.Fatalf("job output = %q, want copied ref guidance and final answer", res[0].Output)
+	}
+}
+
+func TestTaskToolBackgroundCapRefusesFanOut(t *testing.T) {
+	sub := &mockProvider{name: "sub", chunks: []provider.Chunk{
+		{Type: provider.ChunkText, Text: "background answer"},
+		{Type: provider.ChunkDone},
+	}}
+	store := NewSubagentStore(t.TempDir())
+	reg := tool.NewRegistry()
+	reg.Add(fakeTool{name: "read_file", readOnly: true})
+	task := NewTaskTool(sub, nil, reg, 20, 0, 0, 0, 0, 0, 0, 0.0, "", "sys", nil, 0, "", "", nil).
+		WithTranscripts(store, t.TempDir(), "base-model", "base-effort")
+
+	jm := jobs.NewManager(event.Discard)
+	defer jm.Close()
+	ctx := testTaskContext()
+	ctx = jobs.WithSession(ctx, "parent-session")
+	ctx = jobs.WithManager(ctx, jm)
+
+	// Saturate the cap with still-running task jobs owned by this session.
+	release := make(chan struct{})
+	var ids []string
+	for i := 0; i < maxConcurrentBackgroundTasks; i++ {
+		j := jm.StartForSession("parent-session", "task", "busy", func(jctx context.Context, _ io.Writer) (string, error) {
+			select {
+			case <-release:
+			case <-jctx.Done():
+			}
+			return "ok", nil
+		})
+		ids = append(ids, j.ID)
+	}
+
+	if _, err := task.Execute(ctx, []byte(`{"prompt":"one more","run_in_background":true}`)); err == nil ||
+		!strings.Contains(err.Error(), "limit") || !strings.Contains(err.Error(), "wait") {
+		t.Fatalf("Execute over cap = %v, want background task limit refusal", err)
+	}
+
+	// Foreground execution is not capped.
+	if out, err := task.Execute(ctx, []byte(`{"prompt":"foreground task"}`)); err != nil || !strings.Contains(out, "background answer") {
+		t.Fatalf("foreground Execute = %q, %v; want uncapped foreground run", out, err)
+	}
+
+	// Collecting the running jobs frees the cap.
+	close(release)
+	jm.WaitForSession(context.Background(), "parent-session", ids, 5)
+	out, err := task.Execute(ctx, []byte(`{"prompt":"after drain","run_in_background":true}`))
+	if err != nil {
+		t.Fatalf("Execute after drain: %v", err)
+	}
+	jobID := extractJobID(out)
+	if jobID == "" {
+		t.Fatalf("no background job id in output:\n%s", out)
+	}
+	if res := jm.WaitForSession(context.Background(), "parent-session", []string{jobID}, 5); len(res) != 1 || res[0].Status != jobs.Done {
+		t.Fatalf("post-drain job = %+v, want done", res)
 	}
 }
 

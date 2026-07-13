@@ -179,6 +179,55 @@ func TestRunSubAgentReviewReportExhaustionNamesRecovery(t *testing.T) {
 	}
 }
 
+func TestRunSubAgentSalvagesReadinessExhaustedWork(t *testing.T) {
+	// The child performs a real mutation, then keeps answering without the
+	// delivery sign-off receipts until the readiness budget is exhausted. Its
+	// work is on disk, so the run must degrade to an explicitly unverified
+	// answer instead of a hard failure that tricks the parent into spawning
+	// repair tasks for changes that already landed.
+	reg := evidenceRegistry()
+	finalText := []provider.Chunk{{Type: provider.ChunkText, Text: "done, explanations added"}, {Type: provider.ChunkDone}}
+	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
+		{toolCallChunk("criteria", "todo_write", `{"todos":[{"content":"Add explanations","status":"in_progress"}]}`), {Type: provider.ChunkDone}},
+		{toolCallChunk("write", "write_file", `{"path":"qa/bank.md"}`), {Type: provider.ChunkDone}},
+		finalText, // block 1 — complete_step/verification receipts missing
+		finalText, // block 2 — no new receipts, stalled
+		finalText, // block 3 — budget exhausted
+	}}
+	sess := NewSession("sys")
+	answer, err := RunSubAgentWithSession(context.Background(), prov, reg, sess,
+		"add explanations to the question bank", Options{DeliveryProfile: true, SubagentDepth: 1}, event.Discard)
+	if err != nil {
+		t.Fatalf("readiness exhaustion with real work must salvage, got err: %v", err)
+	}
+	for _, want := range []string{"[unverified]", "done, explanations added", "already on disk"} {
+		if !strings.Contains(answer, want) {
+			t.Fatalf("salvaged answer %q missing %q", answer, want)
+		}
+	}
+}
+
+func TestRunSubAgentReadinessFailureWithoutMutationStillFails(t *testing.T) {
+	// An unbacked "done" claim keeps failing: with a mutation expected and no
+	// successful mutation receipt, salvage must not launder the claim into an
+	// unverified answer.
+	reg := tool.NewRegistry()
+	reg.Add(fakeReadFileTool{})
+	reg.Add(fakeWriterTool{})
+	finalText := []provider.Chunk{{Type: provider.ChunkText, Text: "done, all fixed"}, {Type: provider.ChunkDone}}
+	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{finalText, finalText, finalText}}
+	sess := NewSession("sys")
+	answer, err := RunSubAgentWithSession(context.Background(), prov, reg, sess,
+		"fix the crash in a.go", Options{DeliveryProfile: true, SubagentDepth: 1}, event.Discard)
+	var readinessErr *FinalReadinessError
+	if !errors.As(err, &readinessErr) {
+		t.Fatalf("expected wrapped FinalReadinessError, got %v", err)
+	}
+	if answer != "" {
+		t.Fatalf("mutation-less readiness failure must not salvage, got %q", answer)
+	}
+}
+
 func TestFinalReadinessBudgetExtendsOnlyWithProgress(t *testing.T) {
 	newReg := func() *tool.Registry {
 		reg := tool.NewRegistry()

@@ -33,8 +33,11 @@ var highRiskToolHints = []string{
 
 // ClassifyMutationRisk scores the change set after the latest mutation.
 // Low: docs/tests/i18n/pure presentation only, with no opaque writes.
-// Medium: ordinary production code or limited multi-file edits.
-// High: security-sensitive surfaces, opaque mutations, or 10+ paths.
+// Medium: ordinary production code, limited multi-file edits, or path-less
+// (opaque) mutations from ordinary tools — a bash edit that reports no paths
+// cannot be scored by path, but it is usually a routine content change that
+// warrants review, not the full security_review protocol.
+// High: security-sensitive surfaces, privileged/opaque tools, or 10+ paths.
 func ClassifyMutationRisk(receipts []Receipt, after int) RiskLevel {
 	start := after + 1
 	if start < 0 {
@@ -82,12 +85,6 @@ func ClassifyMutationRisk(receipts []Receipt, after int) RiskLevel {
 			}
 		}
 	}
-	if opaque {
-		return RiskHigh
-	}
-	if len(paths) == 0 {
-		return RiskLow
-	}
 	if len(paths) >= 10 {
 		return RiskHigh
 	}
@@ -99,6 +96,17 @@ func ClassifyMutationRisk(receipts []Receipt, after int) RiskLevel {
 			onlyLow = false
 			hasProd = true
 		}
+	}
+	if opaque {
+		// Path-less writes from ordinary tools cannot prove they are low risk,
+		// so they always warrant a review — but privileged surfaces already
+		// returned High above via toolLooksHighRisk, and blanket-escalating
+		// every bash content edit to High forces the security_review protocol
+		// onto routine changes.
+		return RiskMedium
+	}
+	if len(paths) == 0 {
+		return RiskLow
 	}
 	if onlyLow && !hasProd {
 		return RiskLow

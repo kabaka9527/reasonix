@@ -74,6 +74,31 @@ var readOnlySubagentWorkflowTools = []string{
 
 const subagentToolBoundarySummary = "Recursive agent/skill tools are exposed only while max_subagent_depth leaves another delegation layer; unsupported background job tools (parallel_tasks, wait, bash_output, kill_shell) are excluded; bash is exposed as foreground-only inside subagents."
 
+// maxConcurrentBackgroundTasks bounds writer-capable background sub-agents per
+// session. They all mutate the same workspace (there is no worktree isolation),
+// so a wide fan-out risks conflicting concurrent writes — and feeds the failure
+// cascade where every "needs attention" notice tempts the model into spawning
+// yet more repair tasks. Further sub-tasks can run in the foreground, or start
+// once a running job is collected with wait. The check is advisory (read then
+// start), not atomic; tool rounds are serialized per turn, so at worst a race
+// overshoots by one.
+const maxConcurrentBackgroundTasks = 3
+
+// runningBackgroundTasks counts this session's still-running background task
+// jobs. Other job kinds (background bash) do not count against the task cap.
+func runningBackgroundTasks(jm *jobs.Manager, parentSession string) int {
+	if jm == nil {
+		return 0
+	}
+	n := 0
+	for _, v := range jm.RunningForSession(parentSession) {
+		if v.Kind == "task" {
+			n++
+		}
+	}
+	return n
+}
+
 // AlwaysHiddenSubagentTools returns the tool names excluded from every
 // subagent's registry regardless of an explicit allowlist or delegation
 // depth (unlike subagentRecursiveTools, which depends on remaining depth).
@@ -502,6 +527,12 @@ func (t *TaskTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 				run.Release()
 			}
 			return "", fmt.Errorf("background execution is not available in this context")
+		}
+		if running := runningBackgroundTasks(jm, jobs.SessionFromContext(ctx)); running >= maxConcurrentBackgroundTasks {
+			if run != nil {
+				run.Release()
+			}
+			return "", fmt.Errorf("%d background tasks are already running for this session (limit %d); collect their results with wait — or run this sub-task in the foreground — before starting more", running, maxConcurrentBackgroundTasks)
 		}
 		nested := subSinkFor(parentID, parent)
 		label := p.Description
@@ -934,6 +965,9 @@ func RunSubAgentWithSession(ctx context.Context, prov provider.Provider, reg *to
 	if err := sub.Run(ctx, prompt); err != nil {
 		// Still merge any partial child evidence so parent gates see real writes.
 		mergeChildEvidence(ctx, sub)
+		if answer, ok := salvageReadinessExhaustedAnswer(sub, sess, opts, err); ok {
+			return answer, nil
+		}
 		return "", fmt.Errorf("sub-agent: %w", err)
 	}
 	// Review/security subagents must hand back a typed report the parent's
@@ -959,16 +993,62 @@ func RunSubAgentWithSession(ctx context.Context, prov provider.Provider, reg *to
 		}
 	}
 	mergeChildEvidence(ctx, sub)
-	// Walk the session backwards for the last assistant message with content —
-	// that's the sub-agent's final answer. Intermediate assistant messages with
-	// tool_calls but no text don't count.
+	if answer := latestAssistantAnswer(sess); answer != "" {
+		return answer, nil
+	}
+	return "", fmt.Errorf("sub-agent finished without producing a final answer")
+}
+
+// latestAssistantAnswer walks the session backwards for the last assistant
+// message with content — that's the sub-agent's final answer. Intermediate
+// assistant messages with tool_calls but no text don't count.
+func latestAssistantAnswer(sess *Session) string {
+	if sess == nil {
+		return ""
+	}
 	for i := len(sess.Messages) - 1; i >= 0; i-- {
 		m := sess.Messages[i]
 		if m.Role == provider.RoleAssistant && strings.TrimSpace(m.Content) != "" {
-			return m.Content, nil
+			return m.Content
 		}
 	}
-	return "", fmt.Errorf("sub-agent finished without producing a final answer")
+	return ""
+}
+
+// salvageReadinessExhaustedAnswer degrades a sub-agent's readiness exhaustion
+// from a hard failure to an explicitly unverified result. The gate exists to
+// stop unverified *claims*, not to discard finished *work*: when the child has
+// a real successful mutation on disk and a visible answer, failing the whole
+// run makes the parent believe the work is broken and spawn repair tasks for
+// changes that already landed — the failure cascade users see as a wall of
+// "background task failed" notices. The child's receipts were already merged
+// into the parent ledger, so the parent's own delivery gates still require
+// verification and review of those writes before it can final-answer.
+//
+// Salvage is refused when the child produced no successful mutation (an
+// unbacked "done" claim must keep failing, e.g. a spoofed or lazy run) and for
+// report-required review sub-agents, whose contract is the typed review_report
+// rather than prose.
+func salvageReadinessExhaustedAnswer(sub *Agent, sess *Session, opts Options, err error) (string, bool) {
+	var readinessErr *FinalReadinessError
+	if !errors.As(err, &readinessErr) {
+		return "", false
+	}
+	if opts.RequireReviewReportKind != "" {
+		return "", false
+	}
+	if sub == nil || !sub.EvidenceSummary().HasMutation() {
+		return "", false
+	}
+	answer := latestAssistantAnswer(sess)
+	if answer == "" {
+		return "", false
+	}
+	return "[unverified] The sub-agent finished its work but exhausted the host delivery sign-off checks before reporting (" +
+		readinessErr.Reason +
+		"). Its successful writes are already on disk and its receipts were merged into this turn's evidence. " +
+		"Inspect the diff and run the relevant checks before relying on the result below; do not re-run or \"fix\" the same work without first checking what already changed.\n\nSub-agent answer:\n" +
+		answer, true
 }
 
 // dumpFailedSubagentSession best-effort persists a failed report-required
