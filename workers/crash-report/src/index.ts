@@ -1031,8 +1031,9 @@ const SENTINEL_CRON = "17 1,7,13,19 * * *";
 // shapes independently:
 //   1. canary write into `pings` (immediately deleted) — catches writes
 //      throwing, e.g. the D1 size cap, regardless of traffic;
-//   2. today's real ping count — catches ingest dying upstream of the worker
-//      (edge blocking, client regression) even while writes stay healthy.
+//   2. today's real ping and open totals compared with the previous run —
+//      catches ingest dying upstream of the worker (edge blocking, client
+//      regression) even after the UTC day already has traffic.
 // Alerts go to the optional ALERT_WEBHOOK secret; without it they still land
 // in the worker logs. While broken this fires at most 4 alerts/day.
 const CANARY_INSTALL_ID = "ffffffffffffffffffffffffffffffff";
@@ -1074,12 +1075,53 @@ async function runIngestSentinel(env: Env): Promise<void> {
     problems.push(`canary write failed: ${errText(err)}`);
   }
   try {
-    const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM pings WHERE date = date('now') AND install_id <> ?1")
+    // Auto-create the one-row checkpoint so existing databases do not need a
+    // manual migration before this worker version is deployed.
+    await env.DB.prepare(
+      `CREATE TABLE IF NOT EXISTS ingest_sentinel_state (
+         id INTEGER PRIMARY KEY CHECK (id = 1),
+         day TEXT NOT NULL,
+         ping_count INTEGER NOT NULL,
+         open_count INTEGER NOT NULL,
+         checked_at TEXT NOT NULL
+       )`,
+    ).run();
+    const row = await env.DB.prepare(
+      `SELECT date('now') AS day,
+              COUNT(*) AS ping_count,
+              COALESCE(SUM(opens), 0) AS open_count
+       FROM pings
+       WHERE date = date('now') AND install_id <> ?1`,
+    )
       .bind(CANARY_INSTALL_ID)
-      .first<{ n: number }>();
-    if (!Number(row?.n ?? 0)) problems.push("no launch pings recorded today (UTC)");
+      .first<{ day: string; ping_count: number; open_count: number }>();
+    const day = row?.day ?? "";
+    const pingCount = Number(row?.ping_count ?? 0);
+    const openCount = Number(row?.open_count ?? 0);
+    const previous = await env.DB.prepare(
+      "SELECT day, ping_count, open_count, checked_at FROM ingest_sentinel_state WHERE id = 1",
+    ).first<{ day: string; ping_count: number; open_count: number; checked_at: string }>();
+    if (!pingCount) {
+      problems.push("no launch pings recorded today (UTC)");
+    } else if (
+      previous?.day === day &&
+      pingCount <= Number(previous.ping_count) &&
+      openCount <= Number(previous.open_count)
+    ) {
+      problems.push(
+        `launch ping totals unchanged since ${previous.checked_at} UTC (${pingCount} install rows, ${openCount} opens)`,
+      );
+    }
+    await env.DB.prepare(
+      `INSERT INTO ingest_sentinel_state (id, day, ping_count, open_count, checked_at)
+       VALUES (1, ?1, ?2, ?3, datetime('now'))
+       ON CONFLICT (id) DO UPDATE SET
+         day = ?1, ping_count = ?2, open_count = ?3, checked_at = datetime('now')`,
+    )
+      .bind(day, pingCount, openCount)
+      .run();
   } catch (err) {
-    problems.push(`ping count read failed: ${errText(err)}`);
+    problems.push(`ping progress check failed: ${errText(err)}`);
   }
   if (!problems.length) return;
   const message = `crash.reasonix.io ingest sentinel: ${problems.join("; ")} — https://crash.reasonix.io/stats`;

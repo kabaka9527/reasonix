@@ -9,7 +9,7 @@ routes = [{ pattern = "crash.reasonix.io", custom_domain = true }]
 # past the dashboard's query horizon so the D1 database plateaus instead of
 # hitting the size cap and failing every ingest write (purgeExpiredStatsRows).
 # Second entry: ingest sentinel four times a day (runIngestSentinel) — canary
-# write + today's ping count; alerts via the optional ALERT_WEBHOOK worker
+# write + checkpointed ping growth; alerts via the optional ALERT_WEBHOOK worker
 # secret, log-only when unset. The secret is mirrored from the GitHub repo
 # secret of the same name by deploy-crash-worker.yml on every deploy — set it
 # under repo Settings → Secrets → Actions, no Cloudflare login needed. The
