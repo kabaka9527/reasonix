@@ -5,6 +5,12 @@ compatibility_date = "2026-06-01"
 
 routes = [{ pattern = "crash.reasonix.io", custom_domain = true }]
 
+# Daily retention purge (03:47 Beijing) — drops time-series rows past the
+# dashboard's query horizon so the D1 database plateaus instead of hitting the
+# size cap and failing every ingest write. See purgeExpiredStatsRows.
+[triggers]
+crons = ["47 19 * * *"]
+
 [vars]
 # Emails force-promoted to dashboard admin — the owner is never locked out even
 # if the role migration misses them.

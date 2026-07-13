@@ -976,6 +976,54 @@ async function handleCommunityAction(
   return back;
 }
 
+// Time-series retention, run by the daily cron trigger. Every dashboard query
+// against the per-install tables reads at most the current window (-29 day),
+// while the aggregate `metrics` table also serves the 30d view's
+// previous-window delta (back to -59 day), so it keeps a doubled horizon.
+// `reports`/`groups` are excluded on purpose: they are the triage queue and
+// the regression baseline, are not date-partitioned, and their growth is
+// already bounded by per-group sampling. Without this purge the database
+// grows until D1's size cap, at which point every ingest write starts
+// throwing (all of /v1/ping, /v1/metrics and /v1/report 500 while reads keep
+// working — exactly the 2026-07-03 stats blackout).
+const RETENTION = [
+  { table: "pings", keepDays: 30 },
+  { table: "metrics", keepDays: 60 },
+  { table: "metric_users", keepDays: 30 },
+] as const;
+// Deletes run in rowid chunks so a run never holds one giant transaction.
+// Steady state is one expired day per table; the chunk cap is a backstop that
+// still drains ~2M rows per table per run after an ingest outage or backlog.
+const RETENTION_CHUNK_ROWS = 10_000;
+const RETENTION_MAX_CHUNKS = 200;
+
+async function purgeExpiredStatsRows(env: Env): Promise<void> {
+  for (const { table, keepDays } of RETENTION) {
+    // Keep exactly the newest `keepDays` dates: today plus keepDays-1 back,
+    // matching the `date >= date('now', '-{keepDays-1} day')` reads.
+    const cutoff = `-${keepDays - 1} day`;
+    let purged = 0;
+    try {
+      for (let i = 0; i < RETENTION_MAX_CHUNKS; i++) {
+        const res = await env.DB.prepare(
+          `DELETE FROM ${table} WHERE rowid IN (
+             SELECT rowid FROM ${table} WHERE date < date('now', ?1) LIMIT ${RETENTION_CHUNK_ROWS}
+           )`,
+        )
+          .bind(cutoff)
+          .run();
+        const changes = res.meta.changes ?? 0;
+        purged += changes;
+        if (changes < RETENTION_CHUNK_ROWS) break;
+      }
+      console.log(`retention: purged ${purged} rows from ${table} (keep ${keepDays}d)`);
+    } catch (err) {
+      // One broken table must not stop the others; the cron retries tomorrow.
+      console.error(`retention: purge failed for ${table} after ${purged} rows`, err);
+    }
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -1057,5 +1105,9 @@ export default {
       return new Response("method not allowed", { status: 405 });
     }
     return new Response("not found", { status: 404 });
+  },
+
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(purgeExpiredStatsRows(env));
   },
 };
