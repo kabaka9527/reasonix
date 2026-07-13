@@ -562,6 +562,8 @@ func TestToolCallMutatesForDeliveryProfile(t *testing.T) {
 		{name: "go test compile binary stays opaque", toolName: "bash", args: `{"command":"go test -c ./internal/evidence"}`, want: true},
 		{name: "go test dotted cpuprofile stays opaque", toolName: "bash", args: `{"command":"go test ./internal/evidence -test.cpuprofile=cpu.out -count=1"}`, want: true},
 		{name: "go test artifacts stays opaque", toolName: "bash", args: `{"command":"go test -artifacts ./..."}`, want: true},
+		{name: "jest output file stays opaque", toolName: "bash", args: `{"command":"npm test -- --json --outputFile=result.json"}`, want: true},
+		{name: "mypy report stays opaque", toolName: "bash", args: `{"command":"mypy --txt-report reports src/"}`, want: true},
 		{name: "plain pytest", toolName: "bash", args: `{"command":"pytest"}`},
 	}
 	for _, tt := range tests {
@@ -596,6 +598,13 @@ func TestRunnerWriteOutputFlagsCannotMasqueradeAsVerification(t *testing.T) {
 		"go test -test.gocoverdir=covdir ./...",
 		"gotestsum -- -test.coverprofile=cover.out ./...",
 		"npm test -- --updateSnapshot",
+		"npm test -- --json --outputFile=result.json",
+		"yarn test --outputFile.json=result.json",
+		"pytest --report-log=log.jsonl",
+		"mypy --txt-report reports src/",
+		"mypy --html-report html src/",
+		"mypy --xml-report=reports src/",
+		"mypy --cobertura-xml-report reports src/",
 	} {
 		if bashCommandIsVerification(command) {
 			t.Fatalf("%q writes files and must not be classified as verification", command)
@@ -611,7 +620,9 @@ func TestRunnerWriteOutputFlagsCannotMasqueradeAsVerification(t *testing.T) {
 		"go test -count=1 ./...",
 		"go test -test.v -test.run TestFoo ./...",
 		"pytest --trace",
+		"npm test -- --json",
 		"mypy src/",
+		"mypy --strict src/",
 	} {
 		if !bashCommandIsVerification(command) {
 			t.Fatalf("%q should remain a verification command", command)

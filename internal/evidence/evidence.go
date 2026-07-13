@@ -1029,7 +1029,14 @@ func bashSegmentIsVerification(fields []string) bool {
 		return args[0] == "build" && !hasCommandArg(args, "-o")
 	case "git":
 		return len(args) > 1 && args[0] == "diff" && hasCommandArg(args[1:], "--check")
-	case "pytest", "py.test", "gotestsum", "staticcheck", "golangci-lint", "mypy", "tsc":
+	case "pytest", "py.test", "gotestsum", "staticcheck", "golangci-lint", "tsc":
+		return true
+	case "mypy":
+		for _, arg := range args {
+			if mypyFlagWritesReport(arg) {
+				return false
+			}
+		}
 		return true
 	case "npm", "pnpm", "yarn", "bun", "cargo":
 		if len(args) > 0 && hasCommandArg(args[:1], "test", "check", "lint", "clippy") {
@@ -1106,6 +1113,8 @@ var writeOutputFlags = map[string]bool{
 	"mutexprofile":    true, // go test
 	"testlogfile":     true, // go test binary
 	"gocoverdir":      true, // go test binary
+	"outputfile":      true, // jest/vitest --outputFile (with --json)
+	"report-log":      true, // pytest-reportlog
 }
 
 func hasWriteOutputFlag(args []string) bool {
@@ -1123,8 +1132,25 @@ func hasWriteOutputFlag(args []string) bool {
 		if writeOutputFlags[name] {
 			return true
 		}
+		// Vitest exposes dotted per-reporter forms (--outputFile.json=path).
+		if i := strings.IndexByte(name, '.'); i > 0 && writeOutputFlags[name[:i]] {
+			return true
+		}
 	}
 	return false
+}
+
+// mypyFlagWritesReport reports whether a mypy flag writes a report directory:
+// every mypy report option follows the --<type>-report DIR shape (txt, html,
+// xml, cobertura-xml, any-exprs, linecount, linecoverage, lineprecision), and
+// mypy has no read-only flag with that suffix. --junit-xml is covered by the
+// global write-output flags.
+func mypyFlagWritesReport(arg string) bool {
+	name := strings.ToLower(arg)
+	if i := strings.IndexByte(name, '='); i >= 0 {
+		name = name[:i]
+	}
+	return strings.HasPrefix(name, "--") && strings.HasSuffix(name, "-report")
 }
 
 // goTestFlagWritesFile reports whether a go test flag writes a workspace
