@@ -5983,7 +5983,9 @@ body > .mermaid-diagram--fullscreen {
   vertical-align: text-bottom;
 }
 .composer-card--resized .composer__rich-input {
-  height: auto;
+  /* Fill the user's fixed card height and scroll inside; height: auto would
+     collapse the input to its intrinsic height and break the resized layout. */
+  height: 100%;
   min-height: 0;
   overflow-y: auto;
   scrollbar-width: thin;
@@ -6002,7 +6004,9 @@ body > .mermaid-diagram--fullscreen {
   display: none;                    /* Chrome / Safari / Wails webview */
 }
 .composer-card--resized .composer__input {
-  height: auto;
+  /* The resized card gets no inline textarea height from JS; height: auto
+     would pin the rows=1 textarea to a single visible line forever. */
+  height: 100%;
   min-height: 0;
   max-height: none;
   overflow-y: auto;
