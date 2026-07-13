@@ -43,7 +43,8 @@ jobs:
           ALERT_WEBHOOK: ${{ secrets.ALERT_WEBHOOK }}
         run: |
           if [ -z "$ALERT_WEBHOOK" ]; then
-            echo "ALERT_WEBHOOK repo secret not set; sentinel alerts stay log-only."
+            echo "ALERT_WEBHOOK repo secret not set; removing any existing worker secret."
+            printf '{"ALERT_WEBHOOK":null}' | npx wrangler secret bulk
             exit 0
           fi
           printf '%s' "$ALERT_WEBHOOK" | npx wrangler secret put ALERT_WEBHOOK

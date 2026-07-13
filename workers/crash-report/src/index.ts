@@ -1043,10 +1043,11 @@ function errText(err: unknown): string {
 
 async function sendAlert(env: Env, text: string): Promise<void> {
   if (!env.ALERT_WEBHOOK) return;
-  const feishu = env.ALERT_WEBHOOK.includes("open.feishu.cn") || env.ALERT_WEBHOOK.includes("open.larksuite.com");
-  const body = feishu ? { msg_type: "text", content: { text } } : { text };
   try {
-    const res = await fetch(env.ALERT_WEBHOOK, {
+    const webhook = new URL(env.ALERT_WEBHOOK);
+    const feishu = webhook.hostname === "open.feishu.cn" || webhook.hostname === "open.larksuite.com";
+    const body = feishu ? { msg_type: "text", content: { text } } : { text };
+    const res = await fetch(webhook.toString(), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
