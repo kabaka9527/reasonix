@@ -115,6 +115,30 @@ ok(
 );
 
 ok(
+  finalDeclaration(":root[data-theme-style] .tabbar__tab--active", "box-shadow")?.includes(
+    "inset 0 -2px 0 var(--project-accent, var(--accent))",
+  ),
+  "active themed tab carries the project-accent underline",
+);
+
+ok(
+  finalDeclaration(":root[data-theme-style] .tabbar__tab--active:focus-visible", "box-shadow")?.includes(
+    "inset 0 -2px 0 var(--project-accent, var(--accent))",
+  ) &&
+    finalDeclaration(":root[data-theme-style] .tabbar__tab--active:focus-visible", "box-shadow")?.includes(
+      "0 0 0 3px var(--accent-soft)",
+    ),
+  "keyboard focus on the active tab keeps both the focus ring and the accent underline",
+);
+
+ok(
+  matchingBlocks(".app--darwin .app-chrome--tabs .tabbar__tab--active").every(
+    (block) => !block.includes("inset 0 2px"),
+  ),
+  "macOS active tab declares no dead top-edge accent (the themed bottom-edge layer owns it)",
+);
+
+ok(
   /workbenchChrome \? \(\s*<span className="app-chrome__spacer" aria-hidden="true" \/>/s.test(appChromeSource),
   "AppChrome workbench branch skips the tab strip",
 );
