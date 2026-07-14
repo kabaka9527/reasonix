@@ -3,9 +3,40 @@ package boot
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
+
+	"reasonix/internal/agent"
+	"reasonix/internal/event"
 )
+
+func TestConnectToolSourcePlanModeClassifiesLeanOptionalSources(t *testing.T) {
+	tsc := &toolSourceConnector{
+		sessions: func(context.Context) (string, error) { return "enabled sessions.", nil },
+		commands: func(context.Context) (string, error) { return "enabled commands.", nil },
+		search:   func(context.Context) (string, error) { return "enabled search.", nil },
+		memory:   func(context.Context) (string, error) { return "enabled memory.", nil },
+	}
+	ctx := agent.WithToolCallContext(context.Background(), "call", event.Discard, nil, true)
+	for _, source := range []string{"sessions", "commands", "search"} {
+		out, err := tsc.Execute(ctx, json.RawMessage(fmt.Sprintf(`{"source":%q}`, source)))
+		if err != nil {
+			t.Fatalf("source %s: %v", source, err)
+		}
+		if strings.Contains(out, "blocked:") {
+			t.Fatalf("read-only source %s blocked in plan mode: %s", source, out)
+		}
+	}
+	out, err := tsc.Execute(ctx, json.RawMessage(`{"source":"memory"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "blocked:") {
+		t.Fatalf("memory source includes writers and must be blocked in plan mode: %s", out)
+	}
+}
 
 // A slow MCP connect (spawning the server subprocess) must run outside
 // t.mu: the callback probes the lock and fails if Execute still holds it.

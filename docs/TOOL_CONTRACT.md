@@ -82,12 +82,20 @@ flags and canonical schemas.
 
 ## Token Economy Boot Surface
 
-In token economy mode, Reasonix starts with the core coding/session/memory tools
-and the connector used to enable optional sources on demand:
+In token economy mode, Reasonix starts with nine tools: four direct coding tools,
+the three background-shell lifecycle tools, `ask`, and the connector used to
+enable optional sources on demand:
 
-`ask`, `connect_tool_source`, `forget`, `history`, `list_sessions`, `memory`,
-`read_session`, `remember`, `slash_command`.
+`ask`, `bash`, `bash_output`, `connect_tool_source`, `edit_file`, `kill_shell`,
+`read_file`, `wait`, `write_file`.
 
-Core built-in tools such as `bash`, `read_file`, `grep`, file writers, job tools,
-and `todo_write` remain available in economy mode and are listed in the built-in
-table above.
+Everything else is explicit and on demand. `connect_tool_source` supports
+`search` (`code_index`, `glob`, `grep`, `ls`), `files` (specialized move,
+multi-edit, delete, and notebook tools), `workflow` (`todo_write`,
+`complete_step`), `sessions` (`history`, `list_sessions`, `read_session`),
+`memory` (`memory`, `remember`, `forget`), `commands` (`slash_command`),
+`skills`, `read_only_skill`, `mcp`, `lsp`, `web_fetch`, `install_source`,
+`task`, and `read_only_task`. The `search`, `sessions`, and `commands` sources
+are read-only and may be connected in plan mode; sources containing writer or
+completion tools remain blocked there. Use `bash` for listing and search until
+the dedicated `search` source is needed.

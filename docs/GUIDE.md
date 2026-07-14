@@ -892,9 +892,12 @@ enables writer-capable skill tools and remains blocked in plan mode.
 
 Choose the startup runtime profile with
 `--profile economy|balanced|delivery` (for example, `reasonix run --profile
-delivery "fix and verify this bug"`). Economy keeps the initial tool surface
-lean and connects optional sources on demand. Balanced is the byte-compatible
-default with the complete tool surface. Delivery keeps that complete surface,
+delivery "fix and verify this bug"`). Economy starts with nine tools: direct
+read/bash/edit/write, background-shell lifecycle controls, `ask`, and
+`connect_tool_source`. Dedicated search/file/workflow tools, session history,
+memory mutation, slash commands, Skills, MCP, LSP, web access, installation, and
+subagents are connected only when the task needs them. Balanced is the default
+with the complete tool surface. Delivery keeps that complete surface,
 adds one stable proxy tool (`use_capability`) for on-demand MCP inspect/call
 without schema churn, and adds a stable contract to establish acceptance
 criteria, fix root causes, verify the result, and review the final diff. The

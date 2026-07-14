@@ -69,9 +69,17 @@ read/diff 证据。
 
 ## Token Economy Boot Surface
 
-token economy 模式启动时保留核心编码、session、memory 工具，以及按需启用可选来源的 connector：
+token economy 模式只带 9 个初始工具：4 个直接编码工具、3 个后台 shell 生命周期工具、
+`ask`，以及按需启用来源的 connector：
 
-`ask`, `connect_tool_source`, `forget`, `history`, `list_sessions`, `memory`,
-`read_session`, `remember`, `slash_command`.
+`ask`, `bash`, `bash_output`, `connect_tool_source`, `edit_file`, `kill_shell`,
+`read_file`, `wait`, `write_file`。
 
-`bash`、`read_file`、`grep`、文件写工具、后台 job 工具和 `todo_write` 等核心内置工具在 economy 模式下仍可用，见上方内置工具表。
+其余能力都显式按需加载。`connect_tool_source` 支持 `search`（`code_index`、
+`glob`、`grep`、`ls`）、`files`（专用移动、多编辑、删除与 notebook 工具）、
+`workflow`（`todo_write`、`complete_step`）、`sessions`（`history`、
+`list_sessions`、`read_session`）、`memory`（`memory`、`remember`、`forget`）、
+`commands`（`slash_command`）、`skills`、`read_only_skill`、`mcp`、`lsp`、
+`web_fetch`、`install_source`、`task` 和 `read_only_task`。`search`、`sessions`
+与 `commands` 是只读来源，可在 plan mode 中启用；包含写入或完成签收工具的来源继续阻断。
+需要专用 `search` 来源之前，使用 `bash` 完成目录查看与搜索。
