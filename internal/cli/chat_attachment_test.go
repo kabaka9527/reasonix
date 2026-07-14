@@ -101,6 +101,24 @@ func TestPastedImageSources(t *testing.T) {
 			ok:   true,
 		},
 		{
+			name: "shell escaped path without whitespace",
+			text: `/tmp/capture\(1\).png`,
+			want: []string{`/tmp/capture\(1\).png`},
+			ok:   true,
+		},
+		{
+			name: "multiple shell escaped paths on one line",
+			text: `/tmp/first\ image.png /tmp/second\ image.jpg`,
+			want: []string{`/tmp/first\ image.png`, `/tmp/second\ image.jpg`},
+			ok:   true,
+		},
+		{
+			name: "multiple quoted paths on one line",
+			text: `'/tmp/first image.png' "/tmp/second image.jpg"`,
+			want: []string{`'/tmp/first image.png'`, `"/tmp/second image.jpg"`},
+			ok:   true,
+		},
+		{
 			name: "sentence with image path remains text",
 			text: `see /tmp/CleanShot\ 2026.png`,
 			ok:   false,
@@ -151,5 +169,127 @@ func TestPasteShellEscapedImagePathInsertsImageToken(t *testing.T) {
 	}
 	if text := updated.pastedBlocks[0].text; !strings.HasPrefix(text, "@.reasonix/attachments/clipboard-") || !strings.HasSuffix(text, ".png") {
 		t.Fatalf("image block text = %q, want saved attachment ref", text)
+	}
+}
+
+func TestPasteShellEscapedImagePathWithoutWhitespaceInsertsImageToken(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	path := filepath.Join(root, "capture(1).png")
+	raw, err := base64.StdEncoding.DecodeString(tinyPNGBase64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	escaped := strings.NewReplacer("(", `\(`, ")", `\)`).Replace(path)
+
+	m := newTestChatTUI()
+	next, _ := m.Update(tea.PasteMsg{Content: escaped})
+	updated := next.(chatTUI)
+
+	if got := updated.input.Value(); got != "[image #1] " {
+		t.Fatalf("input after paste = %q, want image token", got)
+	}
+	if len(updated.pastedBlocks) != 1 || !updated.pastedBlocks[0].image {
+		t.Fatalf("pastedBlocks = %+v, want one image block", updated.pastedBlocks)
+	}
+}
+
+func TestPasteMultipleShellEscapedImagePathsInsertsImageTokens(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	raw, err := base64.StdEncoding.DecodeString(tinyPNGBase64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := filepath.Join(root, "first image.png")
+	second := filepath.Join(root, "second image.png")
+	for _, p := range []string{first, second} {
+		if err := os.WriteFile(p, raw, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	content := strings.ReplaceAll(first, " ", `\ `) + " " + strings.ReplaceAll(second, " ", `\ `)
+
+	m := newTestChatTUI()
+	next, _ := m.Update(tea.PasteMsg{Content: content})
+	updated := next.(chatTUI)
+
+	if got := updated.input.Value(); got != "[image #1] [image #2] " {
+		t.Fatalf("input after paste = %q, want two image tokens", got)
+	}
+	if len(updated.pastedBlocks) != 2 || !updated.pastedBlocks[0].image || !updated.pastedBlocks[1].image {
+		t.Fatalf("pastedBlocks = %+v, want two image blocks", updated.pastedBlocks)
+	}
+}
+
+func TestPastedImagePathShellUnescape(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		goos string
+		want string
+		ok   bool
+	}{
+		{
+			name: "posix escaped parens without whitespace",
+			src:  `/tmp/capture\(1\).png`,
+			goos: "linux",
+			want: "/tmp/capture(1).png",
+			ok:   true,
+		},
+		{
+			name: "posix escaped spaces",
+			src:  `/tmp/first\ image.png`,
+			goos: "linux",
+			want: "/tmp/first image.png",
+			ok:   true,
+		},
+		{
+			name: "posix unescaped space rejected",
+			src:  "/tmp/first image.png",
+			goos: "linux",
+			ok:   false,
+		},
+		{
+			name: "windows backslash separators preserved",
+			src:  `C:\Users\me\shot(1).png`,
+			goos: "windows",
+			want: `C:\Users\me\shot(1).png`,
+			ok:   true,
+		},
+		{
+			name: "windows dollar directory preserved",
+			src:  `C:\$Recycle.Bin\shot.png`,
+			goos: "windows",
+			want: `C:\$Recycle.Bin\shot.png`,
+			ok:   true,
+		},
+		{
+			name: "windows unquoted space rejected",
+			src:  `C:\Program Files\shot.png`,
+			goos: "windows",
+			ok:   false,
+		},
+		{
+			name: "windows quoted path with space preserved",
+			src:  `"C:\my dir\shot.png"`,
+			goos: "windows",
+			want: `C:\my dir\shot.png`,
+			ok:   true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := pastedImagePathForOS(c.src, c.goos)
+			if ok != c.ok {
+				t.Fatalf("ok = %v, want %v", ok, c.ok)
+			}
+			if c.ok && got != c.want {
+				t.Fatalf("path = %q, want %q", got, c.want)
+			}
+		})
 	}
 }

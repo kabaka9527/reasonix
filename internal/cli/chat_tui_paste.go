@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -171,11 +172,56 @@ func pastedImageSources(text string) ([]string, bool) {
 	if len(lines) > 0 && allImageSources(lines) {
 		return lines, true
 	}
-	fields := strings.Fields(trimmed)
+	fields := splitPastePathTokens(trimmed)
 	if len(fields) > 1 && allImageSources(fields) {
 		return fields, true
 	}
 	return nil, false
+}
+
+// splitPastePathTokens splits pasted text into path tokens the way a shell
+// would hand them to a program: unescaped, unquoted whitespace separates
+// tokens, while backslash escapes and token-leading quotes keep a path with
+// spaces together. Tokens keep their original escapes/quotes so each one
+// round-trips through pastedImagePath. Quotes only open at the start of a
+// token, so an apostrophe inside a word ("it's") never swallows the rest of
+// the text.
+func splitPastePathTokens(s string) []string {
+	var tokens []string
+	var b strings.Builder
+	var quote byte
+	escaped := false
+	flush := func() {
+		if b.Len() > 0 {
+			tokens = append(tokens, b.String())
+			b.Reset()
+		}
+	}
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		switch {
+		case escaped:
+			b.WriteByte(ch)
+			escaped = false
+		case quote != 0:
+			b.WriteByte(ch)
+			if ch == quote {
+				quote = 0
+			}
+		case ch == '\\':
+			b.WriteByte(ch)
+			escaped = true
+		case (ch == '\'' || ch == '"') && b.Len() == 0:
+			b.WriteByte(ch)
+			quote = ch
+		case ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n':
+			flush()
+		default:
+			b.WriteByte(ch)
+		}
+	}
+	flush()
+	return tokens
 }
 
 func nonEmptyPasteLines(text string) []string {
@@ -233,6 +279,14 @@ func isDataImage(src string) bool {
 }
 
 func pastedImagePath(src string) (string, bool) {
+	return pastedImagePathForOS(src, runtime.GOOS)
+}
+
+// pastedImagePathForOS is pastedImagePath with the OS injected so both
+// branches are testable everywhere. On Windows the backslash is the path
+// separator — terminals there quote dragged paths instead of escaping them —
+// so shell-style unescaping is skipped to keep native paths intact.
+func pastedImagePathForOS(src, goos string) (string, bool) {
 	src = strings.TrimSpace(src)
 	src = strings.TrimPrefix(src, "@")
 	quoted := (strings.HasPrefix(src, `"`) && strings.HasSuffix(src, `"`)) || (strings.HasPrefix(src, `'`) && strings.HasSuffix(src, `'`))
@@ -240,15 +294,17 @@ func pastedImagePath(src string) (string, bool) {
 	if src == "" {
 		return "", false
 	}
-	if !quoted && strings.ContainsAny(src, " \t\r\n") {
-		if hasUnescapedPathWhitespace(src) {
-			return "", false
+	if !quoted {
+		if goos == "windows" {
+			if strings.ContainsAny(src, " \t\r\n") {
+				return "", false
+			}
+		} else {
+			if hasUnescapedPathWhitespace(src) {
+				return "", false
+			}
+			src = unescapeShellPath(src)
 		}
-		unescaped, ok := unescapeShellPath(src)
-		if !ok {
-			return "", false
-		}
-		src = unescaped
 	}
 	lower := strings.ToLower(src)
 	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
@@ -289,21 +345,19 @@ func hasUnescapedPathWhitespace(s string) bool {
 	return false
 }
 
-func unescapeShellPath(s string) (string, bool) {
+func unescapeShellPath(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
-	changed := false
 	for i := 0; i < len(s); i++ {
 		ch := s[i]
 		if ch == '\\' && i+1 < len(s) && shellEscapedPathByte(s[i+1]) {
 			b.WriteByte(s[i+1])
 			i++
-			changed = true
 			continue
 		}
 		b.WriteByte(ch)
 	}
-	return b.String(), changed
+	return b.String()
 }
 
 func shellEscapedPathByte(ch byte) bool {
