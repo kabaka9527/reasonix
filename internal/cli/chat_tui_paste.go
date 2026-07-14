@@ -45,6 +45,7 @@ func (m *chatTUI) shouldFoldPaste(s string) bool {
 }
 
 func (m *chatTUI) insertFoldedPaste(s string) {
+	m.deleteComposerSelection()
 	label := foldedPasteLabel(m.nextPasteID, pastedLineCount(s))
 	m.nextPasteID++
 	m.pastedBlocks = append(m.pastedBlocks, pastedBlock{label: label, text: s})
@@ -55,6 +56,7 @@ func (m *chatTUI) insertFoldedPaste(s string) {
 // the saved attachment's @ref, expanded on submit) so a dragged/pasted image is
 // edited and removed like any other text, not stranded in a separate tray.
 func (m *chatTUI) insertImageRef(path string) {
+	m.deleteComposerSelection()
 	label := fmt.Sprintf("[image #%d]", m.nextPasteID)
 	m.nextPasteID++
 	m.pastedBlocks = append(m.pastedBlocks, pastedBlock{label: label, text: "@" + path, image: true})

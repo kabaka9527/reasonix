@@ -61,8 +61,10 @@ type chatTUI struct {
 	// since the terminal no longer forwards those events to Reasonix.
 	mouseCaptureOff bool
 
-	input   textarea.Model
-	spinner spinner.Model
+	input       textarea.Model
+	composerSel composerSelection
+	composerMap composerLayoutCache
+	spinner     spinner.Model
 
 	submittedInputs      []string
 	submittedInputCursor int
@@ -796,6 +798,7 @@ func (m chatTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // transcript viewport sized, fed, and tail-following after every message.
 func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
+	var inputBeforeSelection string
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -833,11 +836,27 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Right-click copies the active selection (Windows Terminal convention);
 		// left-press in the transcript region begins a text selection — unless
 		// the click lands on the scrollbar or a shell-output hint line.
+		if msg.Button == tea.MouseRight && m.validComposerSelection() && !m.composerSel.empty() {
+			cmds = append(cmds, m.copySelectionWithNotice(m.selectedComposerText()))
+			return m, finalize(m, cmds)
+		}
 		if msg.Button == tea.MouseRight && m.sel.active && !m.sel.empty() {
 			text := m.selectedText()
 			m.sel = selection{}
 			cmds = append(cmds, m.copySelectionWithNotice(text))
 			return m, finalize(m, cmds)
+		}
+		if msg.Button == tea.MouseLeft {
+			if at, ok := m.composerCaretAt(msg.X, msg.Y, false); ok {
+				m.sel = selection{}
+				m.autoScroll = 0
+				m.setComposerCursor(at.offset)
+				m.composerSel = composerSelection{
+					active: true, anchor: at.offset, head: at.offset, value: m.input.Value(),
+				}
+				return m, nil
+			}
+			m.composerSel = composerSelection{}
 		}
 		if msg.Button == tea.MouseLeft && m.inScrollbar(msg.X, msg.Y) {
 			m.sel = selection{}
@@ -864,6 +883,12 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseMotionMsg:
+		if m.validComposerSelection() {
+			if at, ok := m.composerCaretAt(msg.X, msg.Y, true); ok {
+				m.composerSel.head = at.offset
+			}
+			return m, nil
+		}
 		if m.scrollbarDrag {
 			m.dragScrollbar(msg.Y)
 			return m, nil
@@ -906,6 +931,16 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, autoScrollTick()
 
 	case tea.MouseReleaseMsg:
+		if msg.Button == tea.MouseLeft && m.validComposerSelection() {
+			if at, ok := m.composerCaretAt(msg.X, msg.Y, true); ok {
+				m.composerSel.head = at.offset
+				m.setComposerCursor(at.offset)
+			}
+			if m.composerSel.empty() {
+				m.composerSel = composerSelection{}
+			}
+			return m, nil
+		}
 		// Release finalizes the selection: a real drag auto-copies it (native
 		// terminal convention), while the highlight stays on as the visual
 		// "what's selected" cue and a right-click can still re-copy it. A plain
@@ -927,27 +962,79 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, finalize(m, cmds)
 
 	case tea.PasteMsg:
+		pasteBefore := m.input.Value()
 		if m.state != tuiRunning && m.attachPastedImages(msg.Content) {
+			if shouldClearWideInputChange(pasteBefore, m.input.Value()) {
+				cmds = append(cmds, tea.ClearScreen)
+			}
 			return m, finalize(m, cmds)
+		}
+		if m.validComposerSelection() && !m.composerSel.empty() {
+			inputBeforeSelection = pasteBefore
+			m.deleteComposerSelection()
 		}
 		if ref, ok := pastedFileRef(msg.Content); ok {
 			m.input.InsertString(ref + " ")
 			m.growInputToFit()
 			m.updateCompletion()
+			if shouldClearWideInputChange(pasteBefore, m.input.Value()) {
+				cmds = append(cmds, tea.ClearScreen)
+			}
 			return m, finalize(m, cmds)
 		}
 		if !m.chooserTyping() && m.pendingApproval == nil && m.rewind == nil && m.resumePick == nil && m.mcp == nil && m.clearConfirm == nil && m.mcpImport == nil && m.skillPick == nil && m.shouldFoldPaste(msg.Content) {
 			m.insertFoldedPaste(msg.Content)
 			m.growInputToFit()
 			m.updateCompletion()
+			if shouldClearWideInputChange(pasteBefore, m.input.Value()) {
+				cmds = append(cmds, tea.ClearScreen)
+			}
 			return m, finalize(m, cmds)
 		}
 
 	case tea.KeyPressMsg:
 		// Any keystroke dismisses a finished selection (copy is a right-click),
-		// except Ctrl+C/Super+C/Meta+C which may copy the selection to clipboard.
+		// with a few exceptions: Ctrl/Super/Meta+C copies the selection, the
+		// paste shortcuts keep it so the async clipboard result can replace
+		// it, and Left/Right collapse it to its ordered start/end.
 		sel := m.sel
 		m.sel = selection{}
+		if m.validComposerSelection() && !m.composerSel.empty() {
+			switch msg.String() {
+			case "ctrl+c", "super+c", "meta+c":
+				cmds = append(cmds, m.copySelectionWithNotice(m.selectedComposerText()))
+				return m, finalize(m, cmds)
+			case "ctrl+v", "ctrl+shift+v", "super+v", "meta+v":
+				// Handled by the shortcut switch below; the clipboardPasteMsg
+				// result replaces the still-active selection.
+			case "left":
+				start, _ := m.composerSel.ordered()
+				m.composerSel = composerSelection{}
+				m.setComposerCursor(start)
+				return m, finalize(m, cmds)
+			case "right":
+				_, end := m.composerSel.ordered()
+				m.composerSel = composerSelection{}
+				m.setComposerCursor(end)
+				return m, finalize(m, cmds)
+			default:
+				inputBeforeSelection = m.input.Value()
+				if composerSelectionDeletes(msg, m.input.KeyMap) {
+					m.deleteComposerSelection()
+					m.growInputToFit()
+					m.updateCompletion()
+					if shouldClearWideInputChange(inputBeforeSelection, m.input.Value()) {
+						cmds = append(cmds, tea.ClearScreen)
+					}
+					return m, finalize(m, cmds)
+				}
+				if composerSelectionReplaces(msg, m.input.KeyMap) {
+					m.deleteComposerSelection()
+				} else {
+					m.composerSel = composerSelection{}
+				}
+			}
+		}
 		// Transcript scroll keys work in any state (PgUp/PgDn are never text).
 		switch msg.String() {
 		case "pgup":
@@ -1493,18 +1580,31 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice("paste image: " + msg.err.Error())
 			break
 		}
+		imageBefore := m.input.Value()
 		m.insertImageRef(msg.path)
+		if shouldClearWideInputChange(imageBefore, m.input.Value()) {
+			cmds = append(cmds, tea.ClearScreen)
+		}
 
 	case clipboardPasteMsg:
 		switch {
 		case msg.err != nil:
 			m.notice("paste: " + msg.err.Error())
 		case msg.path != "":
+			before := m.input.Value()
 			m.insertImageRef(msg.path)
+			if shouldClearWideInputChange(before, m.input.Value()) {
+				cmds = append(cmds, tea.ClearScreen)
+			}
 		case msg.text != "":
+			before := m.input.Value()
 			if m.attachPastedImages(msg.text) {
+				if shouldClearWideInputChange(before, m.input.Value()) {
+					cmds = append(cmds, tea.ClearScreen)
+				}
 				return m, finalize(m, cmds)
 			}
+			m.deleteComposerSelection()
 			if ref, ok := pastedFileRef(msg.text); ok {
 				m.input.InsertString(ref + " ")
 			} else if m.shouldFoldPaste(msg.text) {
@@ -1514,6 +1614,9 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.growInputToFit()
 			m.updateCompletion()
+			if shouldClearWideInputChange(before, m.input.Value()) {
+				cmds = append(cmds, tea.ClearScreen)
+			}
 			return m, finalize(m, cmds)
 		}
 
@@ -1538,6 +1641,9 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	beforeInput := m.input.Value()
+	if inputBeforeSelection != "" {
+		beforeInput = inputBeforeSelection
+	}
 	var ic tea.Cmd
 	m.input, ic = m.input.Update(msg)
 	cmds = append(cmds, ic)
@@ -2546,7 +2652,7 @@ func (m chatTUI) View() tea.View {
 		if shellMode {
 			style = style.BorderForeground(lipgloss.Color(statusShellColor.hex))
 		}
-		box = style.Render(m.input.View())
+		box = style.Render(m.renderComposerInput())
 	}
 
 	var modeTag string
@@ -3320,6 +3426,7 @@ func (m *chatTUI) toggleVerboseReasoning(notify bool) {
 func (m *chatTUI) toggleMouseCapture() {
 	m.mouseCaptureOff = !m.mouseCaptureOff
 	m.sel = selection{}
+	m.composerSel = composerSelection{}
 	m.scrollbarDrag = false
 	m.autoScroll = 0
 	if m.mouseCaptureOff {
