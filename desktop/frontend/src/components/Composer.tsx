@@ -46,6 +46,7 @@ import {
 } from "./RichComposerInput";
 import { VirtualMenu } from "./VirtualMenu";
 import { activeFileReferenceToken, dirEntryMenuLabel, dirEntrySubmitPath } from "./FileReferenceMenu";
+import { activeRefTokenRe, escapeRefPath, unescapeRefPath } from "../lib/refToken";
 import { ContextMenu, contextMenuPointFromEvent, type ContextMenuItem, type ContextMenuPoint } from "./ContextMenu";
 interface Attachment {
   path: string;
@@ -198,7 +199,8 @@ export function composerPickFileEntry(
   if (entry.path || entry.displayPath) {
     return { text: prefix, workspaceRef: { path: refPath, isDir: entry.isDir, displayPath: entry.displayPath } };
   }
-  return { text: prefix + "@" + refPath + (entry.isDir ? "/" : " ") };
+  // Inline fallback: escape whitespace so the ref survives @-token parsing.
+  return { text: prefix + "@" + escapeRefPath(refPath) + (entry.isDir ? "/" : " ") };
 }
 
 function emptyComposerDraft(): ComposerDraft {
@@ -1058,7 +1060,7 @@ export function Composer({
     }
     let live = true;
     app
-      .ListDirForTab(fileRefTabId, atDir)
+      .ListDirForTab(fileRefTabId, unescapeRefPath(atDir))
       .then((es) => {
         const list = asArray(es);
         if (!live) return;
@@ -2458,7 +2460,7 @@ export function Composer({
 
 
   const removeAtToken = (value: string) => {
-    return value.replace(/[\r\n]+$/u, "").replace(/(?:^|\s)@[^\s]*$/, "").trimEnd();
+    return value.replace(/[\r\n]+$/u, "").replace(activeRefTokenRe, "").trimEnd();
   };
 
   const pickSession = (session: SessionMeta) => {
