@@ -240,6 +240,17 @@ func (s *Server) switchModel(ctx context.Context, ref string) error {
 		slog.Warn("serve: session lease after model switch", "err", err)
 	}
 
+	// Persist the adopted history now: the system-prompt splice above only
+	// refreshed the new controller's memory and nothing snapshots an idle
+	// session again, so a restart + /resume would otherwise revive the outgoing
+	// controller's contract from disk. Snapshot only after the swap so a failed
+	// swap never leaves cur conflicting with a rewritten transcript.
+	if newPath != "" {
+		if err := newCtrl.Snapshot(); err != nil {
+			slog.Warn("serve: snapshot after model switch", "err", err)
+		}
+	}
+
 	// Off-lock: tear down the old controller. Close can block up to 15s.
 	cur.Close()
 	return nil

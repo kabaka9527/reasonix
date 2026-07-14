@@ -1127,6 +1127,15 @@ func adoptCarriedHistoryPreservingProfileAndGrants(c *control.Controller, carry 
 	if prev, ok := oldCtrl.(*control.Controller); ok {
 		c.RestoreSessionAuthorizations(prev.SessionAuthorizations())
 	}
+	// Persist the adopted history now: the splice above only refreshed the new
+	// controller's memory and nothing saves again until the next turn ends, so
+	// quitting right after the switch and resuming would otherwise revive the
+	// outgoing profile's contract from disk.
+	if path != "" {
+		if err := c.Snapshot(); err != nil {
+			slog.Warn("cli: snapshot after runtime switch", "err", err)
+		}
+	}
 }
 
 func prepareNativeScrollback(w io.Writer, rows int) {

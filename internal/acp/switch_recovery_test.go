@@ -125,7 +125,7 @@ func TestACPRebuildSessionContinuesRecoveryPathAfterSnapshotConflict(t *testing.
 	})
 	sess.ctrl = oldCtrl
 
-	if err := svc.rebuildSession(context.Background(), sess, SessionConfigState{Model: "pro"}, sessionConfigDelta{axis: "model", model: "pro"}); err != nil {
+	if err := svc.rebuildSession(context.Background(), sess, SessionConfigState{Model: "pro"}, []sessionConfigDelta{{axis: "model", model: "pro"}}); err != nil {
 		t.Fatalf("rebuildSession: %v", err)
 	}
 	if sess.ctrl == oldCtrl {
@@ -410,8 +410,8 @@ func TestACPRebuildSessionRefreshesLeadingSystemPromptForNewProfile(t *testing.T
 		sessions: map[string]*acpSession{sess.id: sess},
 	}
 
-	delta := sessionConfigDelta{axis: "work_mode", runtimeProfile: "delivery"}
-	if err := svc.rebuildSession(context.Background(), sess, SessionConfigState{RuntimeProfile: "delivery"}, delta); err != nil {
+	deltas := []sessionConfigDelta{{axis: "work_mode", runtimeProfile: "delivery"}}
+	if err := svc.rebuildSession(context.Background(), sess, SessionConfigState{RuntimeProfile: "delivery"}, deltas); err != nil {
 		t.Fatalf("rebuildSession: %v", err)
 	}
 
@@ -424,5 +424,96 @@ func TestACPRebuildSessionRefreshesLeadingSystemPromptForNewProfile(t *testing.T
 	}
 	if len(history) != 3 || history[1].Content != "hello" || history[2].Content != "hi" {
 		t.Fatalf("history after profile switch = %+v, want carried user/assistant turns preserved", history)
+	}
+}
+
+// TestACPWorkModeSwitchPersistsRefreshedSystemPromptAcrossReload pins the disk
+// half of the profile-switch fix: the refreshed leading system prompt must be
+// persisted at switch time, because session/close never snapshots and
+// session/load resumes the transcript exactly as saved. Before the fix the
+// switch refreshed only the new controller's in-memory history, so a
+// switch → close → load sequence revived the outgoing profile's contract even
+// though the session metadata already claimed the new profile.
+func TestACPWorkModeSwitchPersistsRefreshedSystemPromptAcrossReload(t *testing.T) {
+	dir := t.TempDir()
+	id := "sess-profile-persist"
+	path := transcriptPath(dir, id)
+
+	oldSession := agent.NewSession("system prompt for profile balanced")
+	oldSession.Add(provider.Message{Role: provider.RoleUser, Content: "hello"})
+	oldSession.Add(provider.Message{Role: provider.RoleAssistant, Content: "hi"})
+	if err := oldSession.Save(path); err != nil {
+		t.Fatalf("save base session: %v", err)
+	}
+
+	sink := newUpdateSink(&fakeNotifier{}, id)
+	sess := &acpSession{
+		id:             id,
+		sink:           sink,
+		cwd:            dir,
+		model:          "fast",
+		runtimeProfile: "balanced",
+		transcript:     path,
+	}
+	lease, err := agent.TryAcquireSessionLease(path)
+	if err != nil {
+		t.Fatalf("acquire session lease: %v", err)
+	}
+	sess.lease = lease
+	sess.ctrl = control.New(control.Options{
+		Executor:    agent.New(nil, nil, oldSession, agent.Options{}, event.Discard),
+		SessionDir:  dir,
+		SessionPath: path,
+		Label:       "balanced",
+	})
+	svc := &service{
+		conn:     NewConn(strings.NewReader(""), io.Discard),
+		factory:  &profileSystemPromptFactory{dir: dir},
+		sessions: map[string]*acpSession{sess.id: sess},
+	}
+
+	deltas := []sessionConfigDelta{{axis: "work_mode", runtimeProfile: "delivery"}}
+	if err := svc.rebuildSession(context.Background(), sess, SessionConfigState{RuntimeProfile: "delivery"}, deltas); err != nil {
+		t.Fatalf("rebuildSession: %v", err)
+	}
+
+	// The refreshed contract must be on disk as soon as the switch lands.
+	onDisk, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatalf("load transcript after switch: %v", err)
+	}
+	if msgs := onDisk.Snapshot(); len(msgs) == 0 || msgs[0].Content != "system prompt for profile delivery" {
+		t.Fatalf("on-disk leading message after switch = %+v, want the delivery profile contract", msgs)
+	}
+
+	raw, err := json.Marshal(SessionCloseParams{SessionID: id})
+	if err != nil {
+		t.Fatalf("marshal close params: %v", err)
+	}
+	if _, err := svc.sessionClose(context.Background(), raw); err != nil {
+		t.Fatalf("sessionClose: %v", err)
+	}
+
+	if _, err := svc.openExistingSession(context.Background(), "session/load", id, dir, nil, false); err != nil {
+		t.Fatalf("openExistingSession after close: %v", err)
+	}
+	loaded := svc.session(id)
+	if loaded == nil {
+		t.Fatal("session not registered after load")
+	}
+	t.Cleanup(func() {
+		loaded.releaseSessionLease()
+		loaded.currentCtrl().Close()
+	})
+
+	history := loaded.currentCtrl().History()
+	if len(history) == 0 || history[0].Role != provider.RoleSystem {
+		t.Fatalf("loaded history = %+v, want a leading system message", history)
+	}
+	if got, want := history[0].Content, "system prompt for profile delivery"; got != want {
+		t.Fatalf("leading system prompt after switch → close → load = %q, want %q (stale outgoing-profile contract revived from disk)", got, want)
+	}
+	if len(history) != 3 || history[1].Content != "hello" || history[2].Content != "hi" {
+		t.Fatalf("loaded history = %+v, want carried user/assistant turns preserved", history)
 	}
 }

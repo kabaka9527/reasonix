@@ -533,3 +533,45 @@ func TestAdoptCarriedHistoryRestoresSessionAuthorizations(t *testing.T) {
 		t.Fatalf("restored plan-mode read-only commands = %+v, want [\"go test ./...\"]", got.PlanModeReadOnlyCommands)
 	}
 }
+
+// TestAdoptCarriedHistoryPersistsRefreshedSystemPromptToDisk pins the disk
+// half of the splice in adoptCarriedHistoryPreservingProfileAndGrants: the
+// refreshed leading system message must be persisted at switch time, because
+// nothing saves again until the next turn ends — quitting right after a
+// /model, /effort, or /work-mode switch and resuming would otherwise revive
+// the outgoing profile's contract from disk.
+func TestAdoptCarriedHistoryPersistsRefreshedSystemPromptToDisk(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "adopt-persist.jsonl")
+
+	oldSession := agent.NewSession("system prompt for profile balanced")
+	oldSession.Add(provider.Message{Role: provider.RoleUser, Content: "hello"})
+	oldSession.Add(provider.Message{Role: provider.RoleAssistant, Content: "hi"})
+	if err := oldSession.Save(path); err != nil {
+		t.Fatalf("save base session: %v", err)
+	}
+
+	fresh := control.New(control.Options{
+		Executor:   agent.New(nil, nil, agent.NewSession("system prompt for profile delivery"), agent.Options{}, event.Discard),
+		SessionDir: dir,
+	})
+	carry := []provider.Message{
+		{Role: provider.RoleSystem, Content: "system prompt for profile balanced"},
+		{Role: provider.RoleUser, Content: "hello"},
+		{Role: provider.RoleAssistant, Content: "hi"},
+	}
+
+	adoptCarriedHistoryPreservingProfileAndGrants(fresh, carry, path, nil)
+
+	loaded, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatalf("load transcript after adopt: %v", err)
+	}
+	msgs := loaded.Snapshot()
+	if len(msgs) != 3 || msgs[0].Role != provider.RoleSystem {
+		t.Fatalf("on-disk history after adopt = %+v, want 3 messages with a leading system message", msgs)
+	}
+	if got, want := msgs[0].Content, "system prompt for profile delivery"; got != want {
+		t.Fatalf("on-disk leading system message = %q, want %q (quit + resume would revive the outgoing contract)", got, want)
+	}
+}

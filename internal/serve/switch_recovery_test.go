@@ -202,3 +202,55 @@ func TestSwitchModelRestoresSessionAuthorizations(t *testing.T) {
 		t.Fatalf("restored plan-mode read-only commands = %+v, want [\"go test ./...\"]", got.PlanModeReadOnlyCommands)
 	}
 }
+
+// TestSwitchModelPersistsRefreshedSystemPromptToDisk pins the disk half of the
+// system-prompt splice: switchModel refreshes the leading system message in
+// the new controller's memory, and nothing snapshots an idle session again, so
+// the switch itself must persist the adopted history or a restart + /resume
+// revives the outgoing controller's contract from disk.
+func TestSwitchModelPersistsRefreshedSystemPromptToDisk(t *testing.T) {
+	t.Setenv("REASONIX_HOME", t.TempDir())
+	dir := t.TempDir()
+	path := filepath.Join(dir, "switch-persist.jsonl")
+
+	oldSession := agent.NewSession("old system prompt")
+	oldSession.Add(provider.Message{Role: provider.RoleUser, Content: "hello"})
+	oldSession.Add(provider.Message{Role: provider.RoleAssistant, Content: "hi"})
+	if err := oldSession.Save(path); err != nil {
+		t.Fatalf("save base session: %v", err)
+	}
+
+	bc := NewBroadcaster()
+	old := control.New(control.Options{
+		Executor:    agent.New(nil, nil, oldSession, agent.Options{}, event.Discard),
+		SessionDir:  dir,
+		SessionPath: path,
+		Label:       "old",
+		Sink:        bc,
+	})
+	s := &Server{ctrl: old, bc: bc}
+	s.buildController = func(_ context.Context, _ string) (*control.Controller, error) {
+		return control.New(control.Options{
+			Executor:   agent.New(nil, nil, agent.NewSession("new system prompt"), agent.Options{}, event.Discard),
+			SessionDir: dir,
+			Label:      "new",
+			Sink:       bc,
+		}), nil
+	}
+
+	if err := s.switchModel(context.Background(), "next-model"); err != nil {
+		t.Fatalf("switchModel: %v", err)
+	}
+
+	loaded, err := agent.LoadSession(s.ctl().SessionPath())
+	if err != nil {
+		t.Fatalf("load transcript after switch: %v", err)
+	}
+	msgs := loaded.Snapshot()
+	if len(msgs) != 3 || msgs[0].Role != provider.RoleSystem {
+		t.Fatalf("on-disk history after switch = %+v, want 3 messages with a leading system message", msgs)
+	}
+	if got, want := msgs[0].Content, "new system prompt"; got != want {
+		t.Fatalf("on-disk leading system message = %q, want %q (a restart would revive the outgoing contract)", got, want)
+	}
+}

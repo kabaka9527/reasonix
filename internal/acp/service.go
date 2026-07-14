@@ -215,7 +215,12 @@ type acpSession struct {
 	// after each turn through current_mode_update.
 	modeID        string
 	goalDraftMode bool
-	pendingConfig *sessionConfigDelta
+	// pendingConfig queues config deltas requested while a turn or rebuild is
+	// in flight, holding at most one entry per axis: a later request replaces
+	// only its own axis (last-write-wins per axis), so a model change and a
+	// work-mode change queued back to back during one turn both survive to the
+	// drain instead of the second overwriting the first.
+	pendingConfig []sessionConfigDelta
 	title         string
 	createdAt     time.Time
 	updatedAt     time.Time
@@ -246,7 +251,7 @@ func (s *acpSession) begin(ctx context.Context) (context.Context, context.Cancel
 	// A queued pendingConfig blocks new turns so a prompt never runs on the
 	// outgoing config. The turn or maintenance that queued it applies it from
 	// its defer, so no new turn is needed to drain the queue.
-	if s.running || s.deleted || s.maintenanceDone != nil || s.pendingConfig != nil {
+	if s.running || s.deleted || s.maintenanceDone != nil || len(s.pendingConfig) > 0 {
 		s.mu.Unlock()
 		cancel()
 		return nil, nil, false
@@ -728,6 +733,13 @@ func (s *service) sessionSetMode(ctx context.Context, raw json.RawMessage) (any,
 // a plan is approved, a config rebuild resets switches) as current_mode_update
 // so the client's mode picker stays truthful.
 func (s *service) emitModeDrift(sess *acpSession) {
+	// Hold stateChangeMu across the controller read and the session-state swap:
+	// a session/set_mode completing between them (it holds this lock) would
+	// otherwise be read back as drift, roll the session's modeID and metadata
+	// back to the pre-selection value, and make the next rebuild re-apply that
+	// stale mode to the replacement controller.
+	sess.stateChangeMu.Lock()
+	defer sess.stateChangeMu.Unlock()
 	ctrl := sess.currentCtrl()
 	current := sessionModeNormal
 	switch {
@@ -743,6 +755,11 @@ func (s *service) emitModeDrift(sess *acpSession) {
 }
 
 func (s *service) emitToolApprovalDrift(ctx context.Context, sess *acpSession) {
+	// Same contract as emitModeDrift: serialize with switchSessionToolApproval
+	// and rebuilds so a user selection landing between the controller read and
+	// the swap below is never reverted.
+	sess.stateChangeMu.Lock()
+	defer sess.stateChangeMu.Unlock()
 	current := normalizeACPToolApprovalMode(sess.currentCtrl().ToolApprovalMode())
 	if sess.swapToolApprovalMode(current) == current {
 		return
@@ -1127,11 +1144,12 @@ func (s *service) sessionSetModel(ctx context.Context, raw json.RawMessage) (any
 
 // sessionConfigDelta names exactly one config axis a caller asked to change
 // (tool approval never rebuilds the controller, so it has no delta here).
-// rebuildSession queues this — instead of a fully resolved SessionConfigState
-// — while a rebuild is in flight, and applyPendingSessionConfig re-resolves it
-// against the session's live baseline once that rebuild lands. That way a
-// queued change to one axis can never restore a stale value on another axis
-// that finished rebuilding in the meantime.
+// rebuildSession queues these — instead of a fully resolved SessionConfigState
+// — while a turn or rebuild is in flight, one queue entry per axis, and
+// applyPendingSessionConfig re-resolves the queued set against the session's
+// live baseline once the session is idle. That way a queued change to one axis
+// can never restore a stale value on another axis that changed in the
+// meantime, whether that axis rebuilt already or is queued alongside.
 type sessionConfigDelta struct {
 	axis           string
 	model          string
@@ -1142,6 +1160,56 @@ type sessionConfigDelta struct {
 func (d sessionConfigDelta) clone() sessionConfigDelta {
 	d.effortOverride = cloneStringPtr(d.effortOverride)
 	return d
+}
+
+// mergePendingConfig queues delta with last-write-wins per axis: it replaces a
+// queued entry for the same axis and appends otherwise, so a change queued for
+// one axis can never drop a change queued for another. Callers hold sess.mu.
+func mergePendingConfig(queue []sessionConfigDelta, delta sessionConfigDelta) []sessionConfigDelta {
+	for i := range queue {
+		if queue[i].axis == delta.axis {
+			queue[i] = delta.clone()
+			return queue
+		}
+	}
+	return append(queue, delta.clone())
+}
+
+// removePendingAxes drops the queue entries whose axis a rebuild is applying,
+// keeping entries other requests queued in the meantime so the post-maintenance
+// drain still applies them. Callers hold sess.mu.
+func removePendingAxes(queue, applied []sessionConfigDelta) []sessionConfigDelta {
+	if len(queue) == 0 {
+		return nil
+	}
+	kept := queue[:0]
+	for _, q := range queue {
+		drop := false
+		for _, d := range applied {
+			if q.axis == d.axis {
+				drop = true
+				break
+			}
+		}
+		if !drop {
+			kept = append(kept, q)
+		}
+	}
+	if len(kept) == 0 {
+		return nil
+	}
+	return kept
+}
+
+func clonePendingConfig(queue []sessionConfigDelta) []sessionConfigDelta {
+	if len(queue) == 0 {
+		return nil
+	}
+	out := make([]sessionConfigDelta, len(queue))
+	for i := range queue {
+		out[i] = queue[i].clone()
+	}
+	return out
 }
 
 func (d sessionConfigDelta) applyTo(p *SessionConfigStateParams) {
@@ -1155,13 +1223,15 @@ func (d sessionConfigDelta) applyTo(p *SessionConfigStateParams) {
 	}
 }
 
-// resolveSessionConfigDelta resolves delta against the session's current
+// resolveSessionConfigDeltas resolves deltas against the session's current
 // config baseline. Calling this fresh at every apply — instead of reusing a
 // snapshot taken when a change was first requested — is what keeps a queued
 // delta for one axis from clobbering another axis that rebuilt in between.
-func (s *service) resolveSessionConfigDelta(ctx context.Context, sess *acpSession, delta sessionConfigDelta) (SessionConfigState, error) {
+func (s *service) resolveSessionConfigDeltas(ctx context.Context, sess *acpSession, deltas []sessionConfigDelta) (SessionConfigState, error) {
 	params := sess.configStateParams()
-	delta.applyTo(&params)
+	for _, delta := range deltas {
+		delta.applyTo(&params)
+	}
 	cfgState, err := s.sessionConfigState(ctx, params)
 	if err != nil {
 		return SessionConfigState{}, err
@@ -1170,15 +1240,15 @@ func (s *service) resolveSessionConfigDelta(ctx context.Context, sess *acpSessio
 }
 
 func (s *service) switchSessionModel(ctx context.Context, sess *acpSession, modelID string) (SessionConfigState, error) {
-	delta := sessionConfigDelta{axis: "model", model: modelID}
-	cfgState, err := s.resolveSessionConfigDelta(ctx, sess, delta)
+	deltas := []sessionConfigDelta{{axis: "model", model: modelID}}
+	cfgState, err := s.resolveSessionConfigDeltas(ctx, sess, deltas)
 	if err != nil {
 		return SessionConfigState{}, &RPCError{Code: ErrInvalidParams, Message: "session/set_model: " + err.Error()}
 	}
 	if cfgState.Model == "" {
 		return SessionConfigState{}, &RPCError{Code: ErrInvalidRequest, Message: "session/set_model: model switching is unavailable in this session"}
 	}
-	if err := s.rebuildSession(ctx, sess, cfgState, delta); err != nil {
+	if err := s.rebuildSession(ctx, sess, cfgState, deltas); err != nil {
 		return SessionConfigState{}, err
 	}
 	return cfgState, nil
@@ -1189,24 +1259,24 @@ func (s *service) switchSessionEffort(ctx context.Context, sess *acpSession, eff
 	if level == "auto" {
 		level = ""
 	}
-	delta := sessionConfigDelta{axis: "thought_level", effortOverride: &level}
-	cfgState, err := s.resolveSessionConfigDelta(ctx, sess, delta)
+	deltas := []sessionConfigDelta{{axis: "thought_level", effortOverride: &level}}
+	cfgState, err := s.resolveSessionConfigDeltas(ctx, sess, deltas)
 	if err != nil {
 		return SessionConfigState{}, &RPCError{Code: ErrInvalidParams, Message: "session/set_config_option: " + err.Error()}
 	}
-	if err := s.rebuildSession(ctx, sess, cfgState, delta); err != nil {
+	if err := s.rebuildSession(ctx, sess, cfgState, deltas); err != nil {
 		return SessionConfigState{}, err
 	}
 	return cfgState, nil
 }
 
 func (s *service) switchSessionRuntimeProfile(ctx context.Context, sess *acpSession, profile string) (SessionConfigState, error) {
-	delta := sessionConfigDelta{axis: "work_mode", runtimeProfile: profile}
-	cfgState, err := s.resolveSessionConfigDelta(ctx, sess, delta)
+	deltas := []sessionConfigDelta{{axis: "work_mode", runtimeProfile: profile}}
+	cfgState, err := s.resolveSessionConfigDeltas(ctx, sess, deltas)
 	if err != nil {
 		return SessionConfigState{}, &RPCError{Code: ErrInvalidParams, Message: "session/set_config_option: " + err.Error()}
 	}
-	if err := s.rebuildSession(ctx, sess, cfgState, delta); err != nil {
+	if err := s.rebuildSession(ctx, sess, cfgState, deltas); err != nil {
 		return SessionConfigState{}, err
 	}
 	return cfgState, nil
@@ -1228,16 +1298,19 @@ func (s *service) switchSessionToolApproval(ctx context.Context, sess *acpSessio
 	return cfgState, nil
 }
 
-func (s *service) rebuildSession(ctx context.Context, sess *acpSession, cfgState SessionConfigState, delta sessionConfigDelta) error {
+func (s *service) rebuildSession(ctx context.Context, sess *acpSession, cfgState SessionConfigState, deltas []sessionConfigDelta) error {
 	if !sess.stateChangeMu.TryLock() {
-		// Preserve the existing last-write-wins queue contract: a config change
-		// arriving during a controller build returns immediately and is applied
-		// after that build. Collaboration/approval changes do not use this queue;
-		// they wait for the swap and then update the replacement controller.
+		// Preserve the existing queue contract: a config change arriving during
+		// a controller build returns immediately and is applied after that
+		// build. The queue keeps one delta per axis (last-write-wins within an
+		// axis), so changes queued for different axes never clobber each other.
+		// Collaboration/approval changes do not use this queue; they wait for
+		// the swap and then update the replacement controller.
 		sess.mu.Lock()
 		if sess.maintenanceDone != nil && !sess.deleted {
-			pending := delta.clone()
-			sess.pendingConfig = &pending
+			for _, delta := range deltas {
+				sess.pendingConfig = mergePendingConfig(sess.pendingConfig, delta)
+			}
 			sess.mu.Unlock()
 			sess.sink.send(configOptionUpdate{SessionUpdate: "config_option_update", ConfigOptions: cfgState.ConfigOptions})
 			return nil
@@ -1246,7 +1319,7 @@ func (s *service) rebuildSession(ctx context.Context, sess *acpSession, cfgState
 		sess.stateChangeMu.Lock()
 	}
 	didMaintenance := false
-	err := s.rebuildSessionLocked(ctx, sess, cfgState, delta, &didMaintenance)
+	err := s.rebuildSessionLocked(ctx, sess, cfgState, deltas, &didMaintenance)
 	sess.stateChangeMu.Unlock()
 	if err == nil && didMaintenance {
 		s.reportPendingSessionConfigError(ctx, sess, s.applyPendingSessionConfig(ctx, sess), "after maintenance")
@@ -1254,7 +1327,7 @@ func (s *service) rebuildSession(ctx context.Context, sess *acpSession, cfgState
 	return err
 }
 
-func (s *service) rebuildSessionLocked(ctx context.Context, sess *acpSession, cfgState SessionConfigState, delta sessionConfigDelta, didMaintenance *bool) (retErr error) {
+func (s *service) rebuildSessionLocked(ctx context.Context, sess *acpSession, cfgState SessionConfigState, deltas []sessionConfigDelta, didMaintenance *bool) (retErr error) {
 	sess.mu.Lock()
 	if sess.deleted {
 		sess.mu.Unlock()
@@ -1270,15 +1343,18 @@ func (s *service) rebuildSessionLocked(ctx context.Context, sess *acpSession, cf
 		return sessionConfigActiveWorkError("stop background jobs before switching config")
 	}
 	if sess.running || status.Running || sess.maintenanceDone != nil {
-		pending := delta.clone()
-		sess.pendingConfig = &pending
+		for _, delta := range deltas {
+			sess.pendingConfig = mergePendingConfig(sess.pendingConfig, delta)
+		}
 		sess.mu.Unlock()
 		sess.sink.send(configOptionUpdate{SessionUpdate: "config_option_update", ConfigOptions: cfgState.ConfigOptions})
 		return nil
 	}
-	// Claim the queue in the same critical section that raises maintenanceDone
-	// below: begin must never observe an idle session between the two.
-	sess.pendingConfig = nil
+	// Claim this rebuild's axes from the queue in the same critical section
+	// that raises maintenanceDone below: begin must never observe an idle
+	// session between the two. Axes queued by other requests stay queued and
+	// are drained by the post-maintenance apply.
+	sess.pendingConfig = removePendingAxes(sess.pendingConfig, deltas)
 
 	cur := sess.ctrl
 	sink := sess.sink
@@ -1396,6 +1472,19 @@ func (s *service) rebuildSessionLocked(ctx context.Context, sess *acpSession, cf
 	}
 	sess.mu.Unlock()
 
+	// Persist the adopted history now: the system-prompt splice above only
+	// refreshed the new controller's memory, nothing snapshots an idle session
+	// again (session/close does not), and load/resume replays the transcript
+	// exactly as saved — without this a switch → close → load would resume the
+	// outgoing profile's contract from disk. Snapshot only after the swap so a
+	// failed swap never leaves the old controller conflicting with a rewritten
+	// transcript.
+	if prevPath != "" {
+		if err := newCtrl.Snapshot(); err != nil {
+			slog.Warn("acp: snapshot after config switch", "err", err)
+		}
+	}
+
 	cur.ReleaseResources()
 	s.sendAvailableCommands(sess)
 	sink.send(configOptionUpdate{SessionUpdate: "config_option_update", ConfigOptions: cfgState.ConfigOptions})
@@ -1407,37 +1496,38 @@ func (s *service) applyPendingSessionConfig(ctx context.Context, sess *acpSessio
 		return nil
 	}
 	sess.mu.Lock()
-	if sess.deleted || sess.pendingConfig == nil {
+	if sess.deleted || len(sess.pendingConfig) == 0 {
 		sess.mu.Unlock()
 		return nil
 	}
-	delta := sess.pendingConfig.clone()
+	deltas := clonePendingConfig(sess.pendingConfig)
 	// Keep pendingConfig set while rebuilding: begin refuses new turns until
 	// rebuildSession claims it together with raising maintenanceDone, so no
 	// promptable instant is visible in between.
 	sess.mu.Unlock()
 
 	// Re-resolve against the session's current state rather than reusing
-	// whatever baseline existed when this delta queued: another axis may have
+	// whatever baseline existed when each delta queued: another axis may have
 	// finished rebuilding in the meantime, and replaying its old value here
-	// would silently roll it back.
-	cfgState, err := s.resolveSessionConfigDelta(ctx, sess, delta)
+	// would silently roll it back. All queued axes resolve into one state so a
+	// single rebuild applies them together.
+	cfgState, err := s.resolveSessionConfigDeltas(ctx, sess, deltas)
 	if err != nil {
 		sess.mu.Lock()
 		if !sess.deleted && !sess.running && sess.maintenanceDone == nil {
-			sess.pendingConfig = nil
+			sess.pendingConfig = removePendingAxes(sess.pendingConfig, deltas)
 		}
 		sess.mu.Unlock()
 		return err
 	}
 
-	if err := s.rebuildSession(ctx, sess, cfgState, delta); err != nil {
-		// Once this attempt failed nothing in flight is left to retry a parked
-		// config, and begin refuses new turns while one is queued — drop it so
-		// the session stays promptable (the caller reports the failure).
+	if err := s.rebuildSession(ctx, sess, cfgState, deltas); err != nil {
+		// Once this attempt failed nothing in flight is left to retry the
+		// parked axes, and begin refuses new turns while any are queued — drop
+		// them so the session stays promptable (the caller reports the failure).
 		sess.mu.Lock()
 		if !sess.deleted && !sess.running && sess.maintenanceDone == nil {
-			sess.pendingConfig = nil
+			sess.pendingConfig = removePendingAxes(sess.pendingConfig, deltas)
 		}
 		sess.mu.Unlock()
 		return err

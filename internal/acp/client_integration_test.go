@@ -411,7 +411,7 @@ func TestRebuildSessionKeepsClientIOAndMode(t *testing.T) {
 	})
 	sess.ctrl = oldCtrl
 
-	if err := svc.rebuildSession(context.Background(), sess, SessionConfigState{Model: "pro"}, sessionConfigDelta{axis: "model", model: "pro"}); err != nil {
+	if err := svc.rebuildSession(context.Background(), sess, SessionConfigState{Model: "pro"}, []sessionConfigDelta{{axis: "model", model: "pro"}}); err != nil {
 		t.Fatalf("rebuildSession: %v", err)
 	}
 	if sess.ctrl == oldCtrl {
