@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -97,6 +98,16 @@ func (c *externalOpenerCatalogCache) get() []externalOpenerSpec {
 
 func cachedPlatformExternalOpenerSpecs() []externalOpenerSpec {
 	return platformExternalOpenerCatalog.get()
+}
+
+// startDetachedExternalOpener reaps the launched process in the background so
+// exited children do not pile up as zombies for the desktop app's lifetime.
+func startDetachedExternalOpener(cmd *exec.Cmd) error {
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go func() { _ = cmd.Wait() }()
+	return nil
 }
 
 func externalOpenerByID(specs []externalOpenerSpec, id string) (externalOpenerSpec, bool) {

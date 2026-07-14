@@ -115,13 +115,22 @@ export function ExternalOpener({
       setBusy(true);
       setMenuOpen(false);
       try {
-        if (persist && opener.id !== state.preferred) {
-          await bridge.SetPreferredExternalOpener(opener.id);
-          setState((current) => ({ ...current, preferred: opener.id }));
+        // Launch before persisting so a config-write failure cannot block the
+        // launch and a failed launch never becomes the saved preference.
+        try {
+          await bridge.OpenWorkspaceInExternalOpenerForTab(tabId, opener.id);
+        } catch (error) {
+          showToast(t("externalOpener.failed", { name: opener.name, error: errorText(error) }), "error");
+          return;
         }
-        await bridge.OpenWorkspaceInExternalOpenerForTab(tabId, opener.id);
-      } catch (error) {
-        showToast(t("externalOpener.failed", { name: opener.name, error: errorText(error) }), "error");
+        if (persist && opener.id !== state.preferred) {
+          try {
+            await bridge.SetPreferredExternalOpener(opener.id);
+            setState((current) => ({ ...current, preferred: opener.id }));
+          } catch (error) {
+            showToast(t("externalOpener.persistFailed", { name: opener.name, error: errorText(error) }), "error");
+          }
+        }
       } finally {
         busyRef.current = false;
         setBusy(false);

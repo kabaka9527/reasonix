@@ -258,14 +258,15 @@ func platformExternalOpenerIconDataURL(spec externalOpenerSpec) string {
 	return externalOpenerIconFileDataURL(spec.IconSource)
 }
 
-func launchPlatformExternalOpener(spec externalOpenerSpec, path string) error {
+func linuxExternalOpenerCommand(spec externalOpenerSpec, path string) (*exec.Cmd, error) {
+	target := spec.Target
 	var args []string
 	switch spec.LaunchMode {
 	case "path":
 		args = []string{path}
 	case "gio":
 		args = []string{"launch", spec.Target, path}
-		spec.Target = linuxExecutable("gio")
+		target = linuxExecutable("gio")
 	case "ghostty", "gnome-terminal":
 		args = []string{"--working-directory=" + path}
 	case "konsole":
@@ -275,10 +276,18 @@ func launchPlatformExternalOpener(spec externalOpenerSpec, path string) error {
 	case "alacritty":
 		args = []string{"--working-directory", path}
 	}
-	if spec.Target == "" {
-		return os.ErrNotExist
+	if target == "" {
+		return nil, os.ErrNotExist
 	}
-	cmd := exec.Command(spec.Target, args...)
+	cmd := exec.Command(target, args...)
 	cmd.Dir = path
-	return cmd.Start()
+	return cmd, nil
+}
+
+func launchPlatformExternalOpener(spec externalOpenerSpec, path string) error {
+	cmd, err := linuxExternalOpenerCommand(spec, path)
+	if err != nil {
+		return err
+	}
+	return startDetachedExternalOpener(cmd)
 }

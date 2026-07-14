@@ -176,5 +176,5 @@ func darwinExternalOpenerCommand(spec externalOpenerSpec, path string) *exec.Cmd
 }
 
 func launchPlatformExternalOpener(spec externalOpenerSpec, path string) error {
-	return darwinExternalOpenerCommand(spec, path).Start()
+	return startDetachedExternalOpener(darwinExternalOpenerCommand(spec, path))
 }

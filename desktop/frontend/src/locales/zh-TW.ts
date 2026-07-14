@@ -1632,6 +1632,7 @@ export const zhTW: Record<DictKey, string> = {
   "externalOpener.openIn": "使用 {name} 開啟",
   "externalOpener.choose": "選擇開啟應用程式",
   "externalOpener.failed": "無法使用 {name} 開啟：{error}",
+  "externalOpener.persistFailed": "已開啟，但無法將 {name} 儲存為預設：{error}",
   "workspace.filterReferencedFiles": "篩選依賴檔案…",
   "workspace.clearFileScope": "顯示完整檔案樹",
   "workspace.clearChangeScope": "顯示全部改動",

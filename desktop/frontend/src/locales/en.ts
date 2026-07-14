@@ -158,6 +158,7 @@ export const en = {
   "externalOpener.openIn": "Open in {name}",
   "externalOpener.choose": "Choose application",
   "externalOpener.failed": "Could not open {name}: {error}",
+  "externalOpener.persistFailed": "Opened, but could not save {name} as default: {error}",
 
   // scope labels
   "scope.global": "Scope: Global",

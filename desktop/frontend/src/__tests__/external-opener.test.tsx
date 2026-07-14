@@ -5,7 +5,7 @@ import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 
 import { ExternalOpener, type ExternalOpenerBridge } from "../components/ExternalOpener";
-import { LocaleProvider } from "../lib/i18n";
+import { LocaleProvider, t } from "../lib/i18n";
 import { ToastProvider } from "../lib/toast";
 import type { ExternalOpenersView } from "../lib/types";
 
@@ -175,6 +175,77 @@ await act(async () => {
 ok(raceContainer.textContent?.includes("Xcode") === true && !raceContainer.textContent?.includes("Stale Editor"), "a stale discovery cannot replace the current menu");
 await act(async () => raceRoot.unmount());
 raceContainer.remove();
+
+const failureLog: string[] = [];
+let failOpen = true;
+let failPersist = false;
+const failureBridge: ExternalOpenerBridge = {
+  async ExternalOpeners() {
+    return {
+      openers: [
+        { id: "finder", name: "Finder", kind: "file-manager" },
+        { id: "xcode", name: "Xcode", kind: "editor" },
+      ],
+      preferred: "finder",
+    };
+  },
+  async SetPreferredExternalOpener(id) {
+    failureLog.push(`persist:${id}`);
+    if (failPersist) throw new Error("disk full");
+  },
+  async OpenWorkspaceInExternalOpenerForTab(_tabId, id) {
+    failureLog.push(`open:${id}`);
+    if (failOpen) throw new Error("spawn failed");
+  },
+};
+const failureContainer = document.createElement("div");
+document.body.append(failureContainer);
+const failureRoot = createRoot(failureContainer);
+await act(async () => {
+  failureRoot.render(
+    <LocaleProvider>
+      <ToastProvider>
+        <ExternalOpener tabId="fail-tab" dismissSignal={0} bridge={failureBridge} />
+      </ToastProvider>
+    </LocaleProvider>,
+  );
+  await flush();
+});
+const clickXcodeMenuItem = async () => {
+  await act(async () => {
+    failureContainer
+      .querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]')
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await flush();
+  });
+  await act(async () => {
+    Array.from(failureContainer.querySelectorAll<HTMLButtonElement>('button[role="menuitemradio"]'))
+      .find((button) => button.textContent?.includes("Xcode"))
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await flush();
+  });
+};
+const toastTexts = () =>
+  Array.from(failureContainer.querySelectorAll(".toast--error .toast__text")).map((node) => node.textContent);
+
+await clickXcodeMenuItem();
+ok(failureLog.join(",") === "open:xcode", "a failed launch never persists the preference");
+ok(
+  toastTexts().includes(t("externalOpener.failed", { name: "Xcode", error: "spawn failed" })),
+  "a failed launch reports the launch error",
+);
+
+failOpen = false;
+failPersist = true;
+failureLog.length = 0;
+await clickXcodeMenuItem();
+ok(failureLog.join(",") === "open:xcode,persist:xcode", "the application launches before the preference write");
+ok(
+  toastTexts().includes(t("externalOpener.persistFailed", { name: "Xcode", error: "disk full" })),
+  "a failed preference write reports the save error after opening",
+);
+await act(async () => failureRoot.unmount());
+failureContainer.remove();
 
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
 if (failed > 0) process.exit(1);

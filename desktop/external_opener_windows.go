@@ -275,5 +275,5 @@ func launchPlatformExternalOpener(spec externalOpenerSpec, path string) error {
 	default:
 		cmd = exec.Command(spec.Target, path)
 	}
-	return cmd.Start()
+	return startDetachedExternalOpener(cmd)
 }

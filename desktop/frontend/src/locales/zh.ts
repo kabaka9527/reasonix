@@ -159,6 +159,7 @@ export const zh: Record<DictKey, string> = {
   "externalOpener.openIn": "使用 {name} 打开",
   "externalOpener.choose": "选择打开应用",
   "externalOpener.failed": "无法使用 {name} 打开：{error}",
+  "externalOpener.persistFailed": "已打开，但无法将 {name} 保存为默认：{error}",
 
   // 范围标签
   "scope.global": "范围：全局",
