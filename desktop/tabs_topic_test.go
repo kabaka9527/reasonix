@@ -368,6 +368,11 @@ func assertTopicFullyDeleted(t *testing.T, projectRoot, topicID string) {
 	if got := loadTopicCreatedAts(projectRoot); got[topicID] != 0 {
 		t.Fatalf("created-at = %d, want deleted (all created: %v)", got[topicID], got)
 	}
+	if got := loadTopicAutoTitleMeta(projectRoot); got != nil {
+		if meta, ok := got[topicID]; ok {
+			t.Fatalf("auto-title meta = %+v, want deleted (all auto-title meta: %v)", meta, got)
+		}
+	}
 	f := loadProjectsFile()
 	i := projectIndexByRoot(f.Projects, projectRoot)
 	if i < 0 {
@@ -399,9 +404,8 @@ func TestDeleteTopicRetryAfterPartialFailureCompletesCleanup(t *testing.T) {
 		t.Fatalf("index topic: %v", err)
 	}
 
-	// Inject a failure between the title removal and the rest of the cleanup:
-	// swapping the title-sources file for a directory makes its load fail
-	// right after the title entry is already gone.
+	// Inject a failure before title removal: swapping the title-sources file
+	// for a directory makes its load fail while the title locator is intact.
 	sourcesPath := topicTitleSourcesPath(projectRoot)
 	backupPath := sourcesPath + ".bak"
 	if err := os.Rename(sourcesPath, backupPath); err != nil {
@@ -513,6 +517,67 @@ func TestDeleteTopicTitleOnlyRetryAfterSourceFailureCompletesCleanup(t *testing.
 		t.Fatalf("retry delete: %v", err)
 	}
 	assertTopicFullyDeleted(t, projectRoot, topicID)
+}
+
+func TestDeleteTopicTitleOnlyRetryAfterSecondaryMetadataFailureCompletesCleanup(t *testing.T) {
+	tests := []struct {
+		name string
+		path func(string) string
+	}{
+		{name: "created-at", path: topicCreatedAtsPath},
+		{name: "auto-title-meta", path: topicAutoTitleMetaPath},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolateDesktopUserDirs(t)
+
+			projectRoot := t.TempDir()
+			topicID := "topic_title_only_" + strings.ReplaceAll(tt.name, "-", "_")
+			if err := addProject(projectRoot, ""); err != nil {
+				t.Fatalf("add project: %v", err)
+			}
+			if err := setTopicTitle(projectRoot, topicID, "Doomed"); err != nil {
+				t.Fatalf("set topic title: %v", err)
+			}
+			if err := setTopicCreatedAt(projectRoot, topicID, 4242); err != nil {
+				t.Fatalf("set created-at: %v", err)
+			}
+			if err := recordTopicAutoTitleMeta(projectRoot, topicID, autoTopicTitleProposal{
+				Stage: 1, UserTurns: 1, BasisHash: "review-basis",
+			}); err != nil {
+				t.Fatalf("record auto-title meta: %v", err)
+			}
+
+			blockedPath := tt.path(projectRoot)
+			backupPath := blockedPath + ".bak"
+			if err := os.Rename(blockedPath, backupPath); err != nil {
+				t.Fatalf("stash %s: %v", tt.name, err)
+			}
+			if err := os.Mkdir(blockedPath, 0o755); err != nil {
+				t.Fatalf("block %s: %v", tt.name, err)
+			}
+
+			app := NewApp()
+			if err := app.DeleteTopic(topicID); err == nil {
+				t.Fatalf("delete with failing %s cleanup should report an error", tt.name)
+			}
+			if got := loadTopicTitle(projectRoot, topicID); got != "Doomed" {
+				t.Fatalf("failed attempt must keep the title as the root locator, got %q", got)
+			}
+
+			if err := os.Remove(blockedPath); err != nil {
+				t.Fatalf("unblock %s: %v", tt.name, err)
+			}
+			if err := os.Rename(backupPath, blockedPath); err != nil {
+				t.Fatalf("restore %s: %v", tt.name, err)
+			}
+			if err := app.DeleteTopic(topicID); err != nil {
+				t.Fatalf("retry delete after %s failure: %v", tt.name, err)
+			}
+			assertTopicFullyDeleted(t, projectRoot, topicID)
+		})
+	}
 }
 
 func TestDeleteTopicIgnoresUnrelatedProjectMetadataDamage(t *testing.T) {

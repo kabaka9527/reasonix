@@ -5219,16 +5219,16 @@ func setTopicCreatedAt(workspaceRoot, topicID string, createdAt int64) error {
 	return saveTopicCreatedAts(workspaceRoot, created)
 }
 
-func deleteTopicCreatedAt(workspaceRoot, topicID string) {
+func deleteTopicCreatedAt(workspaceRoot, topicID string) error {
 	created, err := loadTopicCreatedAtsForUpdate(workspaceRoot)
 	if err != nil {
-		return
+		return err
 	}
 	if _, ok := created[topicID]; !ok {
-		return
+		return nil
 	}
 	delete(created, topicID)
-	_ = saveTopicCreatedAts(workspaceRoot, created)
+	return saveTopicCreatedAts(workspaceRoot, created)
 }
 
 // topicIndexMu serializes recovery writes to desktop-projects.json and topic
@@ -6372,8 +6372,12 @@ func (a *App) deleteTopic(topicID string) error {
 				return err
 			}
 		}
-		deleteTopicCreatedAt(root, topicID)
-		_ = deleteTopicAutoTitleMeta(root, topicID)
+		if err := deleteTopicCreatedAt(root, topicID); err != nil {
+			return err
+		}
+		if err := deleteTopicAutoTitleMeta(root, topicID); err != nil {
+			return err
+		}
 		if hasTitle {
 			delete(titles, topicID)
 			if err := saveTopicTitles(root, titles); err != nil {
