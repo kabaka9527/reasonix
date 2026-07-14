@@ -517,3 +517,52 @@ func TestACPWorkModeSwitchPersistsRefreshedSystemPromptAcrossReload(t *testing.T
 		t.Fatalf("loaded history = %+v, want carried user/assistant turns preserved", history)
 	}
 }
+
+// TestACPWorkModeSwitchSnapshotFailureKeepsOutgoingController proves failure
+// atomicity for the switch-time persistence step. If the refreshed history
+// cannot be written, the service must return an error and leave the outgoing
+// controller/config active instead of publishing an in-memory-only switch.
+func TestACPWorkModeSwitchSnapshotFailureKeepsOutgoingController(t *testing.T) {
+	dir := t.TempDir()
+	invalidPath := filepath.Join(dir, "transcript-is-a-directory")
+	if err := os.Mkdir(invalidPath, 0o755); err != nil {
+		t.Fatalf("mkdir invalid transcript path: %v", err)
+	}
+
+	oldSession := agent.NewSession("system prompt for profile balanced")
+	oldSession.Add(provider.Message{Role: provider.RoleUser, Content: "hello"})
+	oldSession.Add(provider.Message{Role: provider.RoleAssistant, Content: "hi"})
+	oldCtrl := &snapshotLockProbeController{Controller: control.New(control.Options{
+		Executor:    agent.New(nil, nil, oldSession, agent.Options{}, event.Discard),
+		SessionDir:  dir,
+		SessionPath: invalidPath,
+		Label:       "balanced",
+	})}
+	t.Cleanup(oldCtrl.Close)
+
+	sess := &acpSession{
+		id:             "sess-profile-persist-failure",
+		ctrl:           oldCtrl,
+		sink:           newUpdateSink(&fakeNotifier{}, "sess-profile-persist-failure"),
+		cwd:            dir,
+		model:          "fast",
+		runtimeProfile: "balanced",
+		transcript:     invalidPath,
+	}
+	svc := &service{
+		factory:  &profileSystemPromptFactory{dir: dir},
+		sessions: map[string]*acpSession{sess.id: sess},
+	}
+
+	deltas := []sessionConfigDelta{{axis: "work_mode", runtimeProfile: "delivery"}}
+	err := svc.rebuildSession(context.Background(), sess, SessionConfigState{RuntimeProfile: "delivery"}, deltas)
+	if err == nil || !strings.Contains(err.Error(), "snapshot after switch") {
+		t.Fatalf("rebuildSession error = %v, want snapshot after switch failure", err)
+	}
+	if got := sess.currentCtrl(); got != oldCtrl {
+		t.Fatalf("controller changed after persistence failure: got %T %p, want outgoing %p", got, got, oldCtrl)
+	}
+	if got := sess.runtimeProfile; got != "balanced" {
+		t.Fatalf("runtime profile = %q, want outgoing balanced after persistence failure", got)
+	}
+}

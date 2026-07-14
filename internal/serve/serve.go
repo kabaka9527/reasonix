@@ -216,6 +216,16 @@ func (s *Server) switchModel(ctx context.Context, ref string) error {
 	if prev, ok := cur.(*control.Controller); ok {
 		newCtrl.RestoreSessionAuthorizations(prev.SessionAuthorizations())
 	}
+	// Persist before publishing the replacement. A failed write leaves cur and
+	// the on-disk transcript coherent and lets the caller retry; publishing first
+	// would report a successful switch whose refreshed system contract disappears
+	// on restart. AdoptHistory retained the loaded CAS baseline for this rewrite.
+	if newPath != "" {
+		if err := newCtrl.Snapshot(); err != nil {
+			newCtrl.Close()
+			return fmt.Errorf("switch model: snapshot adopted history: %w", err)
+		}
+	}
 
 	// Publish the swap under a short write lock. bindMu already serializes
 	// switches — today the only writer of s.ctrl — so the identity re-check is
@@ -238,17 +248,6 @@ func (s *Server) switchModel(ctx context.Context, ref string) error {
 	// by this process, so failure is theoretical.
 	if err := s.rebindSessionLease(newPath); err != nil {
 		slog.Warn("serve: session lease after model switch", "err", err)
-	}
-
-	// Persist the adopted history now: the system-prompt splice above only
-	// refreshed the new controller's memory and nothing snapshots an idle
-	// session again, so a restart + /resume would otherwise revive the outgoing
-	// controller's contract from disk. Snapshot only after the swap so a failed
-	// swap never leaves cur conflicting with a rewritten transcript.
-	if newPath != "" {
-		if err := newCtrl.Snapshot(); err != nil {
-			slog.Warn("serve: snapshot after model switch", "err", err)
-		}
 	}
 
 	// Off-lock: tear down the old controller. Close can block up to 15s.

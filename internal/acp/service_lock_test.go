@@ -3,6 +3,8 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -191,6 +193,55 @@ type blockingConfigFactory struct {
 	releaseFirst chan struct{}
 }
 
+type blockingResolveFactory struct {
+	configurableFactory
+	proReached   chan struct{}
+	releasePro   chan struct{}
+	fastResolved chan struct{}
+	proOnce      sync.Once
+	fastOnce     sync.Once
+}
+
+func (f *blockingResolveFactory) SessionConfigState(ctx context.Context, p SessionConfigStateParams) (SessionConfigState, error) {
+	switch p.Model {
+	case "pro":
+		f.proOnce.Do(func() { close(f.proReached) })
+		select {
+		case <-f.releasePro:
+		case <-ctx.Done():
+			return SessionConfigState{}, ctx.Err()
+		}
+	case "fast":
+		f.fastOnce.Do(func() { close(f.fastResolved) })
+	}
+	return f.configurableFactory.SessionConfigState(ctx, p)
+}
+
+type failFirstBuildFactory struct {
+	configurableFactory
+	started  chan struct{}
+	release  chan struct{}
+	mu       sync.Mutex
+	attempts int
+}
+
+func (f *failFirstBuildFactory) NewSession(ctx context.Context, p SessionParams) (*control.Controller, error) {
+	f.mu.Lock()
+	f.attempts++
+	attempt := f.attempts
+	f.mu.Unlock()
+	if attempt == 1 {
+		close(f.started)
+		select {
+		case <-f.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return nil, errors.New("first build failed")
+	}
+	return f.configurableFactory.NewSession(ctx, p)
+}
+
 func (f *blockingConfigFactory) NewSession(ctx context.Context, p SessionParams) (*control.Controller, error) {
 	select {
 	case f.started <- p.Model:
@@ -286,10 +337,14 @@ func TestACPRebuildSessionQueuedCrossAxisChangeDoesNotRollbackCompletedAxis(t *t
 		sessions: map[string]*acpSession{sess.id: sess},
 	}
 
-	errs := make(chan error, 1)
+	type switchResult struct {
+		state SessionConfigState
+		err   error
+	}
+	results := make(chan switchResult, 1)
 	go func() {
-		_, err := svc.switchSessionModel(context.Background(), sess, "pro")
-		errs <- err
+		state, err := svc.switchSessionModel(context.Background(), sess, "pro")
+		results <- switchResult{state: state, err: err}
 	}()
 	select {
 	case got := <-factory.started:
@@ -310,9 +365,12 @@ func TestACPRebuildSessionQueuedCrossAxisChangeDoesNotRollbackCompletedAxis(t *t
 
 	close(factory.releaseFirst)
 	select {
-	case err := <-errs:
-		if err != nil {
-			t.Fatalf("model switch: %v", err)
+	case result := <-results:
+		if result.err != nil {
+			t.Fatalf("model switch: %v", result.err)
+		}
+		if result.state.Model != "pro" || result.state.RuntimeProfile != "delivery" {
+			t.Fatalf("model switch response = model %q, profile %q; want final pro/delivery state after pending drain", result.state.Model, result.state.RuntimeProfile)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("model switch did not finish")
@@ -638,6 +696,196 @@ func TestACPPendingConfigMergesAxesQueuedDuringActiveTurn(t *testing.T) {
 	}
 	if got := factory.buildCount(); got != 1 {
 		t.Fatalf("factory builds = %d, want a single merged rebuild", got)
+	}
+}
+
+// TestACPApplyPendingClaimsStateBeforeResolving pins request order for one
+// axis. The pending drain must own stateChangeMu before it clones/resolves the
+// old value; otherwise a newer explicit switch can rebuild first and the stale
+// clone then queues behind it, making the older request win last.
+func TestACPApplyPendingClaimsStateBeforeResolving(t *testing.T) {
+	factory := &blockingResolveFactory{
+		proReached:   make(chan struct{}),
+		releasePro:   make(chan struct{}),
+		fastResolved: make(chan struct{}),
+	}
+	sess := &acpSession{
+		id:             "sess-pending-order",
+		ctrl:           control.New(control.Options{}),
+		sink:           newUpdateSink(&fakeNotifier{}, "sess-pending-order"),
+		cwd:            t.TempDir(),
+		model:          "fast",
+		runtimeProfile: "balanced",
+		pendingConfig: []sessionConfigDelta{
+			{axis: "model", model: "pro"},
+			{axis: "work_mode", runtimeProfile: "delivery"},
+		},
+	}
+	svc := &service{factory: factory, sessions: map[string]*acpSession{sess.id: sess}}
+
+	applyDone := make(chan error, 1)
+	go func() { applyDone <- svc.applyPendingSessionConfig(context.Background(), sess) }()
+	select {
+	case <-factory.proReached:
+	case <-time.After(time.Second):
+		t.Fatal("pending config did not reach blocked resolution")
+	}
+
+	claimed := !sess.stateChangeMu.TryLock()
+	if !claimed {
+		sess.stateChangeMu.Unlock()
+	}
+
+	newerDone := make(chan error, 1)
+	go func() {
+		_, err := svc.switchSessionModel(context.Background(), sess, "fast")
+		newerDone <- err
+	}()
+	select {
+	case <-factory.fastResolved:
+	case <-time.After(time.Second):
+		close(factory.releasePro)
+		t.Fatal("newer model request did not resolve")
+	}
+	close(factory.releasePro)
+	if !claimed {
+		t.Fatal("pending apply resolved without stateChangeMu; a newer same-axis request can overtake it")
+	}
+
+	select {
+	case err := <-applyDone:
+		if err != nil {
+			t.Fatalf("applyPendingSessionConfig: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pending apply did not finish")
+	}
+	select {
+	case err := <-newerDone:
+		if err != nil {
+			t.Fatalf("newer switchSessionModel: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("newer model request did not finish")
+	}
+	if got := sess.model; got != "fast" {
+		t.Fatalf("session model = %q, want latest requested value fast", got)
+	}
+	if got := sess.runtimeProfile; got != "delivery" {
+		t.Fatalf("runtime profile = %q, want pending different-axis value delivery preserved", got)
+	}
+}
+
+// TestACPFailedRebuildStillDrainsNewerPendingConfig covers a failed build with
+// a newer request queued during maintenance. The newer request already returned
+// success, so it must still apply and clear the queue even though the older
+// rebuild reports its own failure.
+func TestACPFailedRebuildStillDrainsNewerPendingConfig(t *testing.T) {
+	factory := &failFirstBuildFactory{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	sess := &acpSession{
+		id:             "sess-failed-drain",
+		ctrl:           control.New(control.Options{}),
+		sink:           newUpdateSink(&fakeNotifier{}, "sess-failed-drain"),
+		cwd:            t.TempDir(),
+		model:          "fast",
+		runtimeProfile: "balanced",
+	}
+	svc := &service{factory: factory, sessions: map[string]*acpSession{sess.id: sess}}
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := svc.switchSessionModel(context.Background(), sess, "pro")
+		firstDone <- err
+	}()
+	select {
+	case <-factory.started:
+	case <-time.After(time.Second):
+		t.Fatal("first rebuild did not start")
+	}
+
+	if _, err := svc.switchSessionModel(context.Background(), sess, "fast"); err != nil {
+		t.Fatalf("queue newer model request: %v", err)
+	}
+	close(factory.release)
+	select {
+	case err := <-firstDone:
+		if err == nil || !strings.Contains(err.Error(), "first build failed") {
+			t.Fatalf("first rebuild error = %v, want first build failed", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first rebuild did not finish")
+	}
+
+	if got := sess.model; got != "fast" {
+		t.Fatalf("session model = %q, want newer pending value fast", got)
+	}
+	sess.mu.Lock()
+	queued := len(sess.pendingConfig)
+	sess.mu.Unlock()
+	if queued != 0 {
+		t.Fatalf("pending config entries = %d, want drained after failed maintenance", queued)
+	}
+	if got := factory.configurableFactory.buildCount(); got != 1 {
+		t.Fatalf("successful replacement builds = %d, want one pending rebuild", got)
+	}
+	_, cancel, ok := sess.begin(context.Background())
+	if !ok {
+		t.Fatal("session stayed blocked after failed rebuild drained its pending request")
+	}
+	cancel()
+	sess.finish()
+}
+
+func TestACPReportPendingConfigFailureRestoresClientState(t *testing.T) {
+	notifier := &fakeNotifier{}
+	sess := &acpSession{
+		id:               "sess-pending-failure-update",
+		ctrl:             control.New(control.Options{}),
+		sink:             newUpdateSink(notifier, "sess-pending-failure-update"),
+		cwd:              t.TempDir(),
+		model:            "fast",
+		runtimeProfile:   "balanced",
+		toolApprovalMode: control.ToolApprovalAsk,
+	}
+	svc := &service{factory: &configurableFactory{}, sessions: map[string]*acpSession{sess.id: sess}}
+
+	svc.reportPendingSessionConfigError(context.Background(), sess, errors.New("replacement build failed"), "after maintenance")
+
+	notifier.mu.Lock()
+	notifs := append([]capturedNotif(nil), notifier.notifs...)
+	notifier.mu.Unlock()
+	found := false
+	for _, notif := range notifs {
+		raw, err := json.Marshal(notif.params)
+		if err != nil {
+			t.Fatalf("marshal notification: %v", err)
+		}
+		var payload struct {
+			Update struct {
+				SessionUpdate string                `json:"sessionUpdate"`
+				ConfigOptions []SessionConfigOption `json:"configOptions"`
+			} `json:"update"`
+		}
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			t.Fatalf("decode notification: %v", err)
+		}
+		if payload.Update.SessionUpdate != "config_option_update" {
+			continue
+		}
+		model, ok := findConfigOption(payload.Update.ConfigOptions, "model")
+		if !ok {
+			t.Fatal("rollback config update omitted model option")
+		}
+		if model.CurrentValue != "fast" {
+			t.Fatalf("rollback model = %q, want live value fast", model.CurrentValue)
+		}
+		found = true
+	}
+	if !found {
+		t.Fatal("pending config failure did not restore the client's live config state")
 	}
 }
 

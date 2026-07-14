@@ -1241,17 +1241,7 @@ func (s *service) resolveSessionConfigDeltas(ctx context.Context, sess *acpSessi
 
 func (s *service) switchSessionModel(ctx context.Context, sess *acpSession, modelID string) (SessionConfigState, error) {
 	deltas := []sessionConfigDelta{{axis: "model", model: modelID}}
-	cfgState, err := s.resolveSessionConfigDeltas(ctx, sess, deltas)
-	if err != nil {
-		return SessionConfigState{}, &RPCError{Code: ErrInvalidParams, Message: "session/set_model: " + err.Error()}
-	}
-	if cfgState.Model == "" {
-		return SessionConfigState{}, &RPCError{Code: ErrInvalidRequest, Message: "session/set_model: model switching is unavailable in this session"}
-	}
-	if err := s.rebuildSession(ctx, sess, cfgState, deltas); err != nil {
-		return SessionConfigState{}, err
-	}
-	return cfgState, nil
+	return s.switchSessionConfig(ctx, sess, deltas)
 }
 
 func (s *service) switchSessionEffort(ctx context.Context, sess *acpSession, effort string) (SessionConfigState, error) {
@@ -1260,23 +1250,77 @@ func (s *service) switchSessionEffort(ctx context.Context, sess *acpSession, eff
 		level = ""
 	}
 	deltas := []sessionConfigDelta{{axis: "thought_level", effortOverride: &level}}
-	cfgState, err := s.resolveSessionConfigDeltas(ctx, sess, deltas)
-	if err != nil {
-		return SessionConfigState{}, &RPCError{Code: ErrInvalidParams, Message: "session/set_config_option: " + err.Error()}
-	}
-	if err := s.rebuildSession(ctx, sess, cfgState, deltas); err != nil {
-		return SessionConfigState{}, err
-	}
-	return cfgState, nil
+	return s.switchSessionConfig(ctx, sess, deltas)
 }
 
 func (s *service) switchSessionRuntimeProfile(ctx context.Context, sess *acpSession, profile string) (SessionConfigState, error) {
 	deltas := []sessionConfigDelta{{axis: "work_mode", runtimeProfile: profile}}
-	cfgState, err := s.resolveSessionConfigDeltas(ctx, sess, deltas)
-	if err != nil {
-		return SessionConfigState{}, &RPCError{Code: ErrInvalidParams, Message: "session/set_config_option: " + err.Error()}
+	return s.switchSessionConfig(ctx, sess, deltas)
+}
+
+// switchSessionConfig resolves and applies one explicit config request without
+// letting its full config snapshot roll back another axis. Resolution must be
+// repeated after stateChangeMu is acquired: a different-axis rebuild may finish
+// while this request is resolving or waiting for the lock, making the earlier
+// baseline stale even though this request's own delta is still current.
+func (s *service) switchSessionConfig(ctx context.Context, sess *acpSession, deltas []sessionConfigDelta) (SessionConfigState, error) {
+	resolve := func() (SessionConfigState, error) {
+		cfgState, err := s.resolveSessionConfigDeltas(ctx, sess, deltas)
+		if err != nil {
+			method := "session/set_config_option"
+			if len(deltas) == 1 && deltas[0].axis == "model" {
+				method = "session/set_model"
+			}
+			return SessionConfigState{}, &RPCError{Code: ErrInvalidParams, Message: method + ": " + err.Error()}
+		}
+		if len(deltas) == 1 && deltas[0].axis == "model" && cfgState.Model == "" {
+			return SessionConfigState{}, &RPCError{Code: ErrInvalidRequest, Message: "session/set_model: model switching is unavailable in this session"}
+		}
+		return cfgState, nil
 	}
-	if err := s.rebuildSession(ctx, sess, cfgState, deltas); err != nil {
+
+	if !sess.stateChangeMu.TryLock() {
+		// Preserve the non-blocking queue contract while a rebuild is already in
+		// maintenance. Resolve once for validation and the immediate client update;
+		// the drain resolves the queued deltas again against live state.
+		cfgState, err := resolve()
+		if err != nil {
+			return SessionConfigState{}, err
+		}
+		sess.mu.Lock()
+		if sess.maintenanceDone != nil && !sess.deleted {
+			for _, delta := range deltas {
+				sess.pendingConfig = mergePendingConfig(sess.pendingConfig, delta)
+			}
+			sess.mu.Unlock()
+			sess.sink.send(configOptionUpdate{SessionUpdate: "config_option_update", ConfigOptions: cfgState.ConfigOptions})
+			return cfgState, nil
+		}
+		sess.mu.Unlock()
+		sess.stateChangeMu.Lock()
+	}
+
+	// Always resolve inside the serialization domain. Even a successful TryLock
+	// can follow a concurrent rebuild that completed after this request began.
+	cfgState, err := resolve()
+	if err != nil {
+		sess.stateChangeMu.Unlock()
+		return SessionConfigState{}, err
+	}
+	didMaintenance := false
+	err = s.rebuildSessionLocked(ctx, sess, cfgState, deltas, &didMaintenance)
+	sess.stateChangeMu.Unlock()
+	if didMaintenance {
+		pendingErr := s.applyPendingSessionConfig(ctx, sess)
+		s.reportPendingSessionConfigError(ctx, sess, pendingErr, "after maintenance")
+		// The pending drain completes before this request returns. Refresh the RPC
+		// result so an older response cannot overwrite the newer config_option_update
+		// with the pre-drain full snapshot on the client.
+		if current, stateErr := s.configStateForSession(ctx, sess); stateErr == nil {
+			cfgState = current
+		}
+	}
+	if err != nil {
 		return SessionConfigState{}, err
 	}
 	return cfgState, nil
@@ -1321,8 +1365,9 @@ func (s *service) rebuildSession(ctx context.Context, sess *acpSession, cfgState
 	didMaintenance := false
 	err := s.rebuildSessionLocked(ctx, sess, cfgState, deltas, &didMaintenance)
 	sess.stateChangeMu.Unlock()
-	if err == nil && didMaintenance {
-		s.reportPendingSessionConfigError(ctx, sess, s.applyPendingSessionConfig(ctx, sess), "after maintenance")
+	if didMaintenance {
+		pendingErr := s.applyPendingSessionConfig(ctx, sess)
+		s.reportPendingSessionConfigError(ctx, sess, pendingErr, "after maintenance")
 	}
 	return err
 }
@@ -1409,8 +1454,6 @@ func (s *service) rebuildSessionLocked(ctx context.Context, sess *acpSession, cf
 		return &RPCError{Code: ErrInternal, Message: "session config: " + err.Error()}
 	}
 	newCtrl.EnableInteractiveApproval()
-	sink.bindApprove(newCtrl.Approve)
-	sink.bindAnswer(newCtrl.AnswerQuestion)
 	// The freshly built controller's own leading system message carries the
 	// target profile's contract (see boot/token_profile.go); AdoptHistory below
 	// replaces the whole history with carried, so splice that message in first
@@ -1448,16 +1491,27 @@ func (s *service) rebuildSessionLocked(ctx context.Context, sess *acpSession, cf
 		// trusted this session.
 		newCtrl.RestoreSessionAuthorizations(prev.SessionAuthorizations())
 	}
+	// Persist before publishing the replacement. If this fails, the outgoing
+	// controller and transcript still agree and remain fully usable; publishing
+	// first would report a successful switch whose refreshed profile contract
+	// disappears on restart. AdoptHistory preserves the loaded CAS baseline, so
+	// this compatible leading-system rewrite is safe to snapshot here.
+	if prevPath != "" {
+		if err := newCtrl.Snapshot(); err != nil {
+			newCtrl.ReleaseResources()
+			return &RPCError{Code: ErrInternal, Message: "session config: snapshot after switch: " + err.Error()}
+		}
+	}
 
 	sess.mu.Lock()
 	if sess.deleted {
 		sess.mu.Unlock()
-		newCtrl.Close()
+		newCtrl.ReleaseResources()
 		return &RPCError{Code: ErrInvalidRequest, Message: "session config: session is deleted"}
 	}
 	if sess.ctrl != cur {
 		sess.mu.Unlock()
-		newCtrl.Close()
+		newCtrl.ReleaseResources()
 		return sessionConfigActiveWorkError("session changed while switching config; retry")
 	}
 	sess.ctrl = newCtrl
@@ -1471,19 +1525,8 @@ func (s *service) rebuildSessionLocked(ctx context.Context, sess *acpSession, cf
 		_ = saveACPMeta(sess.transcript, sess.metaLocked())
 	}
 	sess.mu.Unlock()
-
-	// Persist the adopted history now: the system-prompt splice above only
-	// refreshed the new controller's memory, nothing snapshots an idle session
-	// again (session/close does not), and load/resume replays the transcript
-	// exactly as saved — without this a switch → close → load would resume the
-	// outgoing profile's contract from disk. Snapshot only after the swap so a
-	// failed swap never leaves the old controller conflicting with a rewritten
-	// transcript.
-	if prevPath != "" {
-		if err := newCtrl.Snapshot(); err != nil {
-			slog.Warn("acp: snapshot after config switch", "err", err)
-		}
-	}
+	sink.bindApprove(newCtrl.Approve)
+	sink.bindAnswer(newCtrl.AnswerQuestion)
 
 	cur.ReleaseResources()
 	s.sendAvailableCommands(sess)
@@ -1492,47 +1535,81 @@ func (s *service) rebuildSessionLocked(ctx context.Context, sess *acpSession, cf
 }
 
 func (s *service) applyPendingSessionConfig(ctx context.Context, sess *acpSession) error {
-	if s.session(sess.id) != sess {
-		return nil
-	}
-	sess.mu.Lock()
-	if sess.deleted || len(sess.pendingConfig) == 0 {
-		sess.mu.Unlock()
-		return nil
-	}
-	deltas := clonePendingConfig(sess.pendingConfig)
-	// Keep pendingConfig set while rebuilding: begin refuses new turns until
-	// rebuildSession claims it together with raising maintenanceDone, so no
-	// promptable instant is visible in between.
-	sess.mu.Unlock()
-
-	// Re-resolve against the session's current state rather than reusing
-	// whatever baseline existed when each delta queued: another axis may have
-	// finished rebuilding in the meantime, and replaying its old value here
-	// would silently roll it back. All queued axes resolve into one state so a
-	// single rebuild applies them together.
-	cfgState, err := s.resolveSessionConfigDeltas(ctx, sess, deltas)
-	if err != nil {
-		sess.mu.Lock()
-		if !sess.deleted && !sess.running && sess.maintenanceDone == nil {
-			sess.pendingConfig = removePendingAxes(sess.pendingConfig, deltas)
+	var firstErr error
+	for {
+		if s.session(sess.id) != sess {
+			return firstErr
 		}
-		sess.mu.Unlock()
-		return err
-	}
-
-	if err := s.rebuildSession(ctx, sess, cfgState, deltas); err != nil {
-		// Once this attempt failed nothing in flight is left to retry the
-		// parked axes, and begin refuses new turns while any are queued — drop
-		// them so the session stays promptable (the caller reports the failure).
+		// Claim the queue in the same serialization domain as explicit config
+		// switches. Without this lock, a newer same-axis request can rebuild after
+		// the clone below but before this apply starts, then the stale cloned delta
+		// queues behind it and wins last instead of preserving request order.
+		sess.stateChangeMu.Lock()
+		didMaintenance := false
 		sess.mu.Lock()
-		if !sess.deleted && !sess.running && sess.maintenanceDone == nil {
-			sess.pendingConfig = removePendingAxes(sess.pendingConfig, deltas)
+		if sess.deleted || len(sess.pendingConfig) == 0 {
+			sess.mu.Unlock()
+			sess.stateChangeMu.Unlock()
+			return firstErr
 		}
+		deltas := clonePendingConfig(sess.pendingConfig)
+		// Keep pendingConfig set while rebuilding: begin refuses new turns until
+		// rebuildSession claims it together with raising maintenanceDone, so no
+		// promptable instant is visible in between.
 		sess.mu.Unlock()
-		return err
+
+		// Re-resolve against the session's current state rather than reusing
+		// whatever baseline existed when each delta queued: another axis may have
+		// finished rebuilding in the meantime, and replaying its old value here
+		// would silently roll it back. All queued axes resolve into one state so a
+		// single rebuild applies them together.
+		cfgState, err := s.resolveSessionConfigDeltas(ctx, sess, deltas)
+		if err != nil {
+			sess.mu.Lock()
+			if !sess.deleted && !sess.running && sess.maintenanceDone == nil {
+				sess.pendingConfig = removePendingAxes(sess.pendingConfig, deltas)
+			}
+			sess.mu.Unlock()
+			sess.stateChangeMu.Unlock()
+			if firstErr != nil {
+				s.reportPendingSessionConfigError(ctx, sess, err, "after failed maintenance")
+				return firstErr
+			}
+			return err
+		}
+
+		err = s.rebuildSessionLocked(ctx, sess, cfgState, deltas, &didMaintenance)
+		if err != nil && !didMaintenance {
+			// Once this attempt failed nothing in flight is left to retry the
+			// claimed axes, and begin refuses new turns while any are queued — drop
+			// them so the session stays promptable. Once maintenance started, those
+			// axes were already removed; anything queued now is a newer request and
+			// must survive this failure.
+			sess.mu.Lock()
+			if !sess.deleted && !sess.running && sess.maintenanceDone == nil {
+				sess.pendingConfig = removePendingAxes(sess.pendingConfig, deltas)
+			}
+			sess.mu.Unlock()
+		}
+		sess.stateChangeMu.Unlock()
+
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			} else {
+				s.reportPendingSessionConfigError(ctx, sess, err, "after failed maintenance")
+			}
+			if !didMaintenance {
+				return firstErr
+			}
+		}
+		if !didMaintenance {
+			return firstErr
+		}
+		// Requests can queue while NewSession/Snapshot runs. Iterate even when this
+		// rebuild failed so their already-successful RPCs cannot leave the session
+		// blocked. A loop keeps sustained config traffic from growing the call stack.
 	}
-	return nil
 }
 
 func (s *service) reportPendingSessionConfigError(ctx context.Context, sess *acpSession, err error, when string) {
@@ -1540,10 +1617,12 @@ func (s *service) reportPendingSessionConfigError(ctx context.Context, sess *acp
 		return
 	}
 	sess.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "session config switch failed " + when + ": " + err.Error()})
-	if isSessionConfigActiveWorkError(err) {
-		if current, stateErr := s.configStateForSession(ctx, sess); stateErr == nil {
-			sess.sink.send(configOptionUpdate{SessionUpdate: "config_option_update", ConfigOptions: current.ConfigOptions})
-		}
+	// A queued request already announced its desired config to the client. Every
+	// apply failure leaves the outgoing controller/config active, so always send
+	// the live state back; otherwise snapshot/build/resolve failures leave the
+	// picker claiming a switch that never happened.
+	if current, stateErr := s.configStateForSession(ctx, sess); stateErr == nil {
+		sess.sink.send(configOptionUpdate{SessionUpdate: "config_option_update", ConfigOptions: current.ConfigOptions})
 	}
 }
 
@@ -1559,11 +1638,6 @@ func sessionConfigActiveWorkError(message string) error {
 	return &activeSessionConfigWorkError{
 		RPCError: &RPCError{Code: ErrInvalidRequest, Message: "session config: " + message},
 	}
-}
-
-func isSessionConfigActiveWorkError(err error) bool {
-	var activeErr *activeSessionConfigWorkError
-	return errors.As(err, &activeErr)
 }
 
 // sessionClose releases an active session. Unknown sessions are accepted as a

@@ -2,6 +2,7 @@ package serve
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -252,5 +253,40 @@ func TestSwitchModelPersistsRefreshedSystemPromptToDisk(t *testing.T) {
 	}
 	if got, want := msgs[0].Content, "new system prompt"; got != want {
 		t.Fatalf("on-disk leading system message = %q, want %q (a restart would revive the outgoing contract)", got, want)
+	}
+}
+
+func TestSwitchModelSnapshotFailureKeepsOldController(t *testing.T) {
+	t.Setenv("REASONIX_HOME", t.TempDir())
+	invalidSessionDir := filepath.Join(t.TempDir(), "session-dir-is-a-file")
+	if err := os.WriteFile(invalidSessionDir, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("write invalid session dir: %v", err)
+	}
+
+	oldSession := agent.NewSession("old system prompt")
+	oldSession.Add(provider.Message{Role: provider.RoleUser, Content: "hello"})
+	bc := NewBroadcaster()
+	old := control.New(control.Options{
+		Executor: agent.New(nil, nil, oldSession, agent.Options{}, event.Discard),
+		Label:    "old",
+		Sink:     bc,
+	})
+	t.Cleanup(old.Close)
+	s := &Server{ctrl: old, bc: bc}
+	s.buildController = func(_ context.Context, _ string) (*control.Controller, error) {
+		return control.New(control.Options{
+			Executor:   agent.New(nil, nil, agent.NewSession("new system prompt"), agent.Options{}, event.Discard),
+			SessionDir: invalidSessionDir,
+			Label:      "new",
+			Sink:       bc,
+		}), nil
+	}
+
+	err := s.switchModel(context.Background(), "next-model")
+	if err == nil || !strings.Contains(err.Error(), "snapshot adopted history") {
+		t.Fatalf("switchModel error = %v, want snapshot adopted history failure", err)
+	}
+	if got := s.ctl(); got != old {
+		t.Fatalf("active controller changed after persistence failure: got %T %p, want outgoing %p", got, got, old)
 	}
 }

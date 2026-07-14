@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -493,7 +494,9 @@ func TestAdoptCarriedHistoryRefreshesLeadingSystemPrompt(t *testing.T) {
 		{Role: provider.RoleAssistant, Content: "hi"},
 	}
 
-	adoptCarriedHistoryPreservingProfileAndGrants(fresh, carry, "", nil)
+	if err := adoptCarriedHistoryPreservingProfileAndGrants(fresh, carry, "", nil); err != nil {
+		t.Fatalf("adoptCarriedHistoryPreservingProfileAndGrants: %v", err)
+	}
 
 	history := fresh.History()
 	if len(history) != 3 || history[0].Role != provider.RoleSystem {
@@ -523,7 +526,9 @@ func TestAdoptCarriedHistoryRestoresSessionAuthorizations(t *testing.T) {
 		Executor: agent.New(nil, nil, agent.NewSession(""), agent.Options{}, event.Discard),
 	})
 
-	adoptCarriedHistoryPreservingProfileAndGrants(fresh, nil, "", old)
+	if err := adoptCarriedHistoryPreservingProfileAndGrants(fresh, nil, "", old); err != nil {
+		t.Fatalf("adoptCarriedHistoryPreservingProfileAndGrants: %v", err)
+	}
 
 	got := fresh.SessionAuthorizations()
 	if len(got.Grants) != 1 || got.Grants[0] != "bash|go test ./..." {
@@ -561,7 +566,9 @@ func TestAdoptCarriedHistoryPersistsRefreshedSystemPromptToDisk(t *testing.T) {
 		{Role: provider.RoleAssistant, Content: "hi"},
 	}
 
-	adoptCarriedHistoryPreservingProfileAndGrants(fresh, carry, path, nil)
+	if err := adoptCarriedHistoryPreservingProfileAndGrants(fresh, carry, path, nil); err != nil {
+		t.Fatalf("adoptCarriedHistoryPreservingProfileAndGrants: %v", err)
+	}
 
 	loaded, err := agent.LoadSession(path)
 	if err != nil {
@@ -573,5 +580,24 @@ func TestAdoptCarriedHistoryPersistsRefreshedSystemPromptToDisk(t *testing.T) {
 	}
 	if got, want := msgs[0].Content, "system prompt for profile delivery"; got != want {
 		t.Fatalf("on-disk leading system message = %q, want %q (quit + resume would revive the outgoing contract)", got, want)
+	}
+}
+
+func TestAdoptCarriedHistoryReportsSnapshotFailure(t *testing.T) {
+	invalidPath := filepath.Join(t.TempDir(), "transcript-is-a-directory")
+	if err := os.Mkdir(invalidPath, 0o755); err != nil {
+		t.Fatalf("mkdir invalid transcript path: %v", err)
+	}
+	fresh := control.New(control.Options{
+		Executor: agent.New(nil, nil, agent.NewSession("system prompt for profile delivery"), agent.Options{}, event.Discard),
+	})
+	carry := []provider.Message{
+		{Role: provider.RoleSystem, Content: "system prompt for profile balanced"},
+		{Role: provider.RoleUser, Content: "hello"},
+	}
+
+	err := adoptCarriedHistoryPreservingProfileAndGrants(fresh, carry, invalidPath, nil)
+	if err == nil || !strings.Contains(err.Error(), "snapshot after runtime switch") {
+		t.Fatalf("adopt error = %v, want snapshot failure", err)
 	}
 }

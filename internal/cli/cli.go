@@ -1037,7 +1037,10 @@ func chatREPL(args []string) int {
 		// Keep the carried conversation in its existing file so the switch doesn't
 		// orphan a duplicate (#2807).
 		path := agent.ContinueSessionPath(resumePath, c.SessionDir(), c.Label())
-		adoptCarriedHistoryPreservingProfileAndGrants(c, carry, path, oldCtrl)
+		if err := adoptCarriedHistoryPreservingProfileAndGrants(c, carry, path, oldCtrl); err != nil {
+			c.Close()
+			return nil, err
+		}
 		c.EnableInteractiveApproval()
 		c.SetPlanMode(spec.PlanMode)
 		if spec.ToolApprovalMode != "" {
@@ -1115,7 +1118,7 @@ func chatREPL(args []string) int {
 // oldCtrl's same-session "Allow for this session" tool grants and Plan-mode
 // read-only command trust, which a rebuild would otherwise silently drop,
 // forcing the user to re-approve things already granted this session.
-func adoptCarriedHistoryPreservingProfileAndGrants(c *control.Controller, carry []provider.Message, path string, oldCtrl control.SessionAPI) {
+func adoptCarriedHistoryPreservingProfileAndGrants(c *control.Controller, carry []provider.Message, path string, oldCtrl control.SessionAPI) error {
 	if fresh := c.History(); len(fresh) > 0 && fresh[0].Role == provider.RoleSystem {
 		if len(carry) > 0 && carry[0].Role == provider.RoleSystem {
 			carry[0] = fresh[0]
@@ -1133,9 +1136,10 @@ func adoptCarriedHistoryPreservingProfileAndGrants(c *control.Controller, carry 
 	// outgoing profile's contract from disk.
 	if path != "" {
 		if err := c.Snapshot(); err != nil {
-			slog.Warn("cli: snapshot after runtime switch", "err", err)
+			return fmt.Errorf("snapshot after runtime switch: %w", err)
 		}
 	}
+	return nil
 }
 
 func prepareNativeScrollback(w io.Writer, rows int) {
