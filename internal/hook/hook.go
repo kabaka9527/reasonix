@@ -383,27 +383,48 @@ func MatchesTool(h ResolvedHook, toolName string) bool {
 	return false
 }
 
+// claudeAgentSpawningTools are every Reasonix tool that spawns a subagent and
+// so corresponds to Claude's single "Agent" tool: the general task delegator
+// (task/read_only_task/parallel_tasks) and the dedicated named wrappers
+// around a runAs=subagent skill (BuiltinSubagentTools in
+// internal/skill/tools.go — each is a distinct, directly-callable tool, not
+// routed through run_skill). A Claude "Agent" safety matcher must see all of
+// them, or a hook scoped to it silently misses whichever entry point wasn't
+// mapped.
+var claudeAgentSpawningTools = []string{
+	"task", "read_only_task", "parallel_tasks",
+	"explore", "research", "review", "security_review",
+}
+
 // claudeToolNames maps Reasonix's own tool names to the *current* Claude Code
 // built-in tool name (https://code.claude.com/docs/en/tools-reference) — what
 // an imported hook's emitted tool_name payload field shows, and a script's own
 // tool_name check is written against. MCP tool names already share the
 // mcp__<server>__<tool> convention in both systems.
-var claudeToolNames = map[string]string{
-	"bash":          "Bash",
-	"read_file":     "Read",
-	"write_file":    "Write",
-	"edit_file":     "Edit",
-	"multi_edit":    "MultiEdit",
-	"glob":          "Glob",
-	"grep":          "Grep",
-	"web_fetch":     "WebFetch",
-	"task":          "Agent",
-	"ask":           "AskUserQuestion",
-	"run_skill":     "Skill",
-	"todo_write":    "TodoWrite",
-	"notebook_edit": "NotebookEdit",
-	"bash_output":   "BashOutput",
-	"kill_shell":    "KillShell",
+var claudeToolNames = buildClaudeToolNames()
+
+func buildClaudeToolNames() map[string]string {
+	out := map[string]string{
+		"bash":            "Bash",
+		"read_file":       "Read",
+		"write_file":      "Write",
+		"edit_file":       "Edit",
+		"multi_edit":      "MultiEdit",
+		"glob":            "Glob",
+		"grep":            "Grep",
+		"web_fetch":       "WebFetch",
+		"ask":             "AskUserQuestion",
+		"run_skill":       "Skill",
+		"read_only_skill": "Skill",
+		"todo_write":      "TodoWrite",
+		"notebook_edit":   "NotebookEdit",
+		"bash_output":     "BashOutput",
+		"kill_shell":      "KillShell",
+	}
+	for _, name := range claudeAgentSpawningTools {
+		out[name] = "Agent"
+	}
+	return out
 }
 
 // claudeToolMatchAliases lists every tool name — current and legacy — an
@@ -412,8 +433,14 @@ var claudeToolNames = map[string]string{
 // firing after Claude renames the tool (the subagent tool was "Task" before
 // becoming "Agent"). claudeFacingToolName (the emitted tool_name payload)
 // always reports the current name; only matcher evaluation considers aliases.
-var claudeToolMatchAliases = map[string][]string{
-	"task": {"Agent", "Task"},
+var claudeToolMatchAliases = buildClaudeToolMatchAliases()
+
+func buildClaudeToolMatchAliases() map[string][]string {
+	out := map[string][]string{}
+	for _, name := range claudeAgentSpawningTools {
+		out[name] = []string{"Agent", "Task"}
+	}
+	return out
 }
 
 // claudeMatchNames returns every name an imported hook's matcher should be
@@ -435,6 +462,54 @@ func claudeFacingToolName(name string) string {
 		return mapped
 	}
 	return name
+}
+
+// claudeToolInputKeyRenames maps, per Reasonix tool name, JSON keys in its
+// tool-call arguments that must be renamed to Claude's own tool_input field
+// name — Reasonix's file tools use "path", Claude's use "file_path" — so a
+// hook script reading e.g. ".tool_input.file_path" sees the value instead of
+// failing open on an empty field. Only tools whose Reasonix schema differs
+// from Claude's by a plain key rename are covered: Bash's "command",
+// Glob/Grep's "pattern"/"path" already match Claude's own field names.
+// NotebookEdit's cell_number (a 0-based index) vs Claude's cell_id (an
+// opaque identifier) is a deeper structural difference this can't safely
+// bridge and is left untranslated.
+var claudeToolInputKeyRenames = map[string]map[string]string{
+	"read_file":  {"path": "file_path"},
+	"write_file": {"path": "file_path"},
+	"edit_file":  {"path": "file_path"},
+	"multi_edit": {"path": "file_path"},
+}
+
+// claudeFacingToolInput renames tool-call argument keys per
+// claudeToolInputKeyRenames so a Claude-imported hook's tool_input uses
+// Claude's own field names. Args needing no translation, or that aren't a
+// JSON object, pass through unchanged.
+func claudeFacingToolInput(toolName string, args json.RawMessage) json.RawMessage {
+	renames, ok := claudeToolInputKeyRenames[toolName]
+	if !ok || len(args) == 0 {
+		return args
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(args, &obj); err != nil {
+		return args
+	}
+	changed := false
+	for from, to := range renames {
+		if v, exists := obj[from]; exists {
+			obj[to] = v
+			delete(obj, from)
+			changed = true
+		}
+	}
+	if !changed {
+		return args
+	}
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return args
+	}
+	return out
 }
 
 // Payload is the JSON envelope written to a hook's stdin.
@@ -702,7 +777,7 @@ func marshalPayload(payload Payload, format string) string {
 			"session_id":             payload.SessionID,
 			"cwd":                    payload.Cwd,
 			"tool_name":              claudeFacingToolName(payload.ToolName),
-			"tool_input":             payload.ToolArgs,
+			"tool_input":             claudeFacingToolInput(payload.ToolName, payload.ToolArgs),
 			"tool_response":          claudeToolResponse(payload.ToolResult),
 			"prompt":                 payload.Prompt,
 			"last_assistant_message": payload.LastAssistant,

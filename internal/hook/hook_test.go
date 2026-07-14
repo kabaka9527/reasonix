@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -604,6 +605,65 @@ func TestClaudeFacingToolNameUsesCurrentNames(t *testing.T) {
 	if got := claudeFacingToolName("run_skill"); got != "Skill" {
 		t.Errorf(`claudeFacingToolName("run_skill") = %q, want "Skill"`, got)
 	}
+	if got := claudeFacingToolName("read_only_skill"); got != "Skill" {
+		t.Errorf(`claudeFacingToolName("read_only_skill") = %q, want "Skill"`, got)
+	}
+	// Every subagent-spawning entry point — not just "task" — corresponds to
+	// Claude's single "Agent" tool, and a matcher can still use the legacy
+	// "Task" name.
+	for _, name := range []string{"task", "read_only_task", "parallel_tasks", "explore", "research", "review", "security_review"} {
+		if got := claudeFacingToolName(name); got != "Agent" {
+			t.Errorf(`claudeFacingToolName(%q) = %q, want "Agent"`, name, got)
+		}
+		claude := ResolvedHook{HookConfig: HookConfig{Match: "Agent", PayloadFormat: "claude"}, Event: PreToolUse}
+		if !MatchesTool(claude, name) {
+			t.Errorf(`Claude matcher "Agent" should match Reasonix tool %q`, name)
+		}
+		legacy := ResolvedHook{HookConfig: HookConfig{Match: "Task", PayloadFormat: "claude"}, Event: PreToolUse}
+		if !MatchesTool(legacy, name) {
+			t.Errorf(`legacy Claude matcher "Task" should still match Reasonix tool %q`, name)
+		}
+	}
+}
+
+func TestClaudeFacingToolInputRenamesFilePathFields(t *testing.T) {
+	cases := []struct {
+		name     string
+		toolName string
+		args     string
+		want     string
+	}{
+		{"write_file", "write_file", `{"path":"a.txt","content":"hi"}`, `{"content":"hi","file_path":"a.txt"}`},
+		{"edit_file", "edit_file", `{"path":"a.txt","old_string":"x","new_string":"y"}`, `{"file_path":"a.txt","new_string":"y","old_string":"x"}`},
+		{"read_file", "read_file", `{"path":"a.txt"}`, `{"file_path":"a.txt"}`},
+		{"multi_edit", "multi_edit", `{"path":"a.txt","edits":[]}`, `{"edits":[],"file_path":"a.txt"}`},
+		{"bash-unchanged", "bash", `{"command":"ls"}`, `{"command":"ls"}`},
+		{"grep-unchanged", "grep", `{"pattern":"foo","path":"."}`, `{"pattern":"foo","path":"."}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := claudeFacingToolInput(c.toolName, json.RawMessage(c.args))
+			var gotObj, wantObj map[string]any
+			if err := json.Unmarshal(got, &gotObj); err != nil {
+				t.Fatalf("got invalid JSON %q: %v", got, err)
+			}
+			if err := json.Unmarshal([]byte(c.want), &wantObj); err != nil {
+				t.Fatalf("bad test want: %v", err)
+			}
+			if !reflect.DeepEqual(gotObj, wantObj) {
+				t.Fatalf("got = %s, want %s", got, c.want)
+			}
+		})
+	}
+}
+
+func TestClaudeFacingToolInputPassthroughEdgeCases(t *testing.T) {
+	if got := claudeFacingToolInput("write_file", json.RawMessage("")); string(got) != "" {
+		t.Errorf("empty args = %q, want empty passthrough", got)
+	}
+	if got := claudeFacingToolInput("write_file", json.RawMessage("not json")); string(got) != "not json" {
+		t.Errorf("malformed args = %q, want unchanged passthrough", got)
+	}
 }
 
 func TestDecideOutcome(t *testing.T) {
@@ -890,6 +950,39 @@ func TestRunClaudePayloadAndDirectArgs(t *testing.T) {
 	}
 	if _, exists := payload["event"]; exists {
 		t.Fatalf("native payload field leaked into Claude payload: %#v", payload)
+	}
+}
+
+// TestRunClaudeWriteFileGuardFiresAndSeesFilePath is an end-to-end check that
+// a Claude plugin's "block writes to secrets" style PreToolUse guard —
+// matcher "Write", reading .tool_input.file_path — actually fires against a
+// Reasonix write_file call and sees the target path.
+func TestRunClaudeWriteFileGuardFiresAndSeesFilePath(t *testing.T) {
+	hooks := []ResolvedHook{{
+		HookConfig: HookConfig{Command: "guard", Match: "Write", PayloadFormat: "claude"},
+		Event:      PreToolUse,
+	}}
+	var input SpawnInput
+	Run(context.Background(), Payload{
+		Event: PreToolUse, ToolName: "write_file",
+		ToolArgs: json.RawMessage(`{"path":"secrets/.env","content":"KEY=1"}`),
+	}, hooks, func(_ context.Context, in SpawnInput) SpawnResult { input = in; return SpawnResult{ExitCode: 0} })
+	if input.Command == "" {
+		t.Fatal(`matcher "Write" did not fire for Reasonix tool "write_file"`)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(input.Stdin), &payload); err != nil {
+		t.Fatal(err)
+	}
+	toolInput, ok := payload["tool_input"].(map[string]any)
+	if !ok {
+		t.Fatalf("tool_input = %#v, want an object", payload["tool_input"])
+	}
+	if toolInput["file_path"] != "secrets/.env" {
+		t.Fatalf(`tool_input.file_path = %v, want "secrets/.env" (guard reading this field must not see an empty value)`, toolInput["file_path"])
+	}
+	if _, hasPath := toolInput["path"]; hasPath {
+		t.Fatalf("tool_input still has Reasonix's \"path\" key: %#v", toolInput)
 	}
 }
 

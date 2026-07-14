@@ -295,7 +295,14 @@ such as Superpowers and Claude-style skill packs, Reasonix maps:
   timeout are preserved. `matcher` and the `tool_name` a hook script sees are
   translated between Reasonix's own tool names and Claude's (`bash` ↔
   `Bash`, `write_file` ↔ `Write`, ...), so a matcher like `"Bash"` fires
-  correctly. Imported hooks receive Claude-compatible snake_case stdin
+  correctly; every Reasonix subagent-spawning tool (`task`, `read_only_task`,
+  `parallel_tasks`, and the dedicated `explore`/`research`/`review`/
+  `security_review` wrappers) maps to Claude's single `Agent` tool, and a
+  matcher can still use the legacy `Task` name. `tool_input` keys that
+  Reasonix names differently from Claude are renamed too — `path` becomes
+  `file_path` for `Read`/`Write`/`Edit`/`MultiEdit` — so a guard reading
+  `.tool_input.file_path` sees the target instead of failing open on an
+  empty value. Imported hooks receive Claude-compatible snake_case stdin
   payloads, including `hook_event_name`, and `${CLAUDE_PLUGIN_ROOT}` is
   expanded by the host before process launch. A `PreToolUse` or
   `UserPromptSubmit` hook can still deny via exit code 2 or its JSON deny
