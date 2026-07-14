@@ -19506,7 +19506,10 @@ body > .mermaid-diagram--fullscreen {
   transition: padding 0.28s cubic-bezier(0.2, 0.72, 0.2, 1);
 }
 
-.app--darwin .app-chrome--tabs .tabbar,
+.app--darwin .app-chrome--tabs .tabbar {
+  --wails-draggable: drag;
+}
+
 .app--darwin .app-chrome--tabs .tabbar * {
   --wails-draggable: no-drag;
 }
@@ -19829,6 +19832,10 @@ body > .mermaid-diagram--fullscreen {
 .app--windows .app-chrome--native-tabs .tabbar *,
 .app--linux .app-chrome--native-tabs .tabbar * {
   --wails-draggable: no-drag;
+}
+
+.app--windows-frameless:not(.app--workbench):not(.app--creation) .app-chrome--native-tabs .tabbar {
+  --wails-draggable: drag;
 }
 
 .app--windows .app-chrome--native-tabs .app-chrome__identity {
