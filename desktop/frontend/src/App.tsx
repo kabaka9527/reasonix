@@ -3269,6 +3269,7 @@ export default function App() {
         browserPreviewChrome ? "app--browser-preview" : "",
         sidebarWorkbench ? "app--workbench" : "",
         sidebarCreation ? "app--creation" : "",
+        !sidebarWorkbench && !sidebarCreation ? "app--classic" : "",
       ].filter(Boolean).join(" ")}
     >
       <div
