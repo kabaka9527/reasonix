@@ -96,6 +96,8 @@ multi-edit, delete, and notebook tools), `workflow` (`todo_write`,
 `memory` (`memory`, `remember`, `forget`), `commands` (`slash_command`),
 `skills`, `read_only_skill`, `mcp`, `lsp`, `web_fetch`, `install_source`,
 `task`, and `read_only_task`. The `search`, `sessions`, and `commands` sources
-are read-only and may be connected in plan mode; sources containing writer or
-completion tools remain blocked there. Use `bash` for listing and search until
-the dedicated `search` source is needed.
+are read-only and may be connected in plan mode. `workflow` may also be
+connected there, but while planning it installs only `todo_write`;
+`complete_step` joins on a fresh `workflow` connect outside plan mode. Sources
+containing other writer tools remain blocked there. Use `bash` for listing and
+search until the dedicated `search` source is needed.

@@ -1143,7 +1143,14 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			files: func(context.Context) (string, error) {
 				return addBuiltinSourceTools("files", "delete_range", "delete_symbol", "move_file", "multi_edit", "notebook_edit"), nil
 			},
-			workflow: func(context.Context) (string, error) {
+			workflow: func(ctx context.Context) (string, error) {
+				// Plan mode narrows workflow to its read-only planning subset:
+				// todo_write stays available (planmode.Marker promises it),
+				// while complete_step joins via a fresh connect after approval.
+				if agent.PlanModeFromContext(ctx) {
+					return addBuiltinSourceTools("workflow", "todo_write") +
+						" complete_step stays blocked in plan mode; connect workflow again after plan approval to enable it.", nil
+				}
 				return addBuiltinSourceTools("workflow", "complete_step", "todo_write"), nil
 			},
 			mcp: func(_ context.Context, name string) (string, error) {

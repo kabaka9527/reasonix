@@ -2471,11 +2471,6 @@ func TestBuildTokenEconomyPlanModeBlocksSourcesWithPolicy(t *testing.T) {
 			forbiddenTools: []string{"delete_range", "delete_symbol", "move_file", "multi_edit", "notebook_edit"},
 		},
 		{
-			source:         "workflow",
-			args:           `{"source":"workflow"}`,
-			forbiddenTools: []string{"complete_step", "todo_write"},
-		},
-		{
 			source: "skills",
 			args:   `{"source":"skills"}`,
 			forbiddenTools: []string{
@@ -2554,6 +2549,84 @@ command = "reasonix-missing-mockmcp"
 				t.Fatalf("blocked source %s should not expose tools with prefix %q; tools=%v", tt.source, tt.forbiddenPrefix, toolSchemaNames(reqs[1].Tools))
 			}
 		})
+	}
+}
+
+func TestBuildTokenEconomyPlanModeConnectsWorkflowPlanningSubset(t *testing.T) {
+	isolateConfigHome(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+
+	registerBootTokenProfileTestProvider()
+	prov := testutil.NewMock("token-economy",
+		testutil.Turn{ToolCalls: []provider.ToolCall{
+			{ID: "source-1", Name: "connect_tool_source", Arguments: `{"source":"workflow"}`},
+		}},
+		testutil.Turn{Text: "plan drafted"},
+		testutil.Turn{ToolCalls: []provider.ToolCall{
+			{ID: "source-2", Name: "connect_tool_source", Arguments: `{"source":"workflow"}`},
+		}},
+		testutil.Turn{Text: "done"},
+	)
+	setBootTokenProfileTestProvider(t, prov)
+	writeFile(t, dir, "reasonix.toml", `
+default_model = "test-model"
+
+[agent]
+system_prompt = "BASE"
+
+[[providers]]
+name = "test-model"
+kind = "boot-token-profile-test"
+model = "x"
+`)
+
+	ctrl, err := Build(context.Background(), Options{Sink: event.Discard, TokenMode: TokenModeEconomy})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer ctrl.Close()
+	ctrl.SetPlanMode(true)
+	if err := ctrl.Run(context.Background(), "draft a plan and track it with todos"); err != nil {
+		t.Fatalf("plan Run: %v", err)
+	}
+
+	reqs := prov.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("requests = %d, want 2", len(reqs))
+	}
+	if !requestHasTool(reqs[1], "todo_write") {
+		t.Fatalf("plan-mode workflow connect should expose todo_write; tools=%v", toolSchemaNames(reqs[1].Tools))
+	}
+	if requestHasTool(reqs[1], "complete_step") {
+		t.Fatalf("plan-mode workflow connect must not expose complete_step; tools=%v", toolSchemaNames(reqs[1].Tools))
+	}
+	var planConnectOutput string
+	for _, msg := range ctrl.History() {
+		if msg.Role == provider.RoleTool && msg.Name == "connect_tool_source" {
+			planConnectOutput += msg.Content
+		}
+	}
+	if strings.Contains(planConnectOutput, "blocked:") {
+		t.Fatalf("workflow source should not be blocked in plan mode, got:\n%s", planConnectOutput)
+	}
+	if !strings.Contains(planConnectOutput, "complete_step stays blocked in plan mode") {
+		t.Fatalf("plan-mode workflow connect should explain the deferred complete_step, got:\n%s", planConnectOutput)
+	}
+
+	ctrl.SetPlanMode(false)
+	if err := ctrl.Run(context.Background(), "the plan is approved; execute it"); err != nil {
+		t.Fatalf("execute Run: %v", err)
+	}
+	reqs = prov.Requests()
+	if len(reqs) != 4 {
+		t.Fatalf("requests = %d, want 4", len(reqs))
+	}
+	if !requestHasTool(reqs[3], "complete_step") {
+		t.Fatalf("reconnecting workflow after plan mode should expose complete_step; tools=%v", toolSchemaNames(reqs[3].Tools))
+	}
+	if !requestHasTool(reqs[3], "todo_write") {
+		t.Fatalf("todo_write should stay enabled after plan mode; tools=%v", toolSchemaNames(reqs[3].Tools))
 	}
 }
 

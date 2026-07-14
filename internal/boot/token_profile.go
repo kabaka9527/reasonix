@@ -219,7 +219,10 @@ func (t *toolSourceConnector) planModeSourceBlocked(ctx context.Context, source,
 	// Sources are read-only iff they expose only read-only research surfaces; the
 	// moderate plan-mode gate then trusts that ReadOnly flag (step 6), while any
 	// other source stays non-read-only and is fail-closed by the policy.
-	readOnlySource := source == "web_fetch" || source == "lsp" || source == "search" || source == "sessions" || source == "commands" || source == "read_only_task" || source == "read_only_skill"
+	// workflow is admitted even though it bundles complete_step: its installer
+	// narrows to the plan-safe todo_write subset while plan mode is active, so
+	// planning keeps the todo surface planmode.Marker promises.
+	readOnlySource := source == "web_fetch" || source == "lsp" || source == "search" || source == "sessions" || source == "commands" || source == "workflow" || source == "read_only_task" || source == "read_only_skill"
 	decision := planmode.Policy{}.Decide(planmode.Call{Name: source, ReadOnly: readOnlySource})
 	return decision.Blocked, decision.Message
 }

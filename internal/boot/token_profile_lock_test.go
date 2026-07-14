@@ -17,10 +17,11 @@ func TestConnectToolSourcePlanModeClassifiesLeanOptionalSources(t *testing.T) {
 		sessions: func(context.Context) (string, error) { return "enabled sessions.", nil },
 		commands: func(context.Context) (string, error) { return "enabled commands.", nil },
 		search:   func(context.Context) (string, error) { return "enabled search.", nil },
+		workflow: func(context.Context) (string, error) { return "enabled todo_write.", nil },
 		memory:   func(context.Context) (string, error) { return "enabled memory.", nil },
 	}
 	ctx := agent.WithToolCallContext(context.Background(), "call", event.Discard, nil, true)
-	for _, source := range []string{"sessions", "commands", "search"} {
+	for _, source := range []string{"sessions", "commands", "search", "workflow"} {
 		out, err := tsc.Execute(ctx, json.RawMessage(fmt.Sprintf(`{"source":%q}`, source)))
 		if err != nil {
 			t.Fatalf("source %s: %v", source, err)
