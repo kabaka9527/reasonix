@@ -146,9 +146,16 @@ func TestPastedImageSources(t *testing.T) {
 			if c.posixOnly && runtime.GOOS == "windows" {
 				t.Skip("POSIX shell-escaped paths are not decoded on Windows")
 			}
-			got, ok := pastedImageSources(c.text)
+			sources, ok := pastedImageSources(c.text)
 			if ok != c.ok {
 				t.Fatalf("ok = %v, want %v", ok, c.ok)
+			}
+			var got []string
+			if sources != nil {
+				got = make([]string, 0, len(sources))
+				for _, source := range sources {
+					got = append(got, source.value)
+				}
 			}
 			if !reflect.DeepEqual(got, c.want) {
 				t.Fatalf("sources = %v, want %v", got, c.want)
@@ -246,6 +253,23 @@ func TestPasteMultipleShellEscapedImagePathsInsertsImageTokens(t *testing.T) {
 	}
 	if len(updated.pastedBlocks) != 2 || !updated.pastedBlocks[0].image || !updated.pastedBlocks[1].image {
 		t.Fatalf("pastedBlocks = %+v, want two image blocks", updated.pastedBlocks)
+	}
+}
+
+func TestMissingPastedImagePathRemainsText(t *testing.T) {
+	content := `/definitely-missing/reasonix-image.png`
+	if runtime.GOOS == "windows" {
+		content = `C:/definitely-missing/reasonix-image.png`
+	}
+
+	m := newTestChatTUI()
+	next, _ := m.Update(tea.PasteMsg{Content: content})
+	updated := next.(chatTUI)
+	if got := updated.input.Value(); got != content {
+		t.Fatalf("input after missing image paste = %q, want original %q", got, content)
+	}
+	if len(updated.pastedBlocks) != 0 {
+		t.Fatalf("pastedBlocks = %+v, want no image attachment", updated.pastedBlocks)
 	}
 }
 

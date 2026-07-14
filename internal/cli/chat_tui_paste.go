@@ -2,9 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"net/url"
-	"os"
-	pathpkg "path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -14,6 +11,7 @@ import (
 	"github.com/atotto/clipboard"
 
 	"reasonix/internal/control"
+	"reasonix/internal/shellparse"
 )
 
 // This file holds the chat TUI's paste & image-attachment input layer: folding
@@ -139,6 +137,7 @@ func (m *chatTUI) attachPastedImages(text string) bool {
 	if !ok {
 		return false
 	}
+	attached := false
 	for _, src := range sources {
 		path, err := savePastedImageSource(src)
 		if err != nil {
@@ -146,40 +145,74 @@ func (m *chatTUI) attachPastedImages(text string) bool {
 			continue
 		}
 		m.insertImageRef(path)
+		attached = true
 	}
-	return true
+	if !attached && m.validComposerSelection() && !m.composerSel.empty() {
+		// A failed attachment must not replace an active selection. The notice
+		// above explains the failure; callers otherwise fall back to text paste.
+		return true
+	}
+	return attached
 }
 
 var markdownImageSourceRe = regexp.MustCompile(`!\[[^\]]*\]\(([^)]+)\)`)
 
-func pastedImageSources(text string) ([]string, bool) {
+type pastedImageSource struct {
+	value        string
+	shellDecoded bool
+}
+
+func pastedImageSources(text string) ([]pastedImageSource, bool) {
+	return pastedImageSourcesForOS(text, runtime.GOOS)
+}
+
+func pastedImageSourcesForOS(text, goos string) ([]pastedImageSource, bool) {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
 		return nil, false
 	}
 	if isDataImage(trimmed) {
-		return []string{trimmed}, true
+		return []pastedImageSource{{value: trimmed}}, true
 	}
 	if matches := markdownImageSourceRe.FindAllStringSubmatch(trimmed, -1); len(matches) > 0 {
 		rest := strings.TrimSpace(markdownImageSourceRe.ReplaceAllString(trimmed, ""))
 		if rest == "" {
-			sources := make([]string, 0, len(matches))
+			sources := make([]pastedImageSource, 0, len(matches))
 			for _, m := range matches {
-				sources = append(sources, m[1])
+				sources = append(sources, pastedImageSource{value: m[1]})
 			}
 			return sources, true
 		}
 	}
 
 	lines := nonEmptyPasteLines(trimmed)
-	if len(lines) > 0 && allImageSources(lines) {
-		return lines, true
+	lineSources := rawPastedImageSources(lines)
+	if len(lines) > 0 && allImageSources(lineSources, goos) {
+		return lineSources, true
 	}
 	fields := splitPastePathTokens(trimmed)
-	if len(fields) > 1 && allImageSources(fields) {
-		return fields, true
+	fieldSources := rawPastedImageSources(fields)
+	if len(fields) > 1 && allImageSources(fieldSources, goos) {
+		return fieldSources, true
+	}
+	if staticFields, malformed := shellparse.StaticFields(trimmed); malformed == "" && len(staticFields) > 1 {
+		sources := make([]pastedImageSource, 0, len(staticFields))
+		for _, field := range staticFields {
+			sources = append(sources, pastedImageSource{value: field, shellDecoded: true})
+		}
+		if allImageSources(sources, goos) {
+			return sources, true
+		}
 	}
 	return nil, false
+}
+
+func rawPastedImageSources(values []string) []pastedImageSource {
+	sources := make([]pastedImageSource, 0, len(values))
+	for _, value := range values {
+		sources = append(sources, pastedImageSource{value: value})
+	}
+	return sources
 }
 
 // splitPastePathTokens splits pasted text into path tokens the way a shell
@@ -238,98 +271,74 @@ func nonEmptyPasteLines(text string) []string {
 	return out
 }
 
-func allImageSources(sources []string) bool {
+func allImageSources(sources []pastedImageSource, goos string) bool {
 	if len(sources) == 0 {
 		return false
 	}
 	for _, src := range sources {
-		if !looksLikeImageSource(src) {
+		if !looksLikeImageSource(src, goos) {
 			return false
 		}
 	}
 	return true
 }
 
-func looksLikeImageSource(src string) bool {
-	if isDataImage(strings.TrimSpace(src)) {
+func looksLikeImageSource(src pastedImageSource, goos string) bool {
+	if isDataImage(strings.TrimSpace(src.value)) {
 		return true
 	}
-	path, ok := pastedImagePath(src)
-	if !ok {
-		return false
-	}
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".png", ".jpg", ".jpeg", ".gif", ".webp":
-		return true
+	for _, path := range pastedPathCandidates(src.value, goos, src.shellDecoded) {
+		switch strings.ToLower(filepath.Ext(path)) {
+		case ".png", ".jpg", ".jpeg", ".gif", ".webp":
+			return true
+		}
 	}
 	return false
 }
 
-func savePastedImageSource(src string) (string, error) {
-	src = strings.TrimSpace(src)
-	if isDataImage(src) {
-		return control.SaveImageDataURL(src)
+func savePastedImageSource(src pastedImageSource) (string, error) {
+	value := strings.TrimSpace(src.value)
+	if isDataImage(value) {
+		return control.SaveImageDataURL(value)
 	}
-	path, ok := pastedImagePath(src)
-	if !ok {
-		return "", fmt.Errorf("unsupported pasted image source")
+	var lastErr error
+	for _, path := range pastedPathCandidates(value, runtime.GOOS, src.shellDecoded) {
+		if !looksLikeImagePath(path) {
+			continue
+		}
+		saved, err := control.SaveImageFile(path)
+		if err == nil {
+			return saved, nil
+		}
+		lastErr = err
 	}
-	return control.SaveImageFile(path)
+	if lastErr != nil {
+		return "", lastErr
+	}
+	return "", fmt.Errorf("unsupported pasted image source")
+}
+
+func looksLikeImagePath(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp":
+		return true
+	default:
+		return false
+	}
 }
 
 func isDataImage(src string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(src)), "data:image/")
 }
 
-func pastedImagePath(src string) (string, bool) {
-	return pastedImagePathForOS(src, runtime.GOOS)
-}
-
-// pastedImagePathForOS is pastedImagePath with the OS injected so both
-// branches are testable everywhere. On Windows the backslash is the path
-// separator — terminals there quote dragged paths instead of escaping them —
-// so shell-style unescaping is skipped to keep native paths intact.
+// pastedImagePathForOS returns the preferred syntactic candidate with the OS
+// injected so platform-specific path handling is testable everywhere.
 func pastedImagePathForOS(src, goos string) (string, bool) {
-	src = strings.TrimSpace(src)
-	src = strings.TrimPrefix(src, "@")
-	quoted := (strings.HasPrefix(src, `"`) && strings.HasSuffix(src, `"`)) || (strings.HasPrefix(src, `'`) && strings.HasSuffix(src, `'`))
-	src = strings.Trim(src, "\"'")
-	if src == "" {
+	candidates := pastedPathCandidates(src, goos, false)
+	if len(candidates) == 0 {
 		return "", false
 	}
-	if !quoted {
-		if goos == "windows" {
-			if strings.ContainsAny(src, " \t\r\n") {
-				return "", false
-			}
-		} else {
-			if hasUnescapedPathWhitespace(src) {
-				return "", false
-			}
-			src = unescapeShellPath(src)
-		}
-	}
-	lower := strings.ToLower(src)
-	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
-		return "", false
-	}
-	if strings.HasPrefix(lower, "file://") {
-		u, err := url.Parse(src)
-		if err != nil || u.Path == "" {
-			return "", false
-		}
-		src = u.Path
-	}
-	if strings.HasPrefix(src, "~/") {
-		home, err := os.UserHomeDir()
-		if err == nil && home != "" {
-			src = filepath.Join(home, strings.TrimPrefix(src, "~/"))
-		}
-	}
-	if goos == "windows" {
-		return filepath.Clean(src), true
-	}
-	return pathpkg.Clean(src), true
+	return candidates[0], true
 }
 
 func hasUnescapedPathWhitespace(s string) bool {
@@ -375,11 +384,8 @@ func unescapeShellPath(s string) string {
 // pasted word is left alone. Whitespace in the path is escaped so the ref
 // survives @-token parsing on submit.
 func pastedFileRef(content string) (string, bool) {
-	path, ok := pastedImagePath(content)
+	path, ok := resolveExistingPastedPath(content, runtime.GOOS, false, pastedPathExists)
 	if !ok || !strings.ContainsAny(path, `/\`) {
-		return "", false
-	}
-	if info, err := os.Stat(path); err != nil || info.IsDir() {
 		return "", false
 	}
 	return "@" + control.EscapeRefPath(path), true
