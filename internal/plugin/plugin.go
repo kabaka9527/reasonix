@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"reasonix/internal/event"
+	"reasonix/internal/provider"
 	"reasonix/internal/tool"
 )
 
@@ -554,6 +555,7 @@ type ToolInfo struct {
 	Name         string
 	Description  string
 	ReadOnlyHint bool
+	SchemaError  string
 }
 
 // ServerStatus summarises one connected server for the /mcp command.
@@ -1169,18 +1171,25 @@ func (c *Client) listTools(ctx context.Context) ([]tool.Tool, error) {
 	tools := make([]tool.Tool, 0, len(out))
 	for _, t := range out {
 		hinted := t.Annotations != nil && t.Annotations.ReadOnlyHint
+		info := ToolInfo{Name: t.Name, Description: t.Description, ReadOnlyHint: hinted}
+		schema, err := normalizeAndValidateToolSchema(t.InputSchema)
+		if err != nil {
+			info.SchemaError = schemaValidationError(err)
+			toolInfos = append(toolInfos, info)
+			continue
+		}
 		visibleName := t.Name
 		if c.spec.StripRawPrefix != "" {
 			visibleName = strings.TrimPrefix(visibleName, c.spec.StripRawPrefix)
 		}
-		toolInfos = append(toolInfos, ToolInfo{Name: t.Name, Description: t.Description, ReadOnlyHint: hinted})
+		toolInfos = append(toolInfos, info)
 		trusted := c.spec.toolReadOnlyTrusted(t.Name, visibleName)
 		tools = append(tools, &remoteTool{
 			client:          c,
 			name:            toolName(c.name, visibleName),
 			rawName:         t.Name,
 			desc:            t.Description,
-			schema:          canonicalizeSchema(t.InputSchema),
+			schema:          schema,
 			readOnly:        c.spec.toolReadOnly(t.Name, visibleName, hinted),
 			readOnlyTrusted: trusted,
 		})
@@ -1191,6 +1200,24 @@ func (c *Client) listTools(ctx context.Context) ([]tool.Tool, error) {
 	c.toolAdapters = append([]tool.Tool(nil), sortedTools...)
 	c.toolsListed = true
 	return append([]tool.Tool(nil), sortedTools...), nil
+}
+
+func normalizeAndValidateToolSchema(raw json.RawMessage) (json.RawMessage, error) {
+	schema := canonicalizeSchema(raw)
+	if err := provider.ValidateToolSchema(schema); err != nil {
+		return nil, err
+	}
+	return schema, nil
+}
+
+func schemaValidationError(err error) string {
+	const maxRunes = 512
+	msg := strings.TrimSpace(err.Error())
+	runes := []rune(msg)
+	if len(runes) > maxRunes {
+		msg = string(runes[:maxRunes]) + "..."
+	}
+	return "invalid input schema: " + msg
 }
 
 func (c *Client) listToolsRaw(ctx context.Context) ([]mcpTool, error) {

@@ -25,12 +25,28 @@ func TestCanonicalizeSchemaDropsNonArrayRequired(t *testing.T) {
 func TestCanonicalizeSchemaAddsEmptyPropertiesForNoArgumentObject(t *testing.T) {
 	for _, raw := range []json.RawMessage{
 		nil,
+		json.RawMessage(`null`),
 		json.RawMessage(`{"type":"object"}`),
 	} {
 		got := string(CanonicalizeSchema(raw))
 		want := `{"properties":{},"type":"object"}`
 		if got != want {
 			t.Fatalf("CanonicalizeSchema(%s) = %s, want %s", string(raw), got, want)
+		}
+	}
+}
+
+func TestCanonicalizeSchemaAddsMissingRootType(t *testing.T) {
+	for _, tc := range []struct{ raw, want string }{
+		{`{}`, `{"properties":{},"type":"object"}`},
+		{`{"properties":{"q":{"type":"string"}}}`, `{"properties":{"q":{"type":"string"}},"type":"object"}`},
+		// Explicit non-object root types are preserved verbatim; validation
+		// quarantines them instead of silently rewriting declared semantics.
+		{`{"type":"string"}`, `{"type":"string"}`},
+		{`{"type":["object","null"]}`, `{"type":["object","null"]}`},
+	} {
+		if got := string(CanonicalizeSchema(json.RawMessage(tc.raw))); got != tc.want {
+			t.Fatalf("CanonicalizeSchema(%s) = %s, want %s", tc.raw, got, tc.want)
 		}
 	}
 }

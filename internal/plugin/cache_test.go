@@ -75,6 +75,34 @@ func TestCacheRoundTrip(t *testing.T) {
 	}
 }
 
+func TestCacheLoadQuarantinesMalformedToolSchema(t *testing.T) {
+	redirectCache(t)
+	spec := sampleSpec()
+	hash := SpecFingerprint(spec)
+	cs := sampleCachedSchema(hash)
+	cs.Tools = append(cs.Tools, CachedTool{
+		Name: "generate_yso_bytes",
+		Schema: json.RawMessage(`{
+			"type":"object",
+			"properties":{"options":{"type":"array","items":{"key":{"type":"string"},"type":{"type":"string"},"value":{"type":"string"}}}}
+		}`),
+	})
+
+	if err := SaveCachedSchema(spec.Name, cs); err != nil {
+		t.Fatalf("SaveCachedSchema: %v", err)
+	}
+	got, ok := LoadCachedSchema(spec.Name, hash)
+	if !ok {
+		t.Fatal("LoadCachedSchema: miss after save")
+	}
+	if len(got.Tools) != 1 || got.Tools[0].Name != "do_thing" {
+		t.Fatalf("cached tools = %+v, want only valid do_thing", got.Tools)
+	}
+	if schema := string(got.Tools[0].Schema); schema != `{"properties":{},"type":"object"}` {
+		t.Fatalf("valid cached schema = %s", schema)
+	}
+}
+
 func TestCacheInvalidatesOnSpecHashMismatch(t *testing.T) {
 	redirectCache(t)
 	spec := sampleSpec()

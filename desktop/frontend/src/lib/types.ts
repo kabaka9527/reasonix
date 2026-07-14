@@ -696,6 +696,7 @@ export interface MCPToolView {
   name: string;
   description: string;
   readOnlyHint?: boolean;
+  schemaError?: string;
 }
 export interface SkillView {
   name: string;

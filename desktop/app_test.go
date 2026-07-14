@@ -36,6 +36,16 @@ import (
 	"reasonix/internal/tool"
 )
 
+func TestPluginToolsToViewPreservesSchemaError(t *testing.T) {
+	got := pluginToolsToView([]plugin.ToolInfo{{
+		Name: "generate_yso_bytes", Description: "Generate payload", ReadOnlyHint: true,
+		SchemaError: "invalid input schema: bad nested type",
+	}})
+	if len(got) != 1 || got[0].SchemaError != "invalid input schema: bad nested type" {
+		t.Fatalf("tool views = %+v", got)
+	}
+}
+
 func desktopMCPHTTPServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

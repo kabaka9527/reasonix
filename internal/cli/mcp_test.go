@@ -230,6 +230,26 @@ func TestRenderMCPStatusCapsLongSections(t *testing.T) {
 	}
 }
 
+func TestRenderMCPStatusShowsQuarantinedTools(t *testing.T) {
+	got := renderMCPStatus(200,
+		[]plugin.ServerStatus{{
+			Name: "yakit", Transport: "stdio", Tools: 1,
+			ToolList: []plugin.ToolInfo{
+				{Name: "echo", Description: "available"},
+				{Name: "generate_yso_bytes", SchemaError: "invalid input schema: bad type at /properties/options/items/type"},
+			},
+		}},
+		nil,
+		nil,
+		nil,
+	)
+	for _, want := range []string{"1 tool", "1 unavailable tool", "unavailable tools", "generate_yso_bytes", "invalid input schema"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("rendered MCP status missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestMCPCapabilitiesTextUsesAdvertisedTools(t *testing.T) {
 	if got := mcpCapabilitiesText(mcpServerView{HasTools: true}); got != "tools" {
 		t.Fatalf("mcpCapabilitiesText = %q, want tools", got)

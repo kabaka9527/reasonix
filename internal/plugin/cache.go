@@ -131,7 +131,21 @@ func LoadCachedSchemaAny(name, expectedHash string) (cs *CachedSchema, ok bool, 
 	if out.Version != cacheVersion {
 		return nil, false, false
 	}
+	out.Tools = filterValidCachedTools(out.Tools)
 	return &out, true, out.SpecHash == expectedHash
+}
+
+func filterValidCachedTools(tools []CachedTool) []CachedTool {
+	out := make([]CachedTool, 0, len(tools))
+	for _, t := range tools {
+		schema, err := normalizeAndValidateToolSchema(t.Schema)
+		if err != nil {
+			continue
+		}
+		t.Schema = schema
+		out = append(out, t)
+	}
+	return out
 }
 
 // SaveCachedSchema atomically writes cs under name. Best-effort: an error

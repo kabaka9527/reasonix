@@ -10863,6 +10863,16 @@ body > .mermaid-diagram--fullscreen {
   line-height: 1;
   white-space: nowrap;
 }
+.cap-tool-hint--error {
+  gap: 3px;
+  border-color: color-mix(in srgb, var(--warn) 34%, transparent);
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+}
+.cap-tool--unavailable .cap-tool__name,
+.cap-tool--unavailable .cap-tool__desc {
+  color: var(--fg-faint);
+}
 .cap-tool-trust-stack {
   display: flex;
   flex-wrap: wrap;

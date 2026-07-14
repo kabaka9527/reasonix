@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ShieldCheck, ShieldOff } from "lucide-react";
+import { CircleAlert, ShieldCheck, ShieldOff } from "lucide-react";
 import { asArray } from "../lib/array";
 import { app, openExternal } from "../lib/bridge";
 import { useT } from "../lib/i18n";
@@ -894,6 +894,7 @@ function ServerRow({
   const actionLabel = serverActionLabel(s, t);
   const lifecycle = mcpServerLifecycleActions(s);
   const tools = s.toolList ?? [];
+  const schemaIssueCount = tools.filter((tool) => tool.schemaError).length;
   let sub =
     s.status === "failed"
       ? s.error || t("caps.failed")
@@ -906,6 +907,9 @@ function ServerRow({
           ? t("caps.disabledAutoStart")
           : t("caps.disabled")
         : t("caps.counts", { tools: s.tools, prompts: s.prompts, resources: s.resources });
+  if (schemaIssueCount > 0) {
+    sub = `${sub} · ${t("caps.schemaIssues", { count: schemaIssueCount })}`;
+  }
   if (s.managedByPlugin) {
     sub = `${sub} · ${t("caps.managedByPlugin", { plugin: s.managedByPlugin })}`;
   }
@@ -1034,7 +1038,7 @@ function ServerDetails({
   const trustedReadOnlyTools = s.trustedReadOnlyTools ?? [];
   const trustedReadOnlyToolNames = new Set(trustedReadOnlyTools);
   const canTrustTool = canMutateConfig;
-  const reportedReadOnlyToolNames = (tools ?? []).filter((tool) => tool.readOnlyHint).map((tool) => tool.name);
+  const reportedReadOnlyToolNames = (tools ?? []).filter((tool) => tool.readOnlyHint && !tool.schemaError).map((tool) => tool.name);
   const bulkTrustToolNames = reportedReadOnlyToolNames.filter((name) => !trustedReadOnlyToolNames.has(name));
   if (editing && canEditConfig) {
     return (
@@ -1144,19 +1148,25 @@ function ServerDetails({
             <div className="cap-tool-list__title">{t("caps.tools")}</div>
             {tools.map((tool) => {
               const trusted = trustedReadOnlyToolNames.has(tool.name);
+              const unavailable = Boolean(tool.schemaError);
               return (
-                <div className="cap-tool" key={tool.name}>
+                <div className={`cap-tool${unavailable ? " cap-tool--unavailable" : ""}`} key={tool.name}>
                   <div className="cap-tool__name">{tool.name}</div>
                   <div className="cap-tool__desc">
-                    <span>{tool.description}</span>
-                    {tool.readOnlyHint && (
+                    <span>{unavailable ? tool.schemaError : tool.description}</span>
+                    {unavailable ? (
+                      <span className="cap-tool-hint cap-tool-hint--error" title={tool.schemaError}>
+                        <CircleAlert aria-hidden size={11} strokeWidth={2.2} />
+                        {t("caps.toolUnavailable")}
+                      </span>
+                    ) : tool.readOnlyHint ? (
                       <span className="cap-tool-hint" title={t("caps.reportedReadOnlyTitle")}>
                         {t("caps.reportedReadOnly")}
                       </span>
-                    )}
+                    ) : null}
                   </div>
                   <div className="cap-tool__action">
-                    {canTrustTool ? (
+                    {!unavailable && canTrustTool ? (
                       trusted ? (
                         <div className="cap-tool-trust-stack">
                           <span className="cap-tool-trust cap-tool-trust--trusted" title={t("caps.trustedReadOnlyTitle")}>

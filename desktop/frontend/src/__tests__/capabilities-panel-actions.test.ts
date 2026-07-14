@@ -207,6 +207,7 @@ console.log("capabilities panel MCP actions");
     toolList: [
       { name: "issue_read", description: "Read issues.", readOnlyHint: true },
       { name: "issue_write", description: "Write issues." },
+      { name: "broken_read", description: "Broken tool.", readOnlyHint: true, schemaError: "invalid input schema: bad nested type" },
     ],
     trustedReadOnlyTools: [],
   }];
@@ -269,6 +270,9 @@ console.log("capabilities panel MCP actions");
   });
 
   await waitFor("trusted badge", () => Boolean(document.querySelector(".cap-tool-trust")?.textContent?.includes("Trusted")));
+  await waitFor("unavailable tool", () => Boolean(document.querySelector(".cap-tool-hint--error")?.textContent?.includes("Unavailable")));
+  ok(document.body.textContent?.includes("1 unavailable"), "server summary reports one quarantined tool");
+  ok(document.body.textContent?.includes("invalid input schema: bad nested type"), "tool list shows the schema diagnostic");
   const untrust = findButton("Untrust");
   if (!untrust) throw new Error("missing Untrust button");
   await act(async () => {

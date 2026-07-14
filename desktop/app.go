@@ -5826,6 +5826,7 @@ type ToolView struct {
 	Name         string `json:"name"`
 	Description  string `json:"description"`
 	ReadOnlyHint bool   `json:"readOnlyHint,omitempty"`
+	SchemaError  string `json:"schemaError,omitempty"`
 }
 
 // SkillView is one discoverable skill for the drawer. Also backs the
@@ -7203,7 +7204,9 @@ func pluginToolsToView(tools []plugin.ToolInfo) []ToolView {
 	}
 	out := make([]ToolView, 0, len(tools))
 	for _, t := range tools {
-		out = append(out, ToolView{Name: t.Name, Description: t.Description, ReadOnlyHint: t.ReadOnlyHint})
+		out = append(out, ToolView{
+			Name: t.Name, Description: t.Description, ReadOnlyHint: t.ReadOnlyHint, SchemaError: t.SchemaError,
+		})
 	}
 	return out
 }
