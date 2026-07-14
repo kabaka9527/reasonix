@@ -741,6 +741,40 @@ func TestNodeTestRunnerWriteFlagsCannotMasqueradeAsDeliveryVerification(t *testi
 	}
 }
 
+func TestLedgerReviewAfterRestoredCheckpointBaseline(t *testing.T) {
+	// A negative index is the restored-checkpoint baseline: the mutation
+	// happened before a controller rebuild or cold resume, so its receipt (and
+	// touched paths) are not in this ledger. Fresh review-shaped receipts must
+	// still be able to satisfy the review gate.
+	if NewLedger().HasSuccessfulReviewAfter(-1) {
+		t.Fatal("an empty ledger must not satisfy the checkpoint-baseline review")
+	}
+
+	read := NewLedger()
+	read.Record(ReceiptFromToolCall("read_file", json.RawMessage(`{"path":"internal/parser.go"}`), true, true))
+	if !read.HasSuccessfulReviewAfter(-1) {
+		t.Fatal("a successful read must satisfy review for a restored mutation baseline")
+	}
+
+	diff := NewLedger()
+	diff.Record(ReceiptFromToolCall("bash", json.RawMessage(`{"command":"git diff"}`), true, false))
+	if !diff.HasSuccessfulReviewAfter(-1) {
+		t.Fatal("a git diff inspection must satisfy review for a restored mutation baseline")
+	}
+
+	failed := NewLedger()
+	failed.Record(ReceiptFromToolCall("read_file", json.RawMessage(`{"path":"internal/parser.go"}`), false, true))
+	if failed.HasSuccessfulReviewAfter(-1) {
+		t.Fatal("a failed read must not satisfy the checkpoint-baseline review")
+	}
+
+	opaque := NewLedger()
+	opaque.Record(ReceiptFromToolCall("bash", json.RawMessage(`{"command":"echo done"}`), true, false))
+	if opaque.HasSuccessfulReviewAfter(-1) {
+		t.Fatal("a non-review command must not satisfy the checkpoint-baseline review")
+	}
+}
+
 func TestLedgerDeliverySignoffRequiresPostMutationVerificationAndReview(t *testing.T) {
 	ledger := NewLedger()
 	ledger.Record(ReceiptFromToolCall("todo_write", json.RawMessage(`{"todos":[{"content":"Ship parser","status":"in_progress"}]}`), true, true))

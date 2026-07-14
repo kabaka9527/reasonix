@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"reasonix/internal/event"
+	"reasonix/internal/evidence"
 	"reasonix/internal/provider"
 	"reasonix/internal/tool"
 )
@@ -84,6 +85,35 @@ func TestDeliveryGoalScopeCarriesSignedOffMutationAcrossTurns(t *testing.T) {
 	}
 	if err := a.Run(ctx, "finish the goal"); err != nil {
 		t.Fatalf("verification-only completion should reuse scoped evidence: %v", err)
+	}
+}
+
+func TestDeliveryGoalRestoredPendingMutationCompletesWithoutNewWrite(t *testing.T) {
+	// A controller rebuild or cold resume restores PendingMutation with no
+	// mutation receipt in the fresh ledger (a -1 baseline). Fresh review,
+	// verification, and sign-off receipts must finish the Goal without
+	// manufacturing another write, and the checkpoint must clear.
+	reg := evidenceRegistry()
+	reg.Add(fakeTool{name: "read_file", readOnly: true})
+	prov := &scriptedProvider{name: "delivery", turns: [][]provider.Chunk{
+		{toolCallChunk("review", "read_file", `{"path":"main.go"}`), {Type: provider.ChunkDone}},
+		{toolCallChunk("verify", "bash", `{"command":"go test ./..."}`), {Type: provider.ChunkDone}},
+		{toolCallChunk("signoff", "complete_step", `{"step":"Ship main","result":"implemented","evidence":[{"kind":"verification","summary":"tests pass","command":"go test ./..."}]}`), {Type: provider.ChunkDone}},
+		{{Type: provider.ChunkText, Text: "Recovered and verified.\n\n[goal:complete]"}, {Type: provider.ChunkDone}},
+	}}
+	a := New(prov, reg, NewSession(""), Options{DeliveryProfile: true}, event.Discard)
+	a.RestoreDeliveryCheckpoint(evidence.DeliveryCheckpoint{
+		ScopeID:             "goal-1",
+		CriteriaEstablished: true,
+		WorkObserved:        true,
+		MutationObserved:    true,
+		PendingMutation:     true,
+	})
+	if err := a.Run(deliveryGoalContext("goal-1", "implement main"), "continue the goal"); err != nil {
+		t.Fatalf("restored pending mutation should complete with fresh review/verification/sign-off: %v", err)
+	}
+	if cp := a.DeliveryCheckpoint(); cp.PendingMutation {
+		t.Fatalf("checkpoint = %+v, want PendingMutation cleared after sign-off", cp)
 	}
 }
 

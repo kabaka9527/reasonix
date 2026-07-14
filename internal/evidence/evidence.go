@@ -393,7 +393,9 @@ func (l *Ledger) HasSuccessfulDeliverySignoffAfter(after int) bool {
 // HasSuccessfulReviewAfter reports whether the changed result was inspected
 // after the latest mutation. A read of a touched path is sufficient; git/diff
 // inspection commands cover shell-driven or delegated mutations whose paths are
-// not knowable to the host.
+// not knowable to the host. A negative index is the restored-checkpoint
+// baseline: the mutation predates this ledger (controller rebuild or cold
+// resume), so any successful review-shaped receipt counts.
 func (l *Ledger) HasSuccessfulReviewAfter(after int) bool {
 	if l == nil {
 		return false
@@ -406,17 +408,23 @@ func (l *Ledger) HasSuccessfulReviewAfter(after int) bool {
 	l.mu.Lock()
 	receipts := append([]Receipt(nil), l.receipts...)
 	l.mu.Unlock()
-	if after < 0 || after >= len(receipts) {
+	if after >= len(receipts) {
 		return false
 	}
 	return receiptsReviewChanges(receipts, start, len(receipts), after)
 }
 
 func receiptsReviewChanges(receipts []Receipt, start, end, mutationIndex int) bool {
-	if mutationIndex < 0 || mutationIndex >= len(receipts) {
+	if mutationIndex >= len(receipts) {
 		return false
 	}
-	wanted := pathSet(receipts[mutationIndex].Paths)
+	// A negative mutationIndex is the restored-checkpoint baseline: the
+	// mutation's receipt is not in this ledger, so its touched paths are
+	// unknowable and any successful review-shaped receipt counts.
+	var wanted map[string]bool
+	if mutationIndex >= 0 {
+		wanted = pathSet(receipts[mutationIndex].Paths)
+	}
 	for i := start; i < end && i < len(receipts); i++ {
 		r := receipts[i]
 		if !r.Success {

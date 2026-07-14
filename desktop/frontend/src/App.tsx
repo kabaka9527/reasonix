@@ -170,6 +170,7 @@ import { createRafResizeUpdater } from "./lib/resizeDrag";
 import { useGlobalShortcut } from "./lib/keyboardShortcuts";
 import { topicShortcutIndexFromEvent, useTopicShortcuts, type TopicShortcutEntry } from "./lib/topicShortcuts";
 import { composerDraftKeyForTab } from "./lib/composerDraftKey";
+import { continueDelivery } from "./lib/deliveryContinue";
 import logoWordmark from "./assets/logo-wordmark.svg";
 
 function noticePreviewMockEnabled(): boolean {
@@ -2614,13 +2615,15 @@ export default function App() {
   }, [activeTabId, commitThenSend, controllerReady]);
 
   const handleDeliveryContinue = useCallback(async () => {
-    const tabId = activeTabIdRef.current;
-    if (!tabId || !controllerReady) return;
-    const resumed = await resumeControllerGoalForTab(tabId);
-    if (!resumed) return;
-    if (activeTabIdRef.current !== tabId) return;
-    await commitThenSend(tabId, t("notice.deliveryIncompleteContinuePrompt"));
-  }, [commitThenSend, controllerReady, resumeControllerGoalForTab, t]);
+    await continueDelivery({
+      tabId: activeTabIdRef.current,
+      ready: controllerReady,
+      goal: state.meta?.goal,
+      activeTabId: () => activeTabIdRef.current,
+      resumeGoal: resumeControllerGoalForTab,
+      send: (tabId) => commitThenSend(tabId, t("notice.deliveryIncompleteContinuePrompt")),
+    });
+  }, [commitThenSend, controllerReady, resumeControllerGoalForTab, state.meta?.goal, t]);
   commitThenSendRef.current = commitThenSend;
 
   const handleMessageAction = useCallback((turn: number, scope: string) => {
