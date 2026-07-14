@@ -55,7 +55,6 @@ func (i *ICoreWebView2Settings) GetIsScriptEnabled() (bool, error) {
 
 func (i *ICoreWebView2Settings) PutIsScriptEnabled(isScriptEnabled bool) error {
 
-
 	hr, _, _ := i.vtbl.PutIsScriptEnabled.Call(
 		uintptr(unsafe.Pointer(i)),
 		uintptr(boolToInt(isScriptEnabled)),
@@ -80,7 +79,6 @@ func (i *ICoreWebView2Settings) GetIsWebMessageEnabled() (bool, error) {
 }
 
 func (i *ICoreWebView2Settings) PutIsWebMessageEnabled(isWebMessageEnabled bool) error {
-
 
 	hr, _, _ := i.vtbl.PutIsWebMessageEnabled.Call(
 		uintptr(unsafe.Pointer(i)),
@@ -107,7 +105,6 @@ func (i *ICoreWebView2Settings) GetAreDefaultScriptDialogsEnabled() (bool, error
 
 func (i *ICoreWebView2Settings) PutAreDefaultScriptDialogsEnabled(areDefaultScriptDialogsEnabled bool) error {
 
-
 	hr, _, _ := i.vtbl.PutAreDefaultScriptDialogsEnabled.Call(
 		uintptr(unsafe.Pointer(i)),
 		uintptr(boolToInt(areDefaultScriptDialogsEnabled)),
@@ -132,7 +129,6 @@ func (i *ICoreWebView2Settings) GetIsStatusBarEnabled() (bool, error) {
 }
 
 func (i *ICoreWebView2Settings) PutIsStatusBarEnabled(isStatusBarEnabled bool) error {
-
 
 	hr, _, _ := i.vtbl.PutIsStatusBarEnabled.Call(
 		uintptr(unsafe.Pointer(i)),
@@ -209,7 +205,6 @@ func (i *ICoreWebView2Settings) GetAreHostObjectsAllowed() (bool, error) {
 
 func (i *ICoreWebView2Settings) PutAreHostObjectsAllowed(allowed bool) error {
 
-
 	hr, _, _ := i.vtbl.PutAreHostObjectsAllowed.Call(
 		uintptr(unsafe.Pointer(i)),
 		uintptr(boolToInt(allowed)),
@@ -235,7 +230,6 @@ func (i *ICoreWebView2Settings) GetIsZoomControlEnabled() (bool, error) {
 
 func (i *ICoreWebView2Settings) PutIsZoomControlEnabled(enabled bool) error {
 
-
 	hr, _, _ := i.vtbl.PutIsZoomControlEnabled.Call(
 		uintptr(unsafe.Pointer(i)),
 		uintptr(boolToInt(enabled)),
@@ -260,7 +254,6 @@ func (i *ICoreWebView2Settings) GetIsBuiltInErrorPageEnabled() (bool, error) {
 }
 
 func (i *ICoreWebView2Settings) PutIsBuiltInErrorPageEnabled(enabled bool) error {
-
 
 	hr, _, _ := i.vtbl.PutIsBuiltInErrorPageEnabled.Call(
 		uintptr(unsafe.Pointer(i)),

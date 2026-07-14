@@ -37,7 +37,6 @@ func (i *ICoreWebView2WebResourceRequestedEventArgs) Release() uint32 {
 
 func (i *ICoreWebView2WebResourceRequestedEventArgs) PutResponse(response *ICoreWebView2WebResourceResponse) error {
 
-
 	hr, _, _ := i.vtbl.PutResponse.Call(
 		uintptr(unsafe.Pointer(i)),
 		uintptr(unsafe.Pointer(response)),
