@@ -52,6 +52,7 @@ function installDom() {
   globalThis.document = dom.window.document;
   Object.defineProperty(globalThis, "navigator", { configurable: true, value: dom.window.navigator });
   globalThis.Node = dom.window.Node;
+  globalThis.Element = dom.window.Element;
   globalThis.HTMLElement = dom.window.HTMLElement;
   globalThis.Event = dom.window.Event;
   globalThis.CustomEvent = dom.window.CustomEvent;
@@ -367,6 +368,57 @@ console.log("\nworkspace changes git errors");
 
   ok(document.body.textContent?.includes("session-b.ts") === true, "current same-tab session changes stay visible");
   ok(document.body.textContent?.includes("stale-session-a.ts") === false, "late same-tab session changes cannot overwrite the current session");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
+  // A keyboard tab switch fires no mousedown/scroll/Escape, so floating menus
+  // that captured the previous scope's text/paths must be discarded when the
+  // tab/scope changes — otherwise Add to Chat would route the old scope's
+  // selection into the newly active session.
+  const { dom, root, rerender } = await renderFilesWorkspace(
+    {
+      ListDirForTab: async () => [{ name: "app.ts", isDir: false }],
+      ReadFileForTab: async () => ({
+        path: "app.ts",
+        body: "const value = 1;",
+        size: 16,
+        truncated: false,
+        binary: false,
+      }),
+    },
+    { revealPathRequest: { id: 1, path: "app.ts" } },
+  );
+
+  await waitFor("code preview", () => document.body.textContent?.includes("const value = 1;") === true);
+  const previewBody = document.querySelector(".workspace-preview__body") as HTMLElement;
+  const textNode = document.createTreeWalker(previewBody, 4 /* NodeFilter.SHOW_TEXT */).nextNode();
+  if (!textNode) throw new Error("preview rendered no text node to select");
+  const range = document.createRange();
+  range.selectNodeContents(textNode);
+  const selection = document.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+  await act(async () => {
+    previewBody.dispatchEvent(new window.MouseEvent("mouseup", { bubbles: true, clientX: 60, clientY: 60 }));
+    await flushPromises();
+  });
+  ok(document.querySelector(".floating-menu") != null, "selecting preview code pops the Add to Chat toolbar");
+  await rerender({ tabId: "tab-b" });
+  ok(document.querySelector(".floating-menu") == null, "a tab switch discards the selection toolbar");
+
+  const tree = document.querySelector(".workspace-tree") as HTMLElement;
+  await act(async () => {
+    tree.dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 30, clientY: 200 }));
+    await flushPromises();
+  });
+  ok(document.querySelector(".context-menu") != null, "right-clicking blank tree space opens the tree menu");
+  await rerender({ workspaceScopeKey: "scope-b" });
+  ok(document.querySelector(".context-menu") == null, "a scope switch discards the tree menu");
 
   await act(async () => {
     root.unmount();
