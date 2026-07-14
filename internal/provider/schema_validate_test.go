@@ -40,6 +40,24 @@ func TestValidateToolSchemaRejectsMalformedNestedArrayItems(t *testing.T) {
 	}
 }
 
+func TestValidateToolSchemaRejectsNonObjectRootType(t *testing.T) {
+	for name, raw := range map[string]json.RawMessage{
+		"missing type":  json.RawMessage(`{}`),
+		"string root":   json.RawMessage(`{"type":"string"}`),
+		"nullable root": json.RawMessage(`{"type":["object","null"]}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := ValidateToolSchema(raw)
+			if err == nil {
+				t.Fatalf("ValidateToolSchema(%s) returned nil", raw)
+			}
+			if !strings.Contains(err.Error(), `"object"`) {
+				t.Fatalf("error does not name the object requirement: %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateToolSchemaRejectsNonObjectRootAndExternalRefs(t *testing.T) {
 	for name, raw := range map[string]json.RawMessage{
 		"array root":   json.RawMessage(`[]`),

@@ -36,7 +36,18 @@ func CanonicalizeSchema(raw json.RawMessage) json.RawMessage {
 
 func ensureRootObjectProperties(v any) {
 	m, ok := v.(map[string]any)
-	if !ok || m["type"] != "object" {
+	if !ok {
+		return
+	}
+	if _, ok := m["type"]; !ok {
+		// MCP servers routinely omit the root type (or advertise a bare {}),
+		// while MCP and the Anthropic/OpenAI tool contracts require tool
+		// parameters to declare type "object". Tool arguments are always JSON
+		// objects, so the omission can only mean an object schema; make it
+		// explicit instead of letting validation quarantine a usable tool.
+		m["type"] = "object"
+	}
+	if m["type"] != "object" {
 		return
 	}
 	if _, ok := m["properties"]; !ok {

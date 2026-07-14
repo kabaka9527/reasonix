@@ -27,8 +27,23 @@ func ValidateToolSchema(raw json.RawMessage) error {
 		}
 		return fmt.Errorf("invalid JSON: %w", err)
 	}
-	if _, ok := doc.(map[string]any); !ok {
+	obj, ok := doc.(map[string]any)
+	if !ok {
 		return fmt.Errorf("root must be an object")
+	}
+	// MCP tools/list and the Anthropic tool contract both require the root
+	// schema to describe an object; anything else can 400 the whole request.
+	// CanonicalizeSchema makes an omitted root type explicit before validation,
+	// so a missing or non-"object" type here is a genuinely incompatible schema.
+	switch typ := obj["type"].(type) {
+	case string:
+		if typ != "object" {
+			return fmt.Errorf("root type must be %q, got %q", "object", typ)
+		}
+	case nil:
+		return fmt.Errorf("root schema must declare type %q", "object")
+	default:
+		return fmt.Errorf("root type must be %q, got %s", "object", schemaJSONString(typ))
 	}
 
 	compiler := jsonschema.NewCompiler()
