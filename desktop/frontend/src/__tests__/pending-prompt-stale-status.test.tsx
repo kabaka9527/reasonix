@@ -130,6 +130,48 @@ eq(replayed.promptArrivedId, "plan-1", "same-id replay keeps the anchor id");
   eq(replayDuringBusy.approval, undefined, "a replay during a genuinely busy, non-pending turn is still ignored");
 }
 
+// #6432 round 3, finding 1 (P1): a controller rebuild (model/effort/token-mode
+// switch) reissues approval/ask ids from "1" (per-controller counters, see
+// sound.ts). Without resetting the id-anchored bookkeeping, a genuinely new
+// prompt from the rebuilt controller reusing an old id would be misread as a
+// stale replay of one the OLD controller already resolved, and silently
+// swallowed forever.
+{
+  const armed = reducer({ ...initialState }, { type: "event", e: planApprovalEvent });
+  const answeredEarly = reducer(armed, { type: "clearApproval" });
+  eq(answeredEarly.resolvedPromptId, "plan-1", "answering records the resolved id before the rebuild");
+  const rebuilt = reducer(answeredEarly, { type: "controller_rebuilt" });
+  eq(rebuilt.resolvedPromptId, undefined, "a controller rebuild drops the resolved-id bookkeeping");
+  eq(rebuilt.promptArrivedId, undefined, "a controller rebuild drops the prompt arrival anchor id");
+  eq(rebuilt.promptArrivedAt, undefined, "a controller rebuild drops the prompt arrival anchor time");
+  // The new controller's own first prompt happens to reuse id "plan-1".
+  const freshPromptSameId = reducer(rebuilt, { type: "event", e: planApprovalEvent });
+  eq(freshPromptSameId.approval?.id, "plan-1", "a genuinely new prompt reusing an old id after rebuild is armed, not swallowed");
+  eq(freshPromptSameId.pendingPrompt, true, "the rebuilt controller's new prompt blocks the tab as expected");
+}
+
+// #6432 round 3, finding 2 (P2): the optimistic clearApproval/clearAsk
+// tombstone must not be permanent when the backend call it anticipated
+// actually fails — the prompt is still genuinely pending server-side, and a
+// later replay must be able to recover it instead of being swallowed forever.
+{
+  const armed = reducer({ ...initialState }, { type: "event", e: planApprovalEvent });
+  const answeredOptimistically = reducer(armed, { type: "clearApproval" });
+  eq(answeredOptimistically.resolvedPromptId, "plan-1", "the optimistic answer records a tombstone before the backend call resolves");
+  const submitFailed = reducer(answeredOptimistically, { type: "submit_prompt_failed", id: "plan-1" });
+  eq(submitFailed.resolvedPromptId, undefined, "a failed submit undoes the tombstone for that id");
+  const recovered = reducer(submitFailed, { type: "event", e: planApprovalEvent });
+  eq(recovered.approval?.id, "plan-1", "a replay after a failed submit can recover the still-pending prompt");
+
+  // A failure report for an id that is no longer the current tombstone (e.g.
+  // a stale/duplicate failure callback) must not clobber a newer one.
+  const armed2 = reducer({ ...initialState }, { type: "event", e: { kind: "approval_request", approval: { id: "plan-2", tool: "exit_plan_mode", subject: "Approve plan" } } as WireEvent });
+  const answered2 = reducer(armed2, { type: "clearApproval" });
+  eq(answered2.resolvedPromptId, "plan-2", "answering the second prompt records its own tombstone");
+  const staleFailure = reducer(answered2, { type: "submit_prompt_failed", id: "plan-1" });
+  eq(staleFailure.resolvedPromptId, "plan-2", "a stale failure for an older id does not clobber the current tombstone");
+}
+
 // A genuinely new prompt (different id) after an answer re-anchors, so its own
 // stale pre-arrival snapshot is still rejected (#6429 preserved).
 {

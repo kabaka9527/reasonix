@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { asArray } from "./array";
 import { addBreadcrumb } from "./breadcrumbs";
-import { app, onEvent, onReady } from "./bridge";
+import { app, onEvent, onReady, onRuntimeRebuilt } from "./bridge";
 import { invalidateCache } from "./composerHistory";
 import { formatGuardianAssessmentNotice } from "./guardianEvents";
 import { createRafBatch } from "./rafBatch";
@@ -437,6 +437,8 @@ type Action =
   | { type: "local_notice"; level: "info" | "warn"; text: string }
   | { type: "clearApproval" }
   | { type: "clearAsk" }
+  | { type: "submit_prompt_failed"; id: string }
+  | { type: "controller_rebuilt" }
   | { type: "reset" };
 
 function backendStatusFromRuntimeMeta(meta: RuntimeMetaSnapshot): Extract<Action, { type: "backend_status" }> {
@@ -1283,6 +1285,21 @@ export function reducer(s: State, a: Action): State {
       const next = { ...s, ask: undefined, pendingPrompt: Boolean(s.approval), resolvedPromptId: s.ask?.id ?? s.resolvedPromptId };
       return endPromptWaitIfIdle(next);
     }
+    // The optimistic clearApproval/clearAsk tombstone was wrong: the backend
+    // call that was supposed to actually resolve this id failed, so the
+    // prompt is still genuinely pending there. Undo the tombstone so the next
+    // replay (proactively requested by the caller) can re-arm it instead of
+    // being silently swallowed forever.
+    case "submit_prompt_failed":
+      return s.resolvedPromptId === a.id ? { ...s, resolvedPromptId: undefined } : s;
+    // A controller rebuild (model/effort/token-mode switch) replaces the
+    // backend controller in place and its approval/ask ids restart from "1"
+    // (per-controller counters, see sound.ts). Any id-anchored bookkeeping
+    // from the OLD controller is meaningless for the new one and must be
+    // dropped, or a genuinely new prompt reusing an old id would be misread
+    // as a stale replay of an already-answered prompt and silently ignored.
+    case "controller_rebuilt":
+      return { ...s, resolvedPromptId: undefined, promptArrivedId: undefined, promptArrivedAt: undefined };
     case "reset": return { ...initialState, meta: s.meta, context: { used: 0, window: s.context.window, sessionTokens: 0, compactRatio: s.context.compactRatio }, balance: s.balance, effort: s.effort, jobs: s.jobs, hydrating: s.hydrating, hydrateReason: s.hydrateReason, hydrateError: s.hydrateError, hydrateHistoryLoaded: s.hydrateHistoryLoaded, hydratePlaceholderItems: s.hydratePlaceholderItems, backendActivationPending: s.backendActivationPending, sessionGen: s.sessionGen + 1 };
     case "event": return applyEvent(s, a.e);
     default: return s;
@@ -2101,6 +2118,19 @@ export function useController() {
       void syncActiveTabFromBackend(false, true, { preserveCachedHistory: true });
     });
 
+    // A rebuilt controller reissues approval/ask ids from "1" (see sound.ts).
+    // Drop this tab's id-anchored prompt bookkeeping so a genuinely new
+    // prompt from the new controller is never misread as a stale replay of
+    // one the old controller already resolved (#6432 round 3). A tab-less
+    // rebuild (settings-wide) affects every known tab.
+    const offRebuilt = onRuntimeRebuilt((rebuiltTabId) => {
+      if (rebuiltTabId) {
+        dispatchTo(rebuiltTabId, { type: "controller_rebuilt" });
+      } else {
+        for (const id of Array.from(statesRef.current.keys())) dispatchTo(id, { type: "controller_rebuilt" });
+      }
+    });
+
     void syncActiveTabFromBackend(false, true);
     // The event subscription is live now, so ask the backend to re-emit any
     // approval/ask prompt that was already blocking a tab before this load —
@@ -2120,6 +2150,7 @@ export function useController() {
       stalePromptReconcileTimers.current.clear();
       off();
       offReady();
+      offRebuilt();
     };
   }, [dispatchTo, loadSessionDataForTab, refreshCheckpoints, syncActiveTabFromBackend]);
 
@@ -2329,14 +2360,25 @@ export function useController() {
 
   const approve = useCallback((id: string, allow: boolean, session: boolean, persist: boolean) => {
     if (!activeTabId) return;
-    dispatchTo(activeTabId, { type: "clearApproval" });
-    app.ApproveTab(activeTabId, id, allow, session, persist).catch(() => {});
+    const tabId = activeTabId;
+    dispatchTo(tabId, { type: "clearApproval" });
+    app.ApproveTab(tabId, id, allow, session, persist).catch(() => {
+      // The backend never actually resolved this prompt — undo the optimistic
+      // tombstone and ask it to replay, so the approval card can come back
+      // instead of being silently lost forever (#6432 round 3).
+      dispatchTo(tabId, { type: "submit_prompt_failed", id });
+      replayPendingPromptsForActiveTab(tabId);
+    });
   }, [activeTabId, dispatchTo]);
 
   const answerQuestion = useCallback((id: string, answers: QuestionAnswer[]) => {
     if (!activeTabId) return;
-    dispatchTo(activeTabId, { type: "clearAsk" });
-    app.AnswerQuestionForTab(activeTabId, id, answers).catch(() => {});
+    const tabId = activeTabId;
+    dispatchTo(tabId, { type: "clearAsk" });
+    app.AnswerQuestionForTab(tabId, id, answers).catch(() => {
+      dispatchTo(tabId, { type: "submit_prompt_failed", id });
+      replayPendingPromptsForActiveTab(tabId);
+    });
   }, [activeTabId, dispatchTo]);
 
   const setControllerMode = useCallback((mode: Mode): Promise<void> => {
