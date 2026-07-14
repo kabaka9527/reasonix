@@ -451,6 +451,7 @@ export const zhTW: Record<DictKey, string> = {
   "composer.imageInputUnsupported": "目前模型不會直接接收圖片。可切換到支援圖片的模型，或讓 OCR/識圖 MCP 工具讀取附件路徑。",
   "composer.contextItems": "上下文項目",
   "composer.selectedText": "聊天選取內容",
+  "composer.selectedCode": "程式碼選取內容",
   "composer.removeSelectedText": "移除聊天選取內容",
   "composer.selectedTextTruncated": "選取文字過長，已縮短以控制提示詞大小。",
   "composer.selectedInvocation": "已選擇的技能或子智慧體",

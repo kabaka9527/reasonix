@@ -94,7 +94,7 @@ import {
   type ToolApprovalMode,
 } from "./lib/types";
 import type { InvocationMetadataMap, StructuredInvocationSubmit } from "./lib/invocationDisplay";
-import type { SelectedTextInsertRequest } from "./lib/selectedTextContext";
+import { formatSelectionReference, type SelectedTextInsertRequest } from "./lib/selectedTextContext";
 import {
   composerProfileFromMeta,
   composerProfileFromTab,
@@ -2417,6 +2417,25 @@ export default function App() {
     }));
   }, [activeTabId]);
 
+  const addWorkspaceCodeToComposer = useCallback((path: string, code: string) => {
+    if (!activeTabId || !code.trim()) return;
+    if (workspaceInsertTarget === "planRevision" && state.approval?.tool === "exit_plan_mode") {
+      // The plan-revision input is plain text and only consumes request.text,
+      // so hand it the fenced rendering instead of a structured reference.
+      setPlanRevisionInsertRequest({
+        tabId: activeTabId,
+        approvalId: state.approval.id,
+        request: { id: Date.now(), text: formatSelectionReference(path, code) },
+      });
+      return;
+    }
+    selectedTextRequestIdRef.current += 1;
+    setSelectedTextRequestsByTab((current) => ({
+      ...current,
+      [activeTabId]: { id: selectedTextRequestIdRef.current, text: code, path },
+    }));
+  }, [activeTabId, state.approval, workspaceInsertTarget]);
+
   // Coalesce tab-bar switches through the same last-click-wins scheduler that
   // openTopic/blank/resume navigation uses, so rapidly clicking between two
   // running sessions can't run two switchTab() calls concurrently. Concurrent
@@ -4035,6 +4054,7 @@ export default function App() {
                   }}
                   onPreviewModeChange={handleWorkspacePreviewModeChange}
                   onAddToChat={addWorkspaceTextToComposer}
+                  onAddCodeToChat={addWorkspaceCodeToComposer}
                   onRequestPanelWidth={ensureWorkspacePanelWidth}
                   onFileTreeRefresh={refreshComposerFileRefs}
                   refreshKey={dockRefreshKey}

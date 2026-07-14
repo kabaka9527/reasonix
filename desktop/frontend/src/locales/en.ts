@@ -615,6 +615,7 @@ export const en = {
   "composer.imageInputUnsupported": "Current model will not receive images directly. Use an image-capable model or an OCR/vision MCP tool to inspect the attached path.",
   "composer.contextItems": "Context items",
   "composer.selectedText": "Chat selection",
+  "composer.selectedCode": "Code selection",
   "composer.removeSelectedText": "Remove selected chat text",
   "composer.selectedTextTruncated": "The selection was shortened to keep the prompt within a safe size.",
   "composer.selectedInvocation": "Selected skill or subagent",

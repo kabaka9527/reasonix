@@ -1392,10 +1392,18 @@ export function Composer({
     const normalized = normalizeSelectedText(selectedTextRequest.text);
     if (!normalized.text) return;
     if (normalized.truncated) showToast(t("composer.selectedTextTruncated"), "warn");
-    if (!selectedTextRefsRef.current.some((reference) => reference.text === normalized.text)) {
+    const path = selectedTextRequest.path;
+    const duplicate = selectedTextRefsRef.current.some(
+      (reference) => reference.text === normalized.text && (reference.path ?? "") === (path ?? ""),
+    );
+    if (!duplicate) {
       const next = [
         ...selectedTextRefsRef.current,
-        { id: `chat-selection-${selectedTextRequest.id}`, text: normalized.text },
+        {
+          id: `${path ? "code" : "chat"}-selection-${selectedTextRequest.id}`,
+          text: normalized.text,
+          ...(path ? { path } : {}),
+        },
       ];
       selectedTextRefsRef.current = next;
       setSelectedTextRefs(next);
@@ -3448,9 +3456,9 @@ export function Composer({
                 setSelectedTextRefs(next);
                 requestAnimationFrame(focusComposerInput);
               }}
-              name={selectedTextSnippet(reference.text)}
-              meta={t("composer.selectedText")}
-              icon={<MessageSquare size={20} />}
+              name={reference.path ? reference.path.split("/").filter(Boolean).pop() ?? reference.path : selectedTextSnippet(reference.text)}
+              meta={reference.path ? t("composer.selectedCode") : t("composer.selectedText")}
+              icon={reference.path ? <FileText size={20} /> : <MessageSquare size={20} />}
             />
           ))}
         </div>
