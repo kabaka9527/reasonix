@@ -29,6 +29,7 @@ import { ComposerContextCard } from "./ComposerContextCard";
 import { ImageViewer } from "./ImageViewer";
 import { VirtualMenu } from "./VirtualMenu";
 import { dirEntryMenuLabel, dirEntrySubmitPath } from "./FileReferenceMenu";
+import { activeRefTokenRe, escapeRefPath, unescapeRefPath } from "../lib/refToken";
 
 interface Attachment {
   path: string;
@@ -158,7 +159,8 @@ export function composerPickFileEntry(
   if (entry.path || entry.displayPath) {
     return { text: prefix, workspaceRef: { path: refPath, isDir: entry.isDir, displayPath: entry.displayPath } };
   }
-  return { text: prefix + "@" + refPath + (entry.isDir ? "/" : " ") };
+  // Inline fallback: escape whitespace so the ref survives @-token parsing.
+  return { text: prefix + "@" + escapeRefPath(refPath) + (entry.isDir ? "/" : " ") };
 }
 
 function emptyComposerDraft(): ComposerDraft {
@@ -744,7 +746,7 @@ export function Composer({
   // last "/", atFrag the part after. The menu lists one directory level (atDir)
   // and filters by atFrag — descending one level per pick.
   const atRaw = useMemo(() => {
-    const m = /(?:^|\s)@([^\s]*)$/.exec(text);
+    const m = activeRefTokenRe.exec(text);
     return m ? m[1] : null;
   }, [text]);
   const atDir = useMemo(() => {
@@ -755,7 +757,7 @@ export function Composer({
   const atFrag = useMemo(() => {
     if (atRaw === null) return "";
     const slash = atRaw.lastIndexOf("/");
-    return (slash >= 0 ? atRaw.slice(slash + 1) : atRaw).toLowerCase();
+    return unescapeRefPath(slash >= 0 ? atRaw.slice(slash + 1) : atRaw).toLowerCase();
   }, [atRaw]);
 
   const [entries, setEntries] = useState<DirEntry[]>([]);
@@ -804,7 +806,7 @@ export function Composer({
     }
     let live = true;
     app
-      .ListDir(atDir)
+      .ListDir(unescapeRefPath(atDir))
       .then((es) => {
         const list = asArray(es);
         if (!live) return;
@@ -1763,7 +1765,7 @@ export function Composer({
 
 
   const removeAtToken = (value: string) => {
-    return value.replace(/(?:^|\s)@[^\s]*$/, "").trimEnd();
+    return value.replace(activeRefTokenRe, "").trimEnd();
   };
 
   const pickSession = (session: SessionMeta) => {
