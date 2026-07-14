@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"image"
 	"image/png"
-	"mime"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,20 +45,18 @@ func externalOpenerIconFileDataURL(path string) string {
 		return ""
 	}
 	ext := strings.ToLower(filepath.Ext(path))
-	mimeType := mime.TypeByExtension(ext)
 	switch ext {
 	case ".png":
-		mimeType = "image/png"
+		return externalOpenerPNGDataURL(data)
 	case ".jpg", ".jpeg":
-		mimeType = "image/jpeg"
+		return "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(data)
 	case ".webp":
-		mimeType = "image/webp"
+		return "data:image/webp;base64," + base64.StdEncoding.EncodeToString(data)
 	case ".svg":
-		mimeType = "image/svg+xml"
+		return "data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString(data)
 	default:
 		return ""
 	}
-	return "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(data)
 }
 
 func externalOpenerPNGDataURL(data []byte) string {
