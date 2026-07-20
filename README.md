@@ -187,8 +187,8 @@ A small list of folks whose work has shaped Reasonix the most — the current to
 | [**SivanCola**](https://github.com/SivanCola) | [**esengine**](https://github.com/esengine) | [**ttmouse**](https://github.com/ttmouse) | [**lifu963**](https://github.com/lifu963) |
 | **reasonix** (anonymous) | [**HUQIANTAO**](https://github.com/HUQIANTAO) | [**GTC2080**](https://github.com/GTC2080) | [**light-front-theory**](https://github.com/light-front-theory) |
 | **merge-order-check** (anonymous) | [**Li-Charles-One**](https://github.com/Li-Charles-One) | [**eghrhegpe**](https://github.com/eghrhegpe) | **wufengfan** (anonymous) |
-| [**CVEngineer66**](https://github.com/CVEngineer66) | [**dependabot\[bot\]**](https://github.com/apps/dependabot) | [**lanshi17**](https://github.com/lanshi17) | [**SuMuxi66**](https://github.com/SuMuxi66) |
-| [**CnsMaple**](https://github.com/CnsMaple) | [**cyq1017**](https://github.com/cyq1017) | [**JesonChou**](https://github.com/JesonChou) | [**XTLine**](https://github.com/XTLine) |
+| [**CVEngineer66**](https://github.com/CVEngineer66) | [**dependabot\[bot\]**](https://github.com/apps/dependabot) | [**SuMuxi66**](https://github.com/SuMuxi66) | [**lanshi17**](https://github.com/lanshi17) |
+| [**JesonChou**](https://github.com/JesonChou) | [**cyq1017**](https://github.com/cyq1017) | [**CnsMaple**](https://github.com/CnsMaple) | [**paradoxSCH**](https://github.com/paradoxSCH) |
 <!-- reasonix-top-contributors:end -->
 
 Also a separate thank-you to [**Bernardxu123**](https://github.com/Bernardxu123)
