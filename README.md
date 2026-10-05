@@ -168,11 +168,11 @@ A small list of folks whose work has shaped Reasonix the most — the current to
 <!-- reasonix-top-contributors:start -->
 | Contributor | Contributor | Contributor | Contributor |
 | --- | --- | --- | --- |
-| [**SivanCola**](https://github.com/SivanCola) | [**esengine**](https://github.com/esengine) | [**ttmouse**](https://github.com/ttmouse) | [**lifu963**](https://github.com/lifu963) |
-| **reasonix** (anonymous) | [**HUQIANTAO**](https://github.com/HUQIANTAO) | [**GTC2080**](https://github.com/GTC2080) | [**light-front-theory**](https://github.com/light-front-theory) |
-| **merge-order-check** (anonymous) | [**Li-Charles-One**](https://github.com/Li-Charles-One) | [**eghrhegpe**](https://github.com/eghrhegpe) | **wufengfan** (anonymous) |
-| [**CVEngineer66**](https://github.com/CVEngineer66) | [**dependabot\[bot\]**](https://github.com/apps/dependabot) | [**lanshi17**](https://github.com/lanshi17) | [**SuMuxi66**](https://github.com/SuMuxi66) |
-| [**CnsMaple**](https://github.com/CnsMaple) | [**cyq1017**](https://github.com/cyq1017) | [**JesonChou**](https://github.com/JesonChou) | [**XTLine**](https://github.com/XTLine) |
+| [**esengine**](https://github.com/esengine) | [**SivanCola**](https://github.com/SivanCola) | [**KHG420**](https://github.com/KHG420) | [**ttmouse**](https://github.com/ttmouse) |
+| [**lifu963**](https://github.com/lifu963) | **reasonix** (anonymous) | [**HUQIANTAO**](https://github.com/HUQIANTAO) | [**Harbor404**](https://github.com/Harbor404) |
+| [**GTC2080**](https://github.com/GTC2080) | [**mchenziyi**](https://github.com/mchenziyi) | [**Li-Charles-One**](https://github.com/Li-Charles-One) | **merge-order-check** (anonymous) |
+| [**light-front-theory**](https://github.com/light-front-theory) | **Yan Li** (anonymous) | [**github-actions\[bot\]**](https://github.com/apps/github-actions) | **yhh** (anonymous) |
+| [**eghrhegpe**](https://github.com/eghrhegpe) | **wufengfan** (anonymous) | [**dependabot\[bot\]**](https://github.com/apps/dependabot) | [**Bernardxu123**](https://github.com/Bernardxu123) |
 <!-- reasonix-top-contributors:end -->
 
 Also a separate thank-you to [**Bernardxu123**](https://github.com/Bernardxu123)
